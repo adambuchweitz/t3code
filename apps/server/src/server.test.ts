@@ -65,6 +65,7 @@ import {
   GitStatusBroadcaster,
   type GitStatusBroadcasterShape,
 } from "./git/Services/GitStatusBroadcaster.ts";
+import { GlobalInstructions, type GlobalInstructionsShape } from "./globalInstructions.ts";
 import { Keybindings, type KeybindingsShape } from "./keybindings.ts";
 import { Open, type OpenShape } from "./open.ts";
 import {
@@ -321,6 +322,7 @@ const buildAppUnderTest = (options?: {
   config?: Partial<ServerConfigShape>;
   layers?: {
     keybindings?: Partial<KeybindingsShape>;
+    globalInstructions?: Partial<GlobalInstructionsShape>;
     providerRegistry?: Partial<ProviderRegistryShape>;
     serverSettings?: Partial<ServerSettingsShape>;
     open?: Partial<OpenShape>;
@@ -416,6 +418,32 @@ const buildAppUnderTest = (options?: {
           }),
           streamChanges: Stream.empty,
           ...options?.layers?.keybindings,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(GlobalInstructions)({
+          start: Effect.void,
+          ready: Effect.void,
+          loadConfigState: Effect.succeed({
+            globalInstructions: [],
+            globalInstructionIssues: [],
+          }),
+          getSnapshot: Effect.succeed({
+            globalInstructions: [],
+            globalInstructionIssues: [],
+          }),
+          streamChanges: Stream.empty,
+          createInstruction: () =>
+            Effect.succeed({
+              globalInstructions: [],
+              globalInstructionIssues: [],
+            }),
+          setInstructionEnabled: () =>
+            Effect.succeed({
+              globalInstructions: [],
+              globalInstructionIssues: [],
+            }),
+          ...options?.layers?.globalInstructions,
         }),
       ),
       Layer.provide(

@@ -110,6 +110,12 @@ export interface WsRpcClient {
       input?: RpcInput<typeof WS_METHODS.serverRefreshProviders>,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverRefreshProviders>>;
     readonly upsertKeybinding: RpcUnaryMethod<typeof WS_METHODS.serverUpsertKeybinding>;
+    readonly createGlobalInstruction: RpcUnaryMethod<
+      typeof WS_METHODS.serverCreateGlobalInstruction
+    >;
+    readonly setGlobalInstructionEnabled: RpcUnaryMethod<
+      typeof WS_METHODS.serverSetGlobalInstructionEnabled
+    >;
     readonly getSettings: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetSettings>;
     readonly updateSettings: (
       patch: ServerSettingsPatch,
@@ -216,6 +222,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverRefreshProviders](input ?? {})),
       upsertKeybinding: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpsertKeybinding](input)),
+      createGlobalInstruction: (input) =>
+        transport.request((client) => client[WS_METHODS.serverCreateGlobalInstruction](input)),
+      setGlobalInstructionEnabled: (input) =>
+        transport.request((client) => client[WS_METHODS.serverSetGlobalInstructionEnabled](input)),
       getSettings: () => transport.request((client) => client[WS_METHODS.serverGetSettings]({})),
       updateSettings: (patch) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSettings]({ patch })),

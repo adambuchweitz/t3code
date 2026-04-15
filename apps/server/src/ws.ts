@@ -32,6 +32,7 @@ import { ServerConfig } from "./config.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
+import { GlobalInstructions } from "./globalInstructions.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
@@ -134,6 +135,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
+      const globalInstructions = yield* GlobalInstructions;
       const keybindings = yield* Keybindings;
       const open = yield* Open;
       const gitManager = yield* GitManager;
@@ -511,6 +513,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
 
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
+        const globalInstructionsState = yield* globalInstructions.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
         const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
         const environment = yield* serverEnvironment.getDescriptor;
@@ -523,6 +526,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           keybindingsConfigPath: config.keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
+          globalInstructions: globalInstructionsState.globalInstructions,
+          globalInstructionIssues: globalInstructionsState.globalInstructionIssues,
           providers,
           availableEditors: resolveAvailableEditors(),
           observability: {
@@ -767,6 +772,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverCreateGlobalInstruction]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCreateGlobalInstruction,
+            globalInstructions.createInstruction(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSetGlobalInstructionEnabled]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSetGlobalInstructionEnabled,
+            globalInstructions.setInstructionEnabled(input),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverGetSettings]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetSettings,
@@ -994,6 +1011,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   payload: { settings },
                 })),
               );
+              const globalInstructionUpdates = globalInstructions.streamChanges.pipe(
+                Stream.map((state) => ({
+                  version: 1 as const,
+                  type: "globalInstructionsUpdated" as const,
+                  payload: {
+                    globalInstructions: state.globalInstructions,
+                    globalInstructionIssues: state.globalInstructionIssues,
+                  },
+                })),
+              );
 
               yield* providerRegistry
                 .refresh()
@@ -1001,7 +1028,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
 
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                Stream.merge(
+                  providerStatuses,
+                  Stream.merge(settingsUpdates, globalInstructionUpdates),
+                ),
               );
 
               return Stream.concat(

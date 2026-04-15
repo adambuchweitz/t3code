@@ -79,6 +79,8 @@ const rpcClientMock = {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),
     upsertKeybinding: vi.fn(),
+    createGlobalInstruction: vi.fn(),
+    setGlobalInstructionEnabled: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
     subscribeConfig: vi.fn(),
@@ -248,6 +250,8 @@ const baseServerConfig: ServerConfig = {
   keybindingsConfigPath: "/tmp/workspace/.config/keybindings.json",
   keybindings: [],
   issues: [],
+  globalInstructions: [],
+  globalInstructionIssues: [],
   providers: defaultProviders,
   availableEditors: ["cursor"],
   observability: {
@@ -491,6 +495,58 @@ describe("wsApi", () => {
     );
     expect(rpcClientMock.server.updateSettings).toHaveBeenCalledWith({
       enableAssistantStreaming: true,
+    });
+  });
+
+  it("forwards global instruction mutations directly to the RPC client", async () => {
+    const state = {
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: true,
+          content: "Prefer concise responses.",
+        },
+      ],
+      globalInstructionIssues: [],
+    };
+    rpcClientMock.server.createGlobalInstruction.mockResolvedValue(state);
+    rpcClientMock.server.setGlobalInstructionEnabled.mockResolvedValue({
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: false,
+          content: "Prefer concise responses.",
+        },
+      ],
+      globalInstructionIssues: [],
+    });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(
+      api.server.createGlobalInstruction({
+        name: "Caveman",
+        content: "Prefer concise responses.",
+      }),
+    ).resolves.toEqual(state);
+    await expect(
+      api.server.setGlobalInstructionEnabled({
+        id: "caveman.json",
+        enabled: false,
+      }),
+    ).resolves.toEqual({
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: false,
+          content: "Prefer concise responses.",
+        },
+      ],
+      globalInstructionIssues: [],
     });
   });
 

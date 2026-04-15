@@ -28,7 +28,10 @@ import type {
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
+  ServerCreateGlobalInstructionInput,
+  ServerGlobalInstructionsResult,
   ServerProviderUpdatedPayload,
+  ServerSetGlobalInstructionEnabledInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import type {
@@ -225,6 +228,12 @@ export interface LocalApi {
       readonly instanceId?: ProviderInstanceId;
     }) => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+    createGlobalInstruction: (
+      input: ServerCreateGlobalInstructionInput,
+    ) => Promise<ServerGlobalInstructionsResult>;
+    setGlobalInstructionEnabled: (
+      input: ServerSetGlobalInstructionEnabledInput,
+    ) => Promise<ServerGlobalInstructionsResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
   };

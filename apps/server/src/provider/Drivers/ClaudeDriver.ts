@@ -18,6 +18,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { GlobalInstructions } from "../../globalInstructions.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import {
@@ -43,6 +44,7 @@ const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
+  | GlobalInstructions
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig;

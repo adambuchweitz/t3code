@@ -40,6 +40,7 @@ import { ServerConfig } from "../../config.ts";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const CREATE_WORKTREE_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 49_000;
@@ -1948,12 +1949,26 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       const targetBranch = input.newBranch ?? input.branch;
       const sanitizedBranch = targetBranch.replace(/\//g, "-");
       const repoName = path.basename(input.cwd);
-      const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+      const worktreePath = path.resolve(
+        input.path ?? path.join(worktreesDir, repoName, sanitizedBranch),
+      );
       const args = input.newBranch
         ? ["worktree", "add", "-b", input.newBranch, worktreePath, input.branch]
         : ["worktree", "add", worktreePath, input.branch];
 
+      yield* fileSystem
+        .makeDirectory(path.dirname(worktreePath), { recursive: true })
+        .pipe(
+          Effect.mapError(
+            toGitCommandError(
+              { operation: "GitCore.createWorktree", cwd: input.cwd, args },
+              "failed to create worktree parent directory.",
+            ),
+          ),
+        );
+
       yield* executeGit("GitCore.createWorktree", input.cwd, args, {
+        timeoutMs: CREATE_WORKTREE_TIMEOUT_MS,
         fallbackErrorMessage: "git worktree add failed",
       });
 

@@ -188,6 +188,8 @@ function createBaseServerConfig(): ServerConfig {
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
+    globalInstructions: [],
+    globalInstructionIssues: [],
     providers: [],
     availableEditors: ["cursor"],
     observability: {
@@ -678,6 +680,197 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(page.getByText("Reachable at http://192.168.1.44:3773"))
       .toBeInTheDocument();
+  });
+
+  it("renders file-backed global instructions", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: true,
+          content: "Prefer concise responses.",
+          filePath: "/repo/project/.t3/instructions/caveman.json",
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect
+      .element(page.getByRole("heading", { name: "Global Instructions" }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("Caveman")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("/repo/project/.t3/instructions/caveman.json"))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Open Caveman file" }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("Prefer concise responses.")).not.toBeInTheDocument();
+  });
+
+  it("opens a global instruction file in the preferred editor", async () => {
+    const openInEditor = vi.fn<LocalApi["shell"]["openInEditor"]>().mockResolvedValue(undefined);
+    window.nativeApi = {
+      shell: {
+        openInEditor,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: true,
+          content: "Prefer concise responses.",
+          filePath: "/repo/project/.t3/instructions/caveman.json",
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Open Caveman file" }).click();
+
+    expect(openInEditor).toHaveBeenCalledWith(
+      "/repo/project/.t3/instructions/caveman.json",
+      "cursor",
+    );
+  });
+
+  it("creates a global instruction through server RPC", async () => {
+    const createGlobalInstruction = vi
+      .fn<LocalApi["server"]["createGlobalInstruction"]>()
+      .mockResolvedValue({
+        globalInstructions: [
+          {
+            id: "caveman.json",
+            name: "Caveman",
+            enabled: true,
+            content: "Prefer concise responses.\nNever use nested bullets.",
+          },
+        ],
+        globalInstructionIssues: [],
+      });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        createGlobalInstruction,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Global instruction title").fill("Caveman");
+    await page
+      .getByLabelText("Global instruction content")
+      .fill("Prefer concise responses.\nNever use nested bullets.");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    await vi.waitFor(() => {
+      expect(createGlobalInstruction).toHaveBeenCalledWith({
+        name: "Caveman",
+        content: "Prefer concise responses.\nNever use nested bullets.",
+      });
+    });
+    await expect.element(page.getByText("Caveman")).toBeInTheDocument();
+  });
+
+  it("toggles a global instruction through server RPC", async () => {
+    const setGlobalInstructionEnabled = vi
+      .fn<LocalApi["server"]["setGlobalInstructionEnabled"]>()
+      .mockResolvedValue({
+        globalInstructions: [
+          {
+            id: "caveman.json",
+            name: "Caveman",
+            enabled: false,
+            content: "Prefer concise responses.",
+          },
+        ],
+        globalInstructionIssues: [],
+      });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        setGlobalInstructionEnabled,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      globalInstructions: [
+        {
+          id: "caveman.json",
+          name: "Caveman",
+          enabled: true,
+          content: "Prefer concise responses.",
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Enable Caveman").click();
+
+    await vi.waitFor(() => {
+      expect(setGlobalInstructionEnabled).toHaveBeenCalledWith({
+        id: "caveman.json",
+        enabled: false,
+      });
+    });
+  });
+
+  it("renders global instruction issues inline", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      globalInstructionIssues: [
+        {
+          kind: "globalInstructions.invalid-config",
+          id: "broken.json",
+          message: "name is required",
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect
+      .element(page.getByText("Some instruction files could not be loaded"))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("broken.json: name is required")).toBeInTheDocument();
   });
 
   it("opens the logs folder in the preferred editor", async () => {

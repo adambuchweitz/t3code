@@ -1314,6 +1314,71 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
+    it.effect("creates the default worktree parent directory before invoking git", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const currentBranch = (yield* (yield* GitCore).listBranches({ cwd: tmp })).branches.find(
+          (branch) => branch.current,
+        )!.name;
+
+        const baseDir = yield* makeTmpDir("t3-worktree-home-");
+        const executedInputs: Array<{
+          cwd: string;
+          args: ReadonlyArray<string>;
+          timeoutMs?: number;
+        }> = [];
+        const executeOverride: GitCoreShape["execute"] = (input) => {
+          executedInputs.push({
+            cwd: input.cwd,
+            args: input.args,
+            ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+          });
+          return Effect.succeed({
+            code: 0,
+            stdout: "",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          });
+        };
+
+        const program = Effect.gen(function* () {
+          const gitCore = yield* makeGitCore({ executeOverride });
+          const { worktreesDir } = yield* ServerConfig;
+          const expectedPath = path.resolve(
+            path.join(worktreesDir, path.basename(tmp), "t3code-26cf5c85"),
+          );
+          const expectedParentDir = path.dirname(expectedPath);
+
+          expect(existsSync(expectedParentDir)).toBe(false);
+
+          const result = yield* gitCore.createWorktree({
+            cwd: tmp,
+            branch: currentBranch,
+            newBranch: "t3code/26cf5c85",
+            path: null,
+          });
+
+          expect(result.worktree.path).toBe(expectedPath);
+          expect(existsSync(expectedParentDir)).toBe(true);
+          expect(executedInputs).toEqual([
+            {
+              cwd: tmp,
+              args: ["worktree", "add", "-b", "t3code/26cf5c85", expectedPath, currentBranch],
+              timeoutMs: 180_000,
+            },
+          ]);
+        });
+
+        yield* program.pipe(
+          Effect.provide(
+            Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir), NodeServices.layer),
+          ),
+        );
+      }),
+    );
+
     it.effect("worktree has the new branch checked out", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

@@ -27,6 +27,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { GlobalInstructions } from "../../globalInstructions.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
@@ -52,6 +53,7 @@ const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 export type CodexDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
+  | GlobalInstructions
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig;

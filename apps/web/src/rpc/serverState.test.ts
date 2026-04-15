@@ -81,6 +81,8 @@ const baseServerConfig: ServerConfig = {
   keybindingsConfigPath: "/tmp/workspace/.config/keybindings.json",
   keybindings: [],
   issues: [],
+  globalInstructions: [],
+  globalInstructionIssues: [],
   providers: defaultProviders,
   availableEditors: ["cursor"],
   observability: {
@@ -250,7 +252,7 @@ describe("serverState", () => {
     stop();
   });
 
-  it("merges provider, settings, and keybinding updates into the cached config", async () => {
+  it("merges provider, settings, keybinding, and global instruction updates into cached config", async () => {
     serverApi.getConfig.mockResolvedValueOnce(baseServerConfig);
     const configListener = vi.fn();
     const providersListener = vi.fn();
@@ -280,6 +282,21 @@ describe("serverState", () => {
     });
     emitServerConfigEvent({
       version: 1,
+      type: "globalInstructionsUpdated",
+      payload: {
+        globalInstructions: [
+          {
+            id: "caveman.json",
+            name: "Caveman",
+            enabled: true,
+            content: "Prefer concise responses.",
+          },
+        ],
+        globalInstructionIssues: [],
+      },
+    });
+    emitServerConfigEvent({
+      version: 1,
       type: "providerStatuses",
       payload: {
         providers: nextProviders,
@@ -300,6 +317,15 @@ describe("serverState", () => {
       expect(getServerConfig()).toEqual({
         ...baseServerConfig,
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
+        globalInstructions: [
+          {
+            id: "caveman.json",
+            name: "Caveman",
+            enabled: true,
+            content: "Prefer concise responses.",
+          },
+        ],
+        globalInstructionIssues: [],
         providers: nextProviders,
         settings: {
           ...DEFAULT_SERVER_SETTINGS,
@@ -320,6 +346,15 @@ describe("serverState", () => {
     );
     expect(configListener).toHaveBeenNthCalledWith(
       3,
+      {
+        issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
+        providers: defaultProviders,
+        settings: DEFAULT_SERVER_SETTINGS,
+      },
+      "globalInstructionsUpdated",
+    );
+    expect(configListener).toHaveBeenNthCalledWith(
+      4,
       {
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
         providers: nextProviders,

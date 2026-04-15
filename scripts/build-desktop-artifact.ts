@@ -463,7 +463,13 @@ function validateBundledClientAssets(clientDir: string) {
     for (const ref of refs) {
       const normalizedRef = ref.split("#")[0]?.split("?")[0] ?? "";
       if (!normalizedRef) continue;
-      if (normalizedRef.startsWith("http://") || normalizedRef.startsWith("https://")) continue;
+      if (
+        normalizedRef.startsWith("//") ||
+        normalizedRef.startsWith("http://") ||
+        normalizedRef.startsWith("https://")
+      ) {
+        continue;
+      }
       if (normalizedRef.startsWith("data:") || normalizedRef.startsWith("mailto:")) continue;
 
       const ext = path.extname(normalizedRef);
