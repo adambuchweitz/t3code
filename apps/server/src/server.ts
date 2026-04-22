@@ -16,6 +16,7 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ServerLifecycleEventsLive } from "./serverLifecycleEvents.ts";
+import { HookEventsLive } from "./hooks/Services/HookEvents.ts";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
@@ -90,9 +91,14 @@ import {
 } from "./orchestration/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+import {
+  hooksLocalStreamRouteLayer,
+  hooksReportRouteLayer,
+  hooksStreamRouteLayer,
+} from "./hooks/http.ts";
 
 const PtyAdapterLive = Layer.unwrap(
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     if (typeof Bun !== "undefined") {
       const BunPTY = yield* Effect.promise(() => import("./terminal/Layers/BunPTY.ts"));
       return BunPTY.layer;
@@ -104,7 +110,7 @@ const PtyAdapterLive = Layer.unwrap(
 );
 
 const HttpServerLive = Layer.unwrap(
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const config = yield* ServerConfig;
     if (typeof Bun !== "undefined") {
       const BunHttpServer = yield* Effect.promise(
@@ -128,7 +134,7 @@ const HttpServerLive = Layer.unwrap(
 );
 
 const PlatformServicesLive = Layer.unwrap(
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     if (typeof Bun !== "undefined") {
       const { layer } = yield* Effect.promise(() => import("@effect/platform-bun/BunServices"));
       return layer;
@@ -285,6 +291,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsServiceLayerLive),
   Layer.provideMerge(ExternalLauncher.layer),
+  Layer.provideMerge(HookEventsLive),
   Layer.provideMerge(ServerLifecycleEventsLive),
   Layer.provide(NetService.layer),
 );
@@ -305,6 +312,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   authSessionRouteLayer,
   authWebSocketTokenRouteLayer,
   attachmentsRouteLayer,
+  hooksLocalStreamRouteLayer,
+  hooksReportRouteLayer,
+  hooksStreamRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationSnapshotRouteLayer,
   otlpTracesProxyRouteLayer,
@@ -315,13 +325,13 @@ export const makeRoutesLayer = Layer.mergeAll(
 ).pipe(Layer.provide(browserApiCorsLayer));
 
 export const makeServerLayer = Layer.unwrap(
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const config = yield* ServerConfig;
 
     fixPath();
 
     const httpListeningLayer = Layer.effectDiscard(
-      Effect.gen(function* () {
+      Effect.gen(function*() {
         yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup;
         yield* startup.markHttpListening;
@@ -329,7 +339,7 @@ export const makeServerLayer = Layer.unwrap(
     );
     const runtimeStateLayer = Layer.effectDiscard(
       Effect.acquireRelease(
-        Effect.gen(function* () {
+        Effect.gen(function*() {
           const server = yield* HttpServer.HttpServer;
           const address = server.address;
           if (typeof address === "string" || !("port" in address)) {
@@ -350,54 +360,54 @@ export const makeServerLayer = Layer.unwrap(
     );
     const tailscaleServeLayer = config.tailscaleServeEnabled
       ? Layer.effectDiscard(
-          Effect.acquireRelease(
-            Effect.gen(function* () {
-              const server = yield* HttpServer.HttpServer;
-              const address = server.address;
-              if (typeof address === "string" || !("port" in address)) {
-                return null;
-              }
+        Effect.acquireRelease(
+          Effect.gen(function*() {
+            const server = yield* HttpServer.HttpServer;
+            const address = server.address;
+            if (typeof address === "string" || !("port" in address)) {
+              return null;
+            }
 
-              const localPort = address.port;
-              return yield* ensureTailscaleServe({
-                localPort,
-                servePort: config.tailscaleServePort,
-                localHost: "127.0.0.1",
-              }).pipe(
-                Effect.as({ localPort, servePort: config.tailscaleServePort }),
+            const localPort = address.port;
+            return yield* ensureTailscaleServe({
+              localPort,
+              servePort: config.tailscaleServePort,
+              localHost: "127.0.0.1",
+            }).pipe(
+              Effect.as({ localPort, servePort: config.tailscaleServePort }),
+              Effect.tap(() =>
+                Effect.logInfo("Tailscale Serve configured", {
+                  localPort,
+                  servePort: config.tailscaleServePort,
+                }),
+              ),
+              Effect.catch((cause) =>
+                Effect.logWarning("Failed to configure Tailscale Serve", {
+                  cause,
+                  localPort,
+                  servePort: config.tailscaleServePort,
+                }).pipe(Effect.as(null)),
+              ),
+            );
+          }),
+          (configured) =>
+            configured
+              ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
                 Effect.tap(() =>
-                  Effect.logInfo("Tailscale Serve configured", {
-                    localPort,
-                    servePort: config.tailscaleServePort,
+                  Effect.logInfo("Tailscale Serve disabled", {
+                    servePort: configured.servePort,
                   }),
                 ),
                 Effect.catch((cause) =>
-                  Effect.logWarning("Failed to configure Tailscale Serve", {
+                  Effect.logWarning("Failed to disable Tailscale Serve", {
                     cause,
-                    localPort,
-                    servePort: config.tailscaleServePort,
-                  }).pipe(Effect.as(null)),
+                    servePort: configured.servePort,
+                  }),
                 ),
-              );
-            }),
-            (configured) =>
-              configured
-                ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
-                    Effect.tap(() =>
-                      Effect.logInfo("Tailscale Serve disabled", {
-                        servePort: configured.servePort,
-                      }),
-                    ),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Failed to disable Tailscale Serve", {
-                        cause,
-                        servePort: configured.servePort,
-                      }),
-                    ),
-                  )
-                : Effect.void,
-          ),
-        )
+              )
+              : Effect.void,
+        ),
+      )
       : Layer.empty;
 
     const serverApplicationLayer = Layer.mergeAll(

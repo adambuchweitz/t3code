@@ -177,6 +177,11 @@ Use hosted pairing when the backend is reachable from the browser over HTTPS/WSS
 Do not use hosted pairing for plain HTTP LAN URLs such as `http://192.168.x.y:3773`. Browsers block an HTTPS page from connecting to an insecure HTTP or WS backend. For those endpoints, use the direct pairing URL shown by the desktop app or CLI from a client that can open that HTTP URL directly.
 
 Hosted pairing does not proxy traffic through T3 Code. The browser still connects directly to the backend URL in the pairing link.
+For hooks and local automation:
+
+- `GET /api/hooks/local/stream` is unauthenticated, but only available when the backend is loopback-only.
+- Once the backend is exposed beyond loopback, use the authenticated `GET /api/hooks/stream` endpoint instead.
+- See [docs/hooks.md](./docs/hooks.md) for subscription examples.
 
 ## Managing Access Later
 
