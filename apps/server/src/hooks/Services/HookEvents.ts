@@ -9,6 +9,11 @@ interface SnapshotState {
   readonly events: ReadonlyArray<HookEvent>;
 }
 
+interface HookEventSubscription {
+  readonly snapshot: SnapshotState;
+  readonly stream: Stream.Stream<HookEvent>;
+}
+
 interface HookStreamSubscriber {
   readonly id: number;
   readonly publish: (event: HookEvent) => Effect.Effect<void>;
@@ -20,6 +25,7 @@ export interface HookEventsShape {
     readonly report: HookClientEvent;
   }) => Effect.Effect<HookEvent>;
   readonly snapshot: Effect.Effect<SnapshotState>;
+  readonly subscribe: Effect.Effect<HookEventSubscription>;
   readonly stream: Stream.Stream<HookEvent>;
 }
 
@@ -47,6 +53,30 @@ export const HookEventsLive = Layer.effect(
         return next;
       });
 
+    const addSubscriber = Effect.gen(function* () {
+      const queue = yield* Queue.dropping<HookEvent>(HOOK_STREAM_SUBSCRIBER_BUFFER_SIZE);
+      const subscriberId = yield* Ref.modify(nextSubscriberId, (current) => [current, current + 1]);
+      const subscriber = {
+        id: subscriberId,
+        publish: (event: HookEvent) =>
+          Queue.offer(queue, event).pipe(
+            Effect.flatMap((accepted) =>
+              accepted
+                ? Effect.void
+                : removeSubscriber(subscriberId).pipe(
+                    Effect.andThen(Queue.shutdown(queue).pipe(Effect.asVoid)),
+                  ),
+            ),
+          ),
+      } satisfies HookStreamSubscriber;
+      yield* Ref.update(subscribers, (current) => {
+        const next = new Map(current);
+        next.set(subscriberId, subscriber);
+        return next;
+      });
+      return { queue, subscriberId };
+    });
+
     return {
       publish: (input) =>
         Effect.gen(function* () {
@@ -72,40 +102,33 @@ export const HookEventsLive = Layer.effect(
           return event;
         }),
       snapshot: Ref.get(state),
+      subscribe: Effect.gen(function* () {
+        const subscriber = yield* addSubscriber;
+        const snapshot = yield* Ref.get(state);
+        return {
+          snapshot,
+          stream: Stream.unwrap(
+            Effect.acquireRelease(Effect.succeed(subscriber), ({ queue, subscriberId }) =>
+              removeSubscriber(subscriberId).pipe(
+                Effect.andThen(Queue.shutdown(queue).pipe(Effect.asVoid)),
+              ),
+            ).pipe(Effect.map(({ queue }) => Stream.fromQueue(queue))),
+          ),
+        } satisfies HookEventSubscription;
+      }),
       get stream() {
         return Stream.unwrap(
-          Effect.acquireRelease(
-            Effect.gen(function* () {
-              const queue = yield* Queue.dropping<HookEvent>(HOOK_STREAM_SUBSCRIBER_BUFFER_SIZE);
-              const subscriberId = yield* Ref.modify(nextSubscriberId, (current) => [
-                current,
-                current + 1,
-              ]);
-              const subscriber = {
-                id: subscriberId,
-                publish: (event: HookEvent) =>
-                  Queue.offer(queue, event).pipe(
-                    Effect.flatMap((accepted) =>
-                      accepted
-                        ? Effect.void
-                        : removeSubscriber(subscriberId).pipe(
-                            Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                          ),
-                    ),
+          addSubscriber.pipe(
+            Effect.map((subscriber) =>
+              Stream.unwrap(
+                Effect.acquireRelease(Effect.succeed(subscriber), ({ queue, subscriberId }) =>
+                  removeSubscriber(subscriberId).pipe(
+                    Effect.andThen(Queue.shutdown(queue).pipe(Effect.asVoid)),
                   ),
-              } satisfies HookStreamSubscriber;
-              yield* Ref.update(subscribers, (current) => {
-                const next = new Map(current);
-                next.set(subscriberId, subscriber);
-                return next;
-              });
-              return { queue, subscriberId };
-            }),
-            ({ queue, subscriberId }) =>
-              removeSubscriber(subscriberId).pipe(
-                Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                ).pipe(Effect.map(({ queue }) => Stream.fromQueue(queue))),
               ),
-          ).pipe(Effect.map(({ queue }) => Stream.fromQueue(queue))),
+            ),
+          ),
         );
       },
     } satisfies HookEventsShape;

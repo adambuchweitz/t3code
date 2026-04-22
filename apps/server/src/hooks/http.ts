@@ -104,11 +104,12 @@ const buildHooksStreamResponse = Effect.gen(function* () {
   }
 
   const hookEvents = yield* HookEvents;
-  const snapshot = yield* hookEvents.snapshot;
+  const subscription = yield* hookEvents.subscribe;
+  const snapshot = subscription.snapshot;
   const replayEvents = snapshot.events.filter(
     (event) => event.sequence > after && matchesTypeFilter(event, types),
   );
-  const liveEvents = hookEvents.stream.pipe(
+  const liveEvents = subscription.stream.pipe(
     Stream.filter((event) => event.sequence > snapshot.sequence && matchesTypeFilter(event, types)),
     Stream.map(encodeSseEvent),
   );
