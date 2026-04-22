@@ -16,6 +16,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
+  type HookEvent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -85,6 +86,7 @@ import {
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "./serverSettings.ts";
+import { HookEventsLive } from "./hooks/Services/HookEvents.ts";
 import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager.ts";
 import {
   BrowserTraceCollector,
@@ -569,6 +571,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.repositoryIdentityResolver,
         }),
       ),
+      Layer.provideMerge(HookEventsLive),
       Layer.provideMerge(authTestLayer),
       Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
@@ -632,6 +635,30 @@ const getHttpServerUrl = (pathname = "") =>
     const server = yield* HttpServer.HttpServer;
     const address = server.address as HttpServer.TcpAddress;
     return `http://127.0.0.1:${address.port}${pathname}`;
+  });
+
+const readFirstSseEvent = (response: Response) =>
+  Effect.gen(function* () {
+    if (!response.body) {
+      return yield* Effect.fail(new Error("Expected SSE response body."));
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = yield* Effect.promise(() => reader.read());
+      if (done) {
+        return yield* Effect.fail(new Error("SSE stream ended before the first event."));
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const delimiterIndex = buffer.indexOf("\n\n");
+      if (delimiterIndex >= 0) {
+        return buffer.slice(0, delimiterIndex + 2);
+      }
+    }
   });
 
 const bootstrapBrowserSession = (
@@ -1437,6 +1464,168 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
         assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
         assert.equal(response.auth.policy, "desktop-managed-local");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams reported hook events over the authenticated SSE endpoint", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const reportUrl = yield* getHttpServerUrl("/api/hooks/report");
+      const reportResponse = yield* Effect.promise(() =>
+        fetch(reportUrl, {
+          method: "POST",
+          headers: {
+            cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            type: "thread.focused",
+            payload: {
+              environmentId: testEnvironmentDescriptor.environmentId,
+              threadId: defaultThreadId,
+              projectId: defaultProjectId,
+              title: "Default Thread",
+              branch: "feature/hooks",
+              worktreePath: "/tmp/default-project/.worktrees/hooks",
+            },
+          }),
+        }),
+      );
+
+      assert.equal(reportResponse.status, 204);
+
+      const streamController = new AbortController();
+      const streamUrl = yield* getHttpServerUrl("/api/hooks/stream?after=0&types=thread.focused");
+      const streamResponse = yield* Effect.promise(() =>
+        fetch(streamUrl, {
+          headers: {
+            accept: "text/event-stream",
+            cookie,
+          },
+          signal: streamController.signal,
+        }),
+      );
+
+      assert.equal(streamResponse.status, 200);
+      assert.equal(streamResponse.headers.get("content-type"), "text/event-stream; charset=utf-8");
+
+      const rawEvent = yield* readFirstSseEvent(streamResponse);
+      streamController.abort();
+
+      const dataLine = rawEvent
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+      if (!dataLine) {
+        return yield* Effect.fail(new Error(`Expected SSE data line, got: ${rawEvent}`));
+      }
+
+      const event = JSON.parse(dataLine) as HookEvent;
+      assert.equal(event.type, "thread.focused");
+      assert.equal(event.payload.threadId, defaultThreadId);
+      assert.equal(event.payload.projectId, defaultProjectId);
+      assert.equal(event.payload.branch, "feature/hooks");
+      assert.equal(event.payload.worktreePath, "/tmp/default-project/.worktrees/hooks");
+      assert.equal(event.source.role, "owner");
+      assert.equal(event.source.sessionMethod, "browser-session-cookie");
+      assert.equal(event.sequence, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("streams reported hook events over the unauthenticated local SSE endpoint", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const reportUrl = yield* getHttpServerUrl("/api/hooks/report");
+      const reportResponse = yield* Effect.promise(() =>
+        fetch(reportUrl, {
+          method: "POST",
+          headers: {
+            cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            type: "thread.focused",
+            payload: {
+              environmentId: testEnvironmentDescriptor.environmentId,
+              threadId: defaultThreadId,
+              projectId: defaultProjectId,
+              title: "Default Thread",
+              branch: "feature/hooks-local",
+              worktreePath: "/tmp/default-project/.worktrees/hooks-local",
+            },
+          }),
+        }),
+      );
+
+      assert.equal(reportResponse.status, 204);
+
+      const streamController = new AbortController();
+      const streamUrl = yield* getHttpServerUrl(
+        "/api/hooks/local/stream?after=0&types=thread.focused",
+      );
+      const streamResponse = yield* Effect.promise(() =>
+        fetch(streamUrl, {
+          headers: {
+            accept: "text/event-stream",
+          },
+          signal: streamController.signal,
+        }),
+      );
+
+      assert.equal(streamResponse.status, 200);
+      assert.equal(streamResponse.headers.get("content-type"), "text/event-stream; charset=utf-8");
+
+      const rawEvent = yield* readFirstSseEvent(streamResponse);
+      streamController.abort();
+
+      const dataLine = rawEvent
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+      if (!dataLine) {
+        return yield* Effect.fail(new Error(`Expected SSE data line, got: ${rawEvent}`));
+      }
+
+      const event = JSON.parse(dataLine) as HookEvent;
+      assert.equal(event.type, "thread.focused");
+      assert.equal(event.payload.threadId, defaultThreadId);
+      assert.equal(event.payload.branch, "feature/hooks-local");
+      assert.equal(event.source.role, "owner");
+      assert.equal(event.sequence, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "rejects the unauthenticated local hooks stream when the server is remote-reachable",
+    () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          config: {
+            host: "0.0.0.0",
+          },
+        });
+
+        const streamUrl = yield* getHttpServerUrl("/api/hooks/local/stream");
+        const response = yield* Effect.promise(() =>
+          fetch(streamUrl, {
+            headers: {
+              accept: "text/event-stream",
+            },
+          }),
+        );
+        const body = (yield* Effect.promise(() => response.json())) as {
+          readonly error?: string;
+        };
+
+        assert.equal(response.status, 403);
+        assert.equal(
+          body.error,
+          "Unauthenticated local hooks are only available when the server is bound to loopback.",
+        );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

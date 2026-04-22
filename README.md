@@ -47,6 +47,7 @@ We are very very early in this project. Expect bugs.
 We are not accepting contributions yet.
 
 Observability guide: [docs/observability.md](./docs/observability.md)
+Hooks guide: [docs/hooks.md](./docs/hooks.md) for local no-auth loopback subscribers and authenticated remote subscribers
 
 ## If you REALLY want to contribute still.... read this first
 

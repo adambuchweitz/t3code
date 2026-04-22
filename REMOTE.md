@@ -67,6 +67,12 @@ Instead:
 
 After pairing, future access is session-based. You do not need to keep reusing the original token unless you are pairing a new device.
 
+For hooks and local automation:
+
+- `GET /api/hooks/local/stream` is unauthenticated, but only available when the backend is loopback-only.
+- Once the backend is exposed beyond loopback, use the authenticated `GET /api/hooks/stream` endpoint instead.
+- See [docs/hooks.md](./docs/hooks.md) for subscription examples.
+
 ## Managing Access Later
 
 Use `t3 auth` to manage access after the initial pairing flow.

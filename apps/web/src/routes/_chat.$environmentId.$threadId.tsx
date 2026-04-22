@@ -1,5 +1,5 @@
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
@@ -21,6 +21,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
+import { reportThreadFocusedHook } from "../hooksClient";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
@@ -172,6 +173,7 @@ function ChatThreadRouteView() {
     threadKey: currentThreadKey,
     hasOpenedDiff: diffOpen,
   }));
+  const lastReportedHookThreadKeyRef = useRef<string | null>(null);
   const hasOpenedDiff =
     diffPanelMountState.threadKey === currentThreadKey
       ? diffPanelMountState.hasOpenedDiff
@@ -228,6 +230,32 @@ function ChatThreadRouteView() {
     }
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
+
+  useEffect(() => {
+    if (!threadRef || !serverThread) {
+      return;
+    }
+
+    const threadKey = `${threadRef.environmentId}:${threadRef.threadId}`;
+    if (lastReportedHookThreadKeyRef.current === threadKey) {
+      return;
+    }
+    lastReportedHookThreadKeyRef.current = threadKey;
+
+    void reportThreadFocusedHook({
+      environmentId: threadRef.environmentId,
+      threadId: threadRef.threadId,
+      projectId: serverThread.projectId,
+      title: serverThread.title,
+      branch: serverThread.branch,
+      worktreePath: serverThread.worktreePath,
+    }).catch((error) => {
+      console.warn("Failed to report thread.focused hook", {
+        error: error instanceof Error ? error.message : String(error),
+        threadKey,
+      });
+    });
+  }, [serverThread, threadRef]);
 
   if (!threadRef || !bootstrapComplete || !routeThreadExists) {
     return null;
