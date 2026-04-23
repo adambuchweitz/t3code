@@ -41,6 +41,8 @@ import {
   issueHeadlessServeAccessInfo,
 } from "./startupAccess.ts";
 
+const SERVER_MEMORY_TELEMETRY_INTERVAL = "1 minute";
+
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
   readonly message: string;
   readonly cause?: unknown;
@@ -153,6 +155,34 @@ export const launchStartupHeartbeat = recordStartupHeartbeat.pipe(
   Effect.forkScoped,
   Effect.asVoid,
 );
+
+const logServerMemorySnapshot = Effect.fn("logServerMemorySnapshot")(function* () {
+  const usage = process.memoryUsage();
+  const resourceUsage = process.resourceUsage();
+
+  yield* Effect.logInfo("server.memory.snapshot", {
+    pid: process.pid,
+    uptimeSeconds: Math.round(process.uptime()),
+    rssBytes: usage.rss,
+    heapTotalBytes: usage.heapTotal,
+    heapUsedBytes: usage.heapUsed,
+    externalBytes: usage.external,
+    arrayBuffersBytes: usage.arrayBuffers,
+    maxRssKiB: resourceUsage.maxRSS,
+  });
+});
+
+export const launchServerMemoryTelemetry = Effect.gen(function* () {
+  yield* logServerMemorySnapshot();
+  return yield* Effect.forever(
+    Effect.sleep(SERVER_MEMORY_TELEMETRY_INTERVAL).pipe(
+      Effect.flatMap(() => logServerMemorySnapshot()),
+    ),
+    {
+      disableYield: true,
+    },
+  );
+}).pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped, Effect.asVoid);
 
 export const getAutoBootstrapDefaultModelSelection = (): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
@@ -431,6 +461,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
 
       yield* Effect.logDebug("startup phase: recording startup heartbeat");
       yield* launchStartupHeartbeat;
+      yield* Effect.logDebug("startup phase: starting memory telemetry");
+      yield* launchServerMemoryTelemetry;
       if (serverConfig.startupPresentation === "headless") {
         yield* Effect.logDebug("startup phase: headless access info");
         const accessInfo = yield* issueHeadlessServeAccessInfo();

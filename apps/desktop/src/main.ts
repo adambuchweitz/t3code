@@ -76,6 +76,7 @@ import {
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch.ts";
 import { resolveDesktopAppBranding } from "./appBranding.ts";
 import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.ts";
+import { summarizeDesktopMemoryTelemetry } from "./memoryTelemetry.ts";
 
 syncShellEnvironment();
 
@@ -129,6 +130,7 @@ const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const SERVER_SETTINGS_PATH = Path.join(STATE_DIR, "settings.json");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const DESKTOP_MEMORY_TELEMETRY_INTERVAL_MS = 60_000;
 
 function resolvePickFolderDefaultPath(rawOptions: unknown): string | undefined {
   if (typeof rawOptions !== "object" || rawOptions === null) {
@@ -366,6 +368,7 @@ function relaunchDesktopApp(reason: string): void {
   setImmediate(() => {
     isQuitting = true;
     clearUpdatePollTimer();
+    clearDesktopMemoryTelemetryTimer();
     cancelBackendReadinessWait();
     void stopBackendAndWaitForExit()
       .catch((error) => {
@@ -391,6 +394,14 @@ function relaunchDesktopApp(reason: string): void {
 function writeDesktopLogHeader(message: string): void {
   if (!desktopLogSink) return;
   desktopLogSink.write(`[${logTimestamp()}] [${logScope("desktop")}] ${message}\n`);
+}
+
+function writeDesktopOperationalLog(message: string): void {
+  if (desktopLogSink) {
+    writeDesktopLogHeader(message);
+    return;
+  }
+  console.info(`[desktop] ${message}`);
 }
 
 function writeBackendSessionBoundary(phase: "START" | "END", details: string): void {
@@ -580,6 +591,38 @@ function initializePackagedLogging(): void {
   }
 }
 
+function clearDesktopMemoryTelemetryTimer(): void {
+  if (desktopMemoryTelemetryTimer !== null) {
+    clearInterval(desktopMemoryTelemetryTimer);
+    desktopMemoryTelemetryTimer = null;
+  }
+}
+
+function writeDesktopMemorySnapshot(): void {
+  try {
+    const snapshot = summarizeDesktopMemoryTelemetry({
+      browserProcessPid: process.pid,
+      backendPid: backendProcess?.pid ?? null,
+      uptimeSeconds: Math.round(process.uptime()),
+      windowCount: BrowserWindow.getAllWindows().length,
+      appMetrics: app.getAppMetrics(),
+    });
+    writeDesktopOperationalLog(`memory snapshot ${JSON.stringify(snapshot)}`);
+  } catch (error) {
+    writeDesktopOperationalLog(
+      `memory snapshot warning message=${sanitizeLogValue(formatErrorMessage(error))}`,
+    );
+  }
+}
+
+function startDesktopMemoryTelemetry(): void {
+  clearDesktopMemoryTelemetryTimer();
+  writeDesktopMemorySnapshot();
+  desktopMemoryTelemetryTimer = setInterval(() => {
+    writeDesktopMemorySnapshot();
+  }, DESKTOP_MEMORY_TELEMETRY_INTERVAL_MS);
+}
+
 function captureBackendOutput(child: ChildProcess.ChildProcess): void {
   const attachStream = (stream: NodeJS.ReadableStream | null | undefined): void => {
     stream?.on("data", (chunk: unknown) => {
@@ -623,6 +666,7 @@ function getDestructiveMenuIcon(): Electron.NativeImage | undefined {
 }
 let updatePollTimer: ReturnType<typeof setInterval> | null = null;
 let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
+let desktopMemoryTelemetryTimer: ReturnType<typeof setInterval> | null = null;
 let updateCheckInFlight = false;
 let updateDownloadInFlight = false;
 let updateInstallInFlight = false;
@@ -794,6 +838,7 @@ function handleFatalStartupError(stage: string, error: unknown): void {
     isQuitting = true;
     dialog.showErrorBox("T3 Code failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
+  clearDesktopMemoryTelemetryTimer();
   stopBackend();
   restoreStdIoCapture?.();
   app.quit();
@@ -2108,6 +2153,7 @@ app.on("before-quit", () => {
   updateInstallInFlight = false;
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
+  clearDesktopMemoryTelemetryTimer();
   cancelBackendReadinessWait();
   stopBackend();
   restoreStdIoCapture?.();
@@ -2117,6 +2163,7 @@ app
   .whenReady()
   .then(() => {
     writeDesktopLogHeader("app ready");
+    startDesktopMemoryTelemetry();
     configureAppIdentity();
     configureApplicationMenu();
     registerDesktopProtocol();
@@ -2157,6 +2204,7 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
+    clearDesktopMemoryTelemetryTimer();
     cancelBackendReadinessWait();
     stopBackend();
     restoreStdIoCapture?.();
@@ -2168,6 +2216,7 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
+    clearDesktopMemoryTelemetryTimer();
     stopBackend();
     restoreStdIoCapture?.();
     app.quit();
