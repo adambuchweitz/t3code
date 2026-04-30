@@ -93,6 +93,9 @@ import {
   ServerLifecycleStreamEvent,
   ServerRemoveKeybindingInput,
   ServerRemoveKeybindingResult,
+  ServerProviderLoginError,
+  ServerProviderLoginInput,
+  ServerProviderLoginResult,
   ServerProviderUpdatedPayload,
   ServerTraceDiagnosticsResult,
   ServerProcessDiagnosticsResult,
@@ -161,6 +164,7 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
+  serverLoginProvider: "server.loginProvider",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
@@ -225,6 +229,12 @@ export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvide
   payload: ServerProviderUpdateInput,
   success: ServerProviderUpdatedPayload,
   error: Schema.Union([ServerProviderUpdateError, EnvironmentAuthorizationError]),
+});
+
+export const WsServerLoginProviderRpc = Rpc.make(WS_METHODS.serverLoginProvider, {
+  payload: ServerProviderLoginInput,
+  success: ServerProviderLoginResult,
+  error: ServerProviderLoginError,
 });
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
@@ -549,6 +559,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
+  WsServerLoginProviderRpc,
   WsServerUpsertKeybindingRpc,
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,

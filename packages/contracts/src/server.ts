@@ -434,6 +434,27 @@ export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.T
 export const ServerRemoveKeybindingResult = ServerUpsertKeybindingResult;
 export type ServerRemoveKeybindingResult = typeof ServerRemoveKeybindingResult.Type;
 
+export const ServerProviderLoginInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+});
+export type ServerProviderLoginInput = typeof ServerProviderLoginInput.Type;
+
+export const ServerProviderLoginResult = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  command: TrimmedNonEmptyString,
+  homePath: TrimmedNonEmptyString,
+});
+export type ServerProviderLoginResult = typeof ServerProviderLoginResult.Type;
+
+export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProviderLoginError>()(
+  "ServerProviderLoginError",
+  {
+    instanceId: ProviderInstanceId,
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
 export const ServerConfigUpdatedPayload = Schema.Struct({
   issues: ServerConfigIssues,
   providers: ServerProviders,

@@ -1,3 +1,5 @@
+import * as NodeOS from "node:os";
+
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -5,11 +7,14 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
+  CodexSettings,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -38,6 +43,9 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
+  ProviderDriverKind,
+  type ProviderInstanceId,
+  ServerProviderLoginError,
   FilesystemBrowseError,
   EnvironmentAuthorizationError,
   ThreadId,
@@ -69,6 +77,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
@@ -100,21 +109,73 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { expandHomePath } from "./pathExpansion.ts";
+
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+
+const resolveCodexLoginHomePath = Effect.fn("ws.resolveCodexLoginHomePath")(function*(
+  config: CodexSettings,
+) {
+  const path = yield* Path.Path;
+  const shadowHomePath = config.shadowHomePath.trim();
+  if (shadowHomePath.length > 0) {
+    return path.resolve(expandHomePath(shadowHomePath));
+  }
+  const homePath = config.homePath.trim();
+  if (homePath.length > 0) {
+    return path.resolve(expandHomePath(homePath));
+  }
+  return path.join(NodeOS.homedir(), ".codex");
+});
+
+const spawnCodexLogin = Effect.fn("ws.spawnCodexLogin")(function*(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly command: string;
+  readonly homePath: string;
+}) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const command = ChildProcess.make(input.command, ["login"], {
+    detached: true,
+    env: {
+      ...process.env,
+      CODEX_HOME: input.homePath,
+    },
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+
+  yield* spawner.spawn(command).pipe(
+    Effect.flatMap((handle) => handle.unref),
+    Effect.scoped,
+    Effect.asVoid,
+    Effect.mapError(
+      (cause) =>
+        new ServerProviderLoginError({
+          instanceId: input.instanceId,
+          message: "Failed to start codex login.",
+          cause,
+        }),
+    ),
+  );
+});
+
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
   {
     type:
-      | "thread.message-sent"
-      | "thread.proposed-plan-upserted"
-      | "thread.activity-appended"
-      | "thread.turn-diff-completed"
-      | "thread.reverted"
-      | "thread.session-set";
+    | "thread.message-sent"
+    | "thread.proposed-plan-upserted"
+    | "thread.activity-appended"
+    | "thread.turn-diff-completed"
+    | "thread.reverted"
+    | "thread.session-set";
   }
 > {
   return (
@@ -227,7 +288,7 @@ function toAuthAccessStreamEvent(
 
 const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
   WsRpcGroup.toLayer(
-    Effect.gen(function* () {
+    Effect.gen(function*() {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -331,9 +392,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         isOrchestrationDispatchCommandError(cause)
           ? cause
           : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
+            message: cause instanceof Error ? cause.message : fallbackMessage,
+            cause,
+          });
       const randomUUID = crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>
           toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
@@ -392,10 +453,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         return isOrchestrationDispatchCommandError(error)
           ? error
           : new OrchestrationDispatchCommandError({
-              message:
-                error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
-              cause,
-            });
+            message:
+              error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
+            cause,
+          });
       };
 
       const enrichProjectEvent = (
@@ -413,7 +474,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               })),
             );
           case "project.meta-updated":
-            return Effect.gen(function* () {
+            return Effect.gen(function*() {
               const workspaceRoot =
                 event.payload.workspaceRoot ??
                 Option.match(
@@ -511,7 +572,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
-        Effect.gen(function* () {
+        Effect.gen(function*() {
           const bootstrap = command.bootstrap;
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
@@ -522,15 +583,15 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           const cleanupCreatedThread = () =>
             createdThread
               ? serverCommandId("bootstrap-thread-delete").pipe(
-                  Effect.flatMap((commandId) =>
-                    orchestrationEngine.dispatch({
-                      type: "thread.delete",
-                      commandId,
-                      threadId: command.threadId,
-                    }),
-                  ),
-                  Effect.ignoreCause({ log: true }),
-                )
+                Effect.flatMap((commandId) =>
+                  orchestrationEngine.dispatch({
+                    type: "thread.delete",
+                    commandId,
+                    threadId: command.threadId,
+                  }),
+                ),
+                Effect.ignoreCause({ log: true }),
+              )
               : Effect.void;
 
           const recordSetupScriptLaunchFailure = (input: {
@@ -569,7 +630,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             readonly scriptName: string;
             readonly terminalId: string;
           }) =>
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const startedAt = yield* nowIso;
               const payload = {
                 scriptId: input.scriptId,
@@ -612,7 +673,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             });
 
           const runSetupProgram = () =>
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               if (!bootstrap?.runSetupScript || !targetWorktreePath) {
                 return;
               }
@@ -649,7 +710,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 );
             });
 
-          const bootstrapProgram = Effect.gen(function* () {
+          const bootstrapProgram = Effect.gen(function*() {
             if (bootstrap?.createThread) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.create",
@@ -708,12 +769,12 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
             : orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                  ),
-                );
+              .dispatch(normalizedCommand)
+              .pipe(
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                ),
+              );
 
         return startup
           .enqueueCommand(dispatchEffect)
@@ -724,7 +785,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           );
       };
 
-      const loadServerConfig = Effect.gen(function* () {
+      const loadServerConfig = Effect.gen(function*() {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
         const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
@@ -763,7 +824,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const normalizedCommand = yield* normalizeDispatchCommand(command);
               const shouldStopSessionAfterArchive =
                 normalizedCommand.type === "thread.archive"
@@ -783,7 +844,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
               if (normalizedCommand.type === "thread.archive") {
                 if (shouldStopSessionAfterArchive) {
-                  yield* Effect.gen(function* () {
+                  yield* Effect.gen(function*() {
                     const stopCommand = yield* normalizeDispatchCommand({
                       type: "thread.session.stop",
                       commandId: CommandId.make(
@@ -819,9 +880,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 isOrchestrationDispatchCommandError(cause)
                   ? cause
                   : new OrchestrationDispatchCommandError({
-                      message: "Failed to dispatch orchestration command",
-                      cause,
-                    }),
+                    message: "Failed to dispatch orchestration command",
+                    cause,
+                  }),
               ),
             ),
             { "rpc.aggregate": "orchestration" },
@@ -880,7 +941,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
                   Effect.logError("orchestration shell snapshot load failed", { cause }),
@@ -931,7 +992,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const [threadDetail, snapshotSequence] = yield* Effect.all([
                 projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
                   Effect.mapError(
@@ -1008,10 +1069,63 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverLoginProvider]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverLoginProvider,
+            Effect.gen(function*() {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerProviderLoginError({
+                      instanceId: input.instanceId,
+                      message: "Failed to read provider settings.",
+                      cause,
+                    }),
+                ),
+              );
+              const instances = deriveProviderInstanceConfigMap(settings);
+              const instance = instances[input.instanceId];
+              if (!instance) {
+                return yield* new ServerProviderLoginError({
+                  instanceId: input.instanceId,
+                  message: `Provider instance '${input.instanceId}' was not found.`,
+                });
+              }
+              if (instance.driver !== CODEX_DRIVER_KIND) {
+                return yield* new ServerProviderLoginError({
+                  instanceId: input.instanceId,
+                  message: `Provider instance '${input.instanceId}' is not a Codex instance.`,
+                });
+              }
+
+              const config = yield* decodeCodexSettings(instance.config ?? {}).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerProviderLoginError({
+                      instanceId: input.instanceId,
+                      message: `Provider instance '${input.instanceId}' has invalid Codex settings.`,
+                      cause,
+                    }),
+                ),
+              );
+              const homePath = yield* resolveCodexLoginHomePath(config);
+              yield* spawnCodexLogin({
+                instanceId: input.instanceId,
+                command: config.binaryPath,
+                homePath,
+              });
+              return {
+                instanceId: input.instanceId,
+                command: `${config.binaryPath} login`,
+                homePath,
+              };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
           observeRpcEffect(
             WS_METHODS.serverUpsertKeybinding,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const keybindingsConfig = yield* keybindings.upsertKeybindingRule(rule);
               return { keybindings: keybindingsConfig, issues: [] };
             }),
@@ -1020,7 +1134,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.serverRemoveKeybinding]: (rule) =>
           observeRpcEffect(
             WS_METHODS.serverRemoveKeybinding,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const keybindingsConfig = yield* keybindings.removeKeybindingRule(rule);
               return { keybindings: keybindingsConfig, issues: [] };
             }),
@@ -1353,7 +1467,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.subscribeServerConfig]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const keybindingsUpdates = keybindings.streamChanges.pipe(
                 Stream.map((event) => ({
                   version: 1 as const,
@@ -1404,7 +1518,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.subscribeServerLifecycle]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerLifecycle,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const snapshot = yield* lifecycleEvents.snapshot;
               const snapshotEvents = Array.from(snapshot.events).toSorted(
                 (left, right) => left.sequence - right.sequence,
@@ -1419,7 +1533,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
-            Effect.gen(function* () {
+            Effect.gen(function*() {
               const initialSnapshot = yield* loadAuthAccessSnapshot();
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
@@ -1457,7 +1571,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     HttpRouter.add(
       "GET",
       "/ws",
-      Effect.gen(function* () {
+      Effect.gen(function*() {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
         const sessions = yield* SessionStore.SessionStore;

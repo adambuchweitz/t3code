@@ -26,9 +26,10 @@ import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
 import { toastManager } from "../ui/toast";
+import { AnimatedHeight } from "../AnimatedHeight";
+import { buildProviderInstanceDriverConfig } from "./AddProviderInstanceDialog.logic";
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
 import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSettingsForm";
-import { AnimatedHeight } from "../AnimatedHeight";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -187,8 +188,11 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null) return;
 
-    const config = configByDriver[driver] ?? {};
-    const hasConfig = Object.keys(config).length > 0;
+    const config = buildProviderInstanceDriverConfig({
+      driver,
+      config: configByDriver[driver],
+      instanceId,
+    });
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
     const nextInstance: ProviderInstanceConfig = {
@@ -196,7 +200,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
       enabled: true,
       ...(label.trim().length > 0 ? { displayName: label.trim() } : {}),
       ...(normalizedAccentColor ? { accentColor: normalizedAccentColor } : {}),
-      ...(hasConfig ? { config } : {}),
+      ...(config ? { config } : {}),
     };
     // `ProviderInstanceId.make` revalidates the slug; we've already checked
     // it via `validateInstanceId`, but going through the brand constructor

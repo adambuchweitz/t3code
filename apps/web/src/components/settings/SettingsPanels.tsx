@@ -922,6 +922,7 @@ export function ProviderSettingsPanel() {
   const serverProviders = useServerProviders();
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [loggingInProviderId, setLoggingInProviderId] = useState<string | null>(null);
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
     ReadonlySet<ProviderDriverKind>
   >(() => new Set());
@@ -967,6 +968,30 @@ export function ProviderSettingsPanel() {
         refreshingRef.current = false;
         setIsRefreshingProviders(false);
       });
+  }, []);
+
+  const loginProvider = useCallback(async (instanceId: ProviderInstanceId) => {
+    const key = String(instanceId);
+    setLoggingInProviderId(key);
+    try {
+      const result = await ensureLocalApi().server.loginProvider({ instanceId });
+      toastManager.add({
+        type: "success",
+        title: "Codex login started",
+        description: `Started ${result.command} with CODEX_HOME=${result.homePath}.`,
+      });
+      await ensureLocalApi()
+        .server.refreshProviders({ instanceId })
+        .catch(() => undefined);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not start Codex login",
+        description: error instanceof Error ? error.message : "Login command failed.",
+      });
+    } finally {
+      setLoggingInProviderId((current) => (current === key ? null : current));
+    }
   }, []);
 
   const runProviderUpdate = useCallback(async (candidate: ProviderUpdateCandidate) => {
@@ -1325,6 +1350,12 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onLogin={
+                row.driver === ProviderDriverKind.make("codex")
+                  ? () => void loginProvider(row.instanceId)
+                  : undefined
+              }
+              loginInProgress={loggingInProviderId === row.instanceId}
             />
           );
         })}
