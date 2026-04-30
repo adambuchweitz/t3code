@@ -559,6 +559,7 @@ export function GeneralSettingsPanel() {
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [loggingInProviderId, setLoggingInProviderId] = useState<string | null>(null);
   // Collapsible state per provider-instance card, keyed by the instance id.
   // `Record<string, boolean>` so we don't need to preseed an entry for every
   // configured instance — an absent key reads as collapsed. Default-slot
@@ -581,6 +582,29 @@ export function GeneralSettingsPanel() {
         refreshingRef.current = false;
         setIsRefreshingProviders(false);
       });
+  }, []);
+
+  const loginProvider = useCallback(async (instanceId: ProviderInstanceId) => {
+    setLoggingInProviderId(instanceId);
+    try {
+      const result = await ensureLocalApi().server.loginProvider({ instanceId });
+      toastManager.add({
+        type: "success",
+        title: "Codex login started",
+        description: `Started ${result.command} with CODEX_HOME=${result.homePath}.`,
+      });
+      await ensureLocalApi()
+        .server.refreshProviders({ instanceId })
+        .catch(() => undefined);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not start Codex login",
+        description: error instanceof Error ? error.message : "Login command failed.",
+      });
+    } finally {
+      setLoggingInProviderId(null);
+    }
   }, []);
 
   const keybindingsConfigPath = useServerKeybindingsConfigPath();
@@ -1527,6 +1551,12 @@ export function GeneralSettingsPanel() {
                   modelOrder,
                 })
               }
+              onLogin={
+                row.driver === ProviderDriverKind.make("codex")
+                  ? () => void loginProvider(row.instanceId)
+                  : undefined
+              }
+              loginInProgress={loggingInProviderId === row.instanceId}
             />
           );
         })}

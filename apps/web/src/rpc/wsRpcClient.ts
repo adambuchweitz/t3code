@@ -109,6 +109,7 @@ export interface WsRpcClient {
     readonly refreshProviders: (
       input?: RpcInput<typeof WS_METHODS.serverRefreshProviders>,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverRefreshProviders>>;
+    readonly loginProvider: RpcUnaryMethod<typeof WS_METHODS.serverLoginProvider>;
     readonly upsertKeybinding: RpcUnaryMethod<typeof WS_METHODS.serverUpsertKeybinding>;
     readonly createGlobalInstruction: RpcUnaryMethod<
       typeof WS_METHODS.serverCreateGlobalInstruction
@@ -220,6 +221,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
       refreshProviders: (input) =>
         transport.request((client) => client[WS_METHODS.serverRefreshProviders](input ?? {})),
+      loginProvider: (input) =>
+        transport.request((client) => client[WS_METHODS.serverLoginProvider](input)),
       upsertKeybinding: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpsertKeybinding](input)),
       createGlobalInstruction: (input) =>

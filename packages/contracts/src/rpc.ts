@@ -74,6 +74,9 @@ import {
   ServerCreateGlobalInstructionInput,
   ServerGlobalInstructionsResult,
   ServerLifecycleStreamEvent,
+  ServerProviderLoginError,
+  ServerProviderLoginInput,
+  ServerProviderLoginResult,
   ServerProviderUpdatedPayload,
   ServerSetGlobalInstructionEnabledInput,
   ServerUpsertKeybindingInput,
@@ -120,6 +123,7 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverLoginProvider: "server.loginProvider",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverCreateGlobalInstruction: "server.createGlobalInstruction",
   serverSetGlobalInstructionEnabled: "server.setGlobalInstructionEnabled",
@@ -176,6 +180,11 @@ export const WsServerSetGlobalInstructionEnabledRpc = Rpc.make(
     error: GlobalInstructionsConfigError,
   },
 );
+export const WsServerLoginProviderRpc = Rpc.make(WS_METHODS.serverLoginProvider, {
+  payload: ServerProviderLoginInput,
+  success: ServerProviderLoginResult,
+  error: ServerProviderLoginError,
+});
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
   payload: Schema.Struct({}),
@@ -391,6 +400,7 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerLoginProviderRpc,
   WsServerUpsertKeybindingRpc,
   WsServerCreateGlobalInstructionRpc,
   WsServerSetGlobalInstructionEnabledRpc,

@@ -112,6 +112,7 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
     server: {
       getConfig: rpcClient.server.getConfig,
       refreshProviders: rpcClient.server.refreshProviders,
+      loginProvider: rpcClient.server.loginProvider,
       upsertKeybinding: rpcClient.server.upsertKeybinding,
       createGlobalInstruction: rpcClient.server.createGlobalInstruction,
       setGlobalInstructionEnabled: rpcClient.server.setGlobalInstructionEnabled,

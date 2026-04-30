@@ -78,6 +78,7 @@ const rpcClientMock = {
   server: {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),
+    loginProvider: vi.fn(),
     upsertKeybinding: vi.fn(),
     createGlobalInstruction: vi.fn(),
     setGlobalInstructionEnabled: vi.fn(),
@@ -478,6 +479,25 @@ describe("wsApi", () => {
 
     await expect(api.server.refreshProviders()).resolves.toEqual({ providers: nextProviders });
     expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith();
+  });
+
+  it("forwards provider login requests directly to the RPC client", async () => {
+    const result = {
+      instanceId: ProviderInstanceId.make("codex_work"),
+      command: "codex login",
+      homePath: "/home/example/.codex-t3/codex_work",
+    };
+    rpcClientMock.server.loginProvider.mockResolvedValue(result);
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(api.server.loginProvider({ instanceId: result.instanceId })).resolves.toEqual(
+      result,
+    );
+    expect(rpcClientMock.server.loginProvider).toHaveBeenCalledWith({
+      instanceId: result.instanceId,
+    });
   });
 
   it("forwards server settings updates directly to the RPC client", async () => {

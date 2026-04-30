@@ -30,6 +30,8 @@ import type {
   ServerConfig,
   ServerCreateGlobalInstructionInput,
   ServerGlobalInstructionsResult,
+  ServerProviderLoginInput,
+  ServerProviderLoginResult,
   ServerProviderUpdatedPayload,
   ServerSetGlobalInstructionEnabledInput,
   ServerUpsertKeybindingResult,
@@ -227,6 +229,7 @@ export interface LocalApi {
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
     }) => Promise<ServerProviderUpdatedPayload>;
+    loginProvider: (input: ServerProviderLoginInput) => Promise<ServerProviderLoginResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     createGlobalInstruction: (
       input: ServerCreateGlobalInstructionInput,

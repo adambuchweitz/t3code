@@ -26,6 +26,7 @@ import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
 import { toastManager } from "../ui/toast";
+import { buildProviderInstanceDriverConfig } from "./AddProviderInstanceDialog.logic";
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS, type DriverOption } from "./providerDriverMeta";
 
 const PROVIDER_ACCENT_SWATCHES = [
@@ -180,11 +181,12 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
     // Build the config blob from non-empty driver-specific field values.
     // Empty strings are dropped so defaults remain in effect on the server.
-    const config: Record<string, string> = {};
-    for (const field of driverOption.fields) {
-      const value = (fieldValues[`${driver}:${field.key}`] ?? "").trim();
-      if (value.length > 0) config[field.key] = value;
-    }
+    const config = buildProviderInstanceDriverConfig({
+      driver,
+      driverOption,
+      fieldValues,
+      instanceId,
+    });
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 

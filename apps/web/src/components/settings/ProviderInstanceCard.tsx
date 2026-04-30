@@ -480,6 +480,8 @@ interface ProviderInstanceCardProps {
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
+  readonly onLogin?: (() => void) | undefined;
+  readonly loginInProgress?: boolean | undefined;
 }
 
 /**
@@ -522,6 +524,8 @@ export function ProviderInstanceCard({
   onHiddenModelsChange,
   onFavoriteModelsChange,
   onModelOrderChange,
+  onLogin,
+  loginInProgress,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -534,6 +538,7 @@ export function ProviderInstanceCard({
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());
+  const isUnauthenticated = liveProvider?.auth.status === "unauthenticated";
   const authenticatedDetail = hasAuthenticatedEmail
     ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
     : null;
@@ -687,21 +692,35 @@ export function ProviderInstanceCard({
                 </span>
               ) : null}
             </div>
-            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
-              {hasAuthenticatedEmail ? (
-                <>
-                  <span>Authenticated as</span>
-                  <ProviderAuthEmail email={authEmail} />
-                  {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
-                </>
-              ) : (
-                <>
-                  <span>{summary.headline}</span>
-                  <ProviderAuthEmail email={authEmail} separator prefix="Email" />
-                </>
-              )}
-              {summary.detail ? <span>- {summary.detail}</span> : null}
-            </p>
+            <div className="space-y-2">
+              <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
+                {hasAuthenticatedEmail ? (
+                  <>
+                    <span>Authenticated as</span>
+                    <ProviderAuthEmail email={authEmail} />
+                    {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
+                  </>
+                ) : (
+                  <>
+                    <span>{summary.headline}</span>
+                    <ProviderAuthEmail email={authEmail} separator prefix="Email" />
+                  </>
+                )}
+                {!isUnauthenticated && summary.detail ? <span>- {summary.detail}</span> : null}
+              </p>
+              {isUnauthenticated && onLogin ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={loginInProgress}
+                  onClick={onLogin}
+                >
+                  {loginInProgress ? "Starting..." : "Log in"}
+                </Button>
+              ) : null}
+            </div>
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

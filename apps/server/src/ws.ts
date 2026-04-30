@@ -1,5 +1,10 @@
+import { spawn } from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { Cause, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import {
+  CodexSettings,
   type AuthAccessStreamEvent,
   AuthSessionId,
   CommandId,
@@ -17,6 +22,9 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
+  ProviderDriverKind,
+  type ProviderInstanceId,
+  ServerProviderLoginError,
   FilesystemBrowseError,
   ThreadId,
   type TerminalEvent,
@@ -47,6 +55,7 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
@@ -64,6 +73,52 @@ import {
   type SessionCredentialChange,
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
+import { expandHomePath } from "./pathExpansion.ts";
+
+const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+function resolveCodexLoginHomePath(config: CodexSettings): string {
+  const shadowHomePath = config.shadowHomePath.trim();
+  if (shadowHomePath.length > 0) {
+    return NodePath.resolve(expandHomePath(shadowHomePath));
+  }
+  const homePath = config.homePath.trim();
+  if (homePath.length > 0) {
+    return NodePath.resolve(expandHomePath(homePath));
+  }
+  return NodePath.join(NodeOS.homedir(), ".codex");
+}
+
+const spawnCodexLogin = Effect.fn("ws.spawnCodexLogin")(function* (input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly command: string;
+  readonly homePath: string;
+}) {
+  yield* Effect.tryPromise({
+    try: () =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(input.command, ["login"], {
+          env: {
+            ...process.env,
+            CODEX_HOME: input.homePath,
+          },
+          detached: true,
+          stdio: "ignore",
+        });
+        child.once("error", reject);
+        child.once("spawn", () => {
+          child.unref();
+          resolve();
+        });
+      }),
+    catch: (cause) =>
+      new ServerProviderLoginError({
+        instanceId: input.instanceId,
+        message: cause instanceof Error ? cause.message : "Failed to start codex login.",
+        cause,
+      }),
+  });
+});
 
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -761,6 +816,59 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ? providerRegistry.refreshInstance(input.instanceId)
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverLoginProvider]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverLoginProvider,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerProviderLoginError({
+                      instanceId: input.instanceId,
+                      message: "Failed to read provider settings.",
+                      cause,
+                    }),
+                ),
+              );
+              const instances = deriveProviderInstanceConfigMap(settings);
+              const instance = instances[input.instanceId];
+              if (!instance) {
+                return yield* new ServerProviderLoginError({
+                  instanceId: input.instanceId,
+                  message: `Provider instance '${input.instanceId}' was not found.`,
+                });
+              }
+              if (instance.driver !== CODEX_DRIVER_KIND) {
+                return yield* new ServerProviderLoginError({
+                  instanceId: input.instanceId,
+                  message: `Provider instance '${input.instanceId}' is not a Codex instance.`,
+                });
+              }
+
+              const config = yield* Schema.decodeEffect(CodexSettings)(instance.config ?? {}).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerProviderLoginError({
+                      instanceId: input.instanceId,
+                      message: `Provider instance '${input.instanceId}' has invalid Codex settings.`,
+                      cause,
+                    }),
+                ),
+              );
+              const homePath = resolveCodexLoginHomePath(config);
+              yield* spawnCodexLogin({
+                instanceId: input.instanceId,
+                command: config.binaryPath,
+                homePath,
+              });
+              return {
+                instanceId: input.instanceId,
+                command: `${config.binaryPath} login`,
+                homePath,
+              };
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
