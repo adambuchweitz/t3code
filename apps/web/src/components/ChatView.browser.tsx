@@ -168,6 +168,8 @@ function createBaseServerConfig(): ServerConfig {
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
+    globalInstructions: [],
+    globalInstructionIssues: [],
     providers: [
       {
         driver: ProviderDriverKind.make("codex"),

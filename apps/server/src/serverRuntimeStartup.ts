@@ -23,6 +23,7 @@ import {
 } from "effect";
 
 import { ServerConfig } from "./config.ts";
+import { GlobalInstructions } from "./globalInstructions.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open } from "./open.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
@@ -281,6 +282,7 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
 
 export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
+  const globalInstructions = yield* GlobalInstructions;
   const keybindings = yield* Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper;
@@ -317,6 +319,21 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         Effect.catch((error) =>
           Effect.logWarning("failed to start server settings runtime", {
             path: error.settingsPath,
+            detail: error.detail,
+            cause: error.cause,
+          }),
+        ),
+        Effect.forkScoped,
+      ),
+    );
+
+    yield* Effect.logDebug("startup phase: starting global instructions runtime");
+    yield* runStartupPhase(
+      "globalInstructions.start",
+      globalInstructions.start.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to start global instructions runtime", {
+            path: error.configPath,
             detail: error.detail,
             cause: error.cause,
           }),

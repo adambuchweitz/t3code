@@ -43,6 +43,8 @@ function toServerConfigUpdatedPayload(config: ServerConfig): ServerConfigUpdated
 }
 
 const EMPTY_AVAILABLE_EDITORS: ReadonlyArray<EditorId> = [];
+const EMPTY_GLOBAL_INSTRUCTIONS: ServerConfig["globalInstructions"] = [];
+const EMPTY_GLOBAL_INSTRUCTION_ISSUES: ServerConfig["globalInstructionIssues"] = [];
 const EMPTY_SERVER_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 
 const selectAvailableEditors = (config: ServerConfig | null): ReadonlyArray<EditorId> =>
@@ -51,6 +53,10 @@ const selectKeybindings = (config: ServerConfig | null) =>
   config?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
 const selectKeybindingsConfigPath = (config: ServerConfig | null) =>
   config?.keybindingsConfigPath ?? null;
+const selectGlobalInstructions = (config: ServerConfig | null) =>
+  config?.globalInstructions ?? EMPTY_GLOBAL_INSTRUCTIONS;
+const selectGlobalInstructionIssues = (config: ServerConfig | null) =>
+  config?.globalInstructionIssues ?? EMPTY_GLOBAL_INSTRUCTION_ISSUES;
 const selectObservability = (config: ServerConfig | null) => config?.observability ?? null;
 const selectProviders = (config: ServerConfig | null) =>
   config?.providers ?? EMPTY_SERVER_PROVIDERS;
@@ -117,6 +123,10 @@ export function applyServerConfigEvent(event: ServerConfigStreamEvent): void {
       applySettingsUpdated(event.payload.settings);
       return;
     }
+    case "globalInstructionsUpdated": {
+      applyGlobalInstructionsUpdated(event.payload);
+      return;
+    }
   }
 }
 
@@ -148,6 +158,23 @@ export function applySettingsUpdated(settings: ServerSettings): void {
   } satisfies ServerConfig;
   resolveServerConfig(nextConfig);
   emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "settingsUpdated");
+}
+
+export function applyGlobalInstructionsUpdated(
+  payload: Pick<ServerConfig, "globalInstructions" | "globalInstructionIssues">,
+): void {
+  const latestServerConfig = getServerConfig();
+  if (!latestServerConfig) {
+    return;
+  }
+
+  const nextConfig = {
+    ...latestServerConfig,
+    globalInstructions: payload.globalInstructions,
+    globalInstructionIssues: payload.globalInstructionIssues,
+  } satisfies ServerConfig;
+  resolveServerConfig(nextConfig);
+  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "globalInstructionsUpdated");
 }
 
 export function emitWelcome(payload: ServerLifecycleWelcomePayload): void {
@@ -282,6 +309,14 @@ export function useServerKeybindings(): ServerConfig["keybindings"] {
 
 export function useServerAvailableEditors(): ReadonlyArray<EditorId> {
   return useAtomValue(serverConfigAtom, selectAvailableEditors);
+}
+
+export function useServerGlobalInstructions(): ServerConfig["globalInstructions"] {
+  return useAtomValue(serverConfigAtom, selectGlobalInstructions);
+}
+
+export function useServerGlobalInstructionIssues(): ServerConfig["globalInstructionIssues"] {
+  return useAtomValue(serverConfigAtom, selectGlobalInstructionIssues);
 }
 
 export function useServerKeybindingsConfigPath(): string | null {

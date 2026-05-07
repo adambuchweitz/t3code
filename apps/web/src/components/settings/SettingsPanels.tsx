@@ -1,4 +1,4 @@
-import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import { ArchiveIcon, ArchiveX, InfoIcon, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -6,6 +6,7 @@ import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
+  type GlobalInstruction,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -23,6 +24,7 @@ import {
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
+import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
@@ -52,9 +54,12 @@ import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampForm
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { DraftInput } from "../ui/draft-input";
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import {
@@ -78,7 +83,14 @@ import {
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { useServerObservability, useServerProviders } from "../../rpc/serverState";
+import {
+  applyGlobalInstructionsUpdated,
+  useServerAvailableEditors,
+  useServerGlobalInstructionIssues,
+  useServerGlobalInstructions,
+  useServerObservability,
+  useServerProviders,
+} from "../../rpc/serverState";
 
 const THEME_OPTIONS = [
   {
@@ -142,6 +154,54 @@ function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }
         <>Checked {lastCheckedRelative.value}</>
       )}
     </span>
+  );
+}
+
+function GlobalInstructionCard(props: {
+  instruction: GlobalInstruction;
+  disabled: boolean;
+  openError: string | null;
+  isOpeningFile: boolean;
+  onOpenFile: (instruction: GlobalInstruction) => void;
+  onToggle: (instruction: GlobalInstruction, enabled: boolean) => void;
+}) {
+  return (
+    <div className="border-t border-border px-4 py-4 first:border-t-0 sm:px-5">
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-foreground">{props.instruction.name}</div>
+          </div>
+          <Switch
+            checked={props.instruction.enabled}
+            disabled={props.disabled}
+            onCheckedChange={(checked) => props.onToggle(props.instruction, Boolean(checked))}
+            aria-label={`Enable ${props.instruction.name}`}
+          />
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+            <span className="block break-all font-mono text-[11px] text-foreground">
+              {props.instruction.filePath ?? "Resolving instruction path..."}
+            </span>
+            {props.openError ? (
+              <span className="mt-1 block text-destructive">{props.openError}</span>
+            ) : null}
+          </div>
+
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!props.instruction.filePath || props.isOpeningFile}
+            onClick={() => props.onOpenFile(props.instruction)}
+            aria-label={`Open ${props.instruction.name} file`}
+          >
+            {props.isOpeningFile ? "Opening..." : "Open file"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -438,11 +498,21 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
+  type OpenPathTarget = `globalInstruction:${string}`;
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  const availableEditors = useServerAvailableEditors();
   const observability = useServerObservability();
   const serverProviders = useServerProviders();
+  const globalInstructions = useServerGlobalInstructions();
+  const globalInstructionIssues = useServerGlobalInstructionIssues();
+  const [openingPathByTarget, setOpeningPathByTarget] = useState<
+    Partial<Record<OpenPathTarget, boolean>>
+  >({});
+  const [openPathErrorByTarget, setOpenPathErrorByTarget] = useState<
+    Partial<Record<OpenPathTarget, string | null>>
+  >({});
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -473,7 +543,123 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const [newInstructionName, setNewInstructionName] = useState("");
+  const [newInstructionContent, setNewInstructionContent] = useState("");
+  const [isSavingGlobalInstruction, setIsSavingGlobalInstruction] = useState(false);
+  const [togglingInstructionIds, setTogglingInstructionIds] = useState<Record<string, boolean>>({});
+  const canSaveGlobalInstruction =
+    newInstructionName.trim().length > 0 &&
+    newInstructionContent.trim().length > 0 &&
+    !isSavingGlobalInstruction;
 
+  const getInstructionOpenTarget = useCallback(
+    (instructionId: string): OpenPathTarget => `globalInstruction:${instructionId}`,
+    [],
+  );
+  const openInPreferredEditor = useCallback(
+    (target: OpenPathTarget, path: string | null, failureMessage: string) => {
+      if (!path) return;
+      setOpenPathErrorByTarget((existing) => ({ ...existing, [target]: null }));
+      setOpeningPathByTarget((existing) => ({ ...existing, [target]: true }));
+
+      const editor = resolveAndPersistPreferredEditor(availableEditors);
+      if (!editor) {
+        setOpenPathErrorByTarget((existing) => ({
+          ...existing,
+          [target]: "No available editors found.",
+        }));
+        setOpeningPathByTarget((existing) => ({ ...existing, [target]: false }));
+        return;
+      }
+
+      void ensureLocalApi()
+        .shell.openInEditor(path, editor)
+        .catch((error) => {
+          setOpenPathErrorByTarget((existing) => ({
+            ...existing,
+            [target]: error instanceof Error ? error.message : failureMessage,
+          }));
+        })
+        .finally(() => {
+          setOpeningPathByTarget((existing) => ({ ...existing, [target]: false }));
+        });
+    },
+    [availableEditors],
+  );
+
+  const openGlobalInstructionFile = useCallback(
+    (instruction: GlobalInstruction) => {
+      openInPreferredEditor(
+        getInstructionOpenTarget(instruction.id),
+        instruction.filePath ?? null,
+        "Unable to open global instruction file.",
+      );
+    },
+    [getInstructionOpenTarget, openInPreferredEditor],
+  );
+
+  const createGlobalInstruction = useCallback(() => {
+    const name = newInstructionName.trim();
+    const content = newInstructionContent.trim();
+    if (name.length === 0 || content.length === 0 || isSavingGlobalInstruction) {
+      return;
+    }
+
+    setIsSavingGlobalInstruction(true);
+    void ensureLocalApi()
+      .server.createGlobalInstruction({ name, content })
+      .then((state) => {
+        applyGlobalInstructionsUpdated(state);
+        setNewInstructionName("");
+        setNewInstructionContent("");
+      })
+      .catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Could not save global instruction",
+          description: error instanceof Error ? error.message : "Save failed.",
+        });
+      })
+      .finally(() => {
+        setIsSavingGlobalInstruction(false);
+      });
+  }, [isSavingGlobalInstruction, newInstructionContent, newInstructionName]);
+
+  const toggleGlobalInstruction = useCallback(
+    (instruction: GlobalInstruction, enabled: boolean) => {
+      if (togglingInstructionIds[instruction.id]) {
+        return;
+      }
+
+      setTogglingInstructionIds((existing) => ({
+        ...existing,
+        [instruction.id]: true,
+      }));
+      void ensureLocalApi()
+        .server.setGlobalInstructionEnabled({
+          id: instruction.id,
+          enabled,
+        })
+        .then((state) => {
+          applyGlobalInstructionsUpdated(state);
+        })
+        .catch((error: unknown) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not update global instruction",
+            description: error instanceof Error ? error.message : "Toggle failed.",
+          });
+        })
+        .finally(() => {
+          setTogglingInstructionIds((existing) => {
+            const next = { ...existing };
+            delete next[instruction.id];
+            return next;
+          });
+        });
+    },
+    [togglingInstructionIds],
+  );
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
@@ -849,6 +1035,84 @@ export function GeneralSettingsPanel() {
             </div>
           }
         />
+      </SettingsSection>
+
+      <SettingsSection title="Global Instructions">
+        {globalInstructionIssues.length > 0 ? (
+          <div className="border-t border-border px-4 py-4 first:border-t-0 sm:px-5">
+            <Alert variant="warning">
+              <InfoIcon />
+              <AlertTitle>Invalid instruction files ignored</AlertTitle>
+              <AlertDescription>
+                {globalInstructionIssues.map((issue) => (
+                  <div key={`${issue.kind}:${issue.id}`} className="text-xs leading-5">
+                    <code className="text-foreground">{issue.id}</code>: {issue.message}
+                  </div>
+                ))}
+              </AlertDescription>
+            </Alert>
+          </div>
+        ) : null}
+
+        {globalInstructions.length === 0 && globalInstructionIssues.length === 0 ? (
+          <div className="border-t border-border px-4 py-6 first:border-t-0 sm:px-5">
+            <p className="text-sm text-muted-foreground">No saved global instructions yet.</p>
+          </div>
+        ) : null}
+
+        {globalInstructions.map((instruction) => (
+          <GlobalInstructionCard
+            key={instruction.id}
+            instruction={instruction}
+            disabled={Boolean(togglingInstructionIds[instruction.id])}
+            openError={openPathErrorByTarget[getInstructionOpenTarget(instruction.id)] ?? null}
+            isOpeningFile={Boolean(openingPathByTarget[getInstructionOpenTarget(instruction.id)])}
+            onOpenFile={openGlobalInstructionFile}
+            onToggle={toggleGlobalInstruction}
+          />
+        ))}
+
+        <div className="border-t border-border px-4 py-4 sm:px-5">
+          <div className="space-y-3">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">Name</span>
+              <Input
+                value={newInstructionName}
+                onChange={(event) => setNewInstructionName(event.target.value)}
+                placeholder="Caveman mode"
+                spellCheck={false}
+                aria-label="Global instruction title"
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">Content</span>
+              <Textarea
+                value={newInstructionContent}
+                onChange={(event) => setNewInstructionContent(event.target.value)}
+                placeholder={
+                  "Prefer concise responses.\nNever use nested bullets.\nCall out risks first."
+                }
+                spellCheck={false}
+                rows={5}
+                aria-label="Global instruction content"
+              />
+            </label>
+
+            <Button
+              variant="outline"
+              disabled={!canSaveGlobalInstruction}
+              onClick={createGlobalInstruction}
+            >
+              {isSavingGlobalInstruction ? (
+                <LoaderIcon className="size-3.5 animate-spin" />
+              ) : (
+                <PlusIcon className="size-3.5" />
+              )}
+              Save instruction
+            </Button>
+          </div>
+        </div>
       </SettingsSection>
 
       <SettingsSection title="About">

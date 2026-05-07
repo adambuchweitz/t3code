@@ -26,6 +26,7 @@ import { Context, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { GlobalInstructions } from "../../globalInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -188,6 +189,7 @@ function makeHarness(config?: {
           config?.baseDir ?? "/tmp",
         ),
       ),
+      Layer.provideMerge(GlobalInstructions.layerTest()),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     ),
@@ -1347,6 +1349,7 @@ describe("ClaudeAdapterLive", () => {
       }),
     ).pipe(
       Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+      Layer.provideMerge(GlobalInstructions.layerTest()),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -1438,6 +1441,7 @@ describe("ClaudeAdapterLive", () => {
       }),
     ).pipe(
       Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+      Layer.provideMerge(GlobalInstructions.layerTest()),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     );

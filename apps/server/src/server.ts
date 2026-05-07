@@ -33,6 +33,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManagerLive } from "./terminal/Layers/Manager.ts";
 import * as GitManager from "./git/GitManager.ts";
+import { GlobalInstructionsLive } from "./globalInstructions.ts";
 import { KeybindingsLive } from "./keybindings.ts";
 import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeStartup.ts";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
@@ -288,6 +289,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
 
 const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
   Layer.provideMerge(RuntimeDependenciesLive),
+  Layer.provide(GlobalInstructionsLive),
 );
 
 export const makeRoutesLayer = Layer.mergeAll(
@@ -398,7 +400,7 @@ export const makeServerLayer = Layer.unwrap(
       : Layer.empty;
 
     const serverApplicationLayer = Layer.mergeAll(
-      HttpRouter.serve(makeRoutesLayer, {
+      HttpRouter.serve(makeRoutesLayer.pipe(Layer.provide(GlobalInstructionsLive)), {
         disableLogger: !config.logWebSocketEvents,
       }),
       httpListeningLayer,
@@ -418,8 +420,6 @@ export const makeServerLayer = Layer.unwrap(
 );
 
 // Important: Only `ServerConfig` should be provided by the CLI layer!!! Don't let other requirements leak into the launch layer.
-export const runServer = Layer.launch(makeServerLayer) satisfies Effect.Effect<
-  never,
-  any,
-  ServerConfig
->;
+export const runServer = Layer.launch(makeServerLayer).pipe(
+  Effect.provide(GlobalInstructionsLive),
+) satisfies Effect.Effect<never, any, ServerConfig>;

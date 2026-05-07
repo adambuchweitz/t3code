@@ -68,6 +68,7 @@ import {
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { GlobalInstructions, composeGlobalInstructionContent } from "../../globalInstructions.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -569,10 +570,97 @@ const CLAUDE_SETTING_SOURCES = [
   "project",
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
+const T3CODE_GLOBAL_INSTRUCTIONS_START = "<T3CODE_GLOBAL_INSTRUCTIONS>";
+const T3CODE_GLOBAL_INSTRUCTIONS_END = "</T3CODE_GLOBAL_INSTRUCTIONS>";
+
+export function prependClaudeGlobalInstructions(
+  promptText: string,
+  instructions?: string | null,
+): string {
+  const trimmedInstructions = instructions?.trim();
+  if (!trimmedInstructions) {
+    return promptText;
+  }
+
+  const instructionBlock = `${T3CODE_GLOBAL_INSTRUCTIONS_START}\n${trimmedInstructions}\n${T3CODE_GLOBAL_INSTRUCTIONS_END}`;
+  return promptText.length > 0 ? `${instructionBlock}\n\n${promptText}` : instructionBlock;
+}
+
+export function stripClaudeGlobalInstructions(text: string): string {
+  if (!text.startsWith(T3CODE_GLOBAL_INSTRUCTIONS_START)) {
+    return text;
+  }
+
+  const endIndex = text.indexOf(T3CODE_GLOBAL_INSTRUCTIONS_END);
+  if (endIndex < 0) {
+    return text;
+  }
+
+  return text
+    .slice(endIndex + T3CODE_GLOBAL_INSTRUCTIONS_END.length)
+    .replace(/^(?:\r?\n){1,2}/, "");
+}
+
+export function sanitizeClaudeUserMessageForTranscript(message: SDKUserMessage): SDKUserMessage {
+  const userMessage = message.message as { content?: unknown };
+  const content = userMessage.content;
+
+  if (typeof content === "string") {
+    const sanitizedContent = stripClaudeGlobalInstructions(content);
+    if (sanitizedContent === content) {
+      return message;
+    }
+
+    return {
+      ...message,
+      message: {
+        ...message.message,
+        content: sanitizedContent,
+      },
+    } as SDKUserMessage;
+  }
+
+  if (!Array.isArray(content)) {
+    return message;
+  }
+
+  let changed = false;
+  const sanitizedContent = content.flatMap((entry): Array<unknown> => {
+    if (!entry || typeof entry !== "object") {
+      return [entry];
+    }
+
+    const block = entry as { type?: unknown; text?: unknown };
+    if (block.type !== "text" || typeof block.text !== "string") {
+      return [entry];
+    }
+
+    const sanitizedText = stripClaudeGlobalInstructions(block.text);
+    if (sanitizedText === block.text) {
+      return [entry];
+    }
+
+    changed = true;
+    return sanitizedText.length > 0 ? [{ ...entry, text: sanitizedText }] : [];
+  });
+
+  if (!changed) {
+    return message;
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: sanitizedContent as SDKUserMessage["message"]["content"],
+    },
+  } as SDKUserMessage;
+}
 
 function buildPromptText(
   input: ProviderSendTurnInput,
   boundInstanceId: ProviderInstanceId,
+  globalInstructions?: string | null,
 ): string {
   const rawEffort =
     input.modelSelection?.instanceId === boundInstanceId
@@ -583,7 +671,10 @@ function buildPromptText(
   const caps = getClaudeModelCapabilities(claudeModel);
 
   const promptEffort = resolvePromptInjectedEffort(caps, rawEffort);
-  return applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+  return prependClaudeGlobalInstructions(
+    applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort),
+    globalInstructions,
+  );
 }
 
 function buildUserMessage(input: {
@@ -620,9 +711,14 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly boundInstanceId: ProviderInstanceId;
+    readonly globalInstructions?: string | null;
   },
 ) {
-  const text = buildPromptText(input, dependencies.boundInstanceId);
+  const text = buildPromptText(
+    input,
+    dependencies.boundInstanceId,
+    dependencies.globalInstructions,
+  );
   const sdkContent: Array<Record<string, unknown>> = [];
 
   if (text.length > 0) {
@@ -980,6 +1076,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
+  const globalInstructions = yield* GlobalInstructions;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, options?.environment).pipe(
     Effect.provideService(Path.Path, path),
   );
@@ -1835,7 +1932,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (context.turnState) {
-      context.turnState.items.push(message.message);
+      context.turnState.items.push(sanitizeClaudeUserMessageForTranscript(message).message);
     }
 
     for (const toolResult of toolResultBlocksFromUserMessage(message)) {
@@ -3049,6 +3146,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   );
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    const providerGlobalInstructions = yield* globalInstructions.getSnapshot.pipe(
+      Effect.map((state) => composeGlobalInstructionContent(state.globalInstructions)),
+      Effect.mapError(
+        (error) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+            detail: "Failed to load global instructions.",
+            cause: error,
+          }),
+      ),
+    );
     const context = yield* requireSession(input.threadId);
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
@@ -3128,6 +3237,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       boundInstanceId,
+      ...(providerGlobalInstructions.length > 0
+        ? { globalInstructions: providerGlobalInstructions }
+        : {}),
     });
 
     yield* Queue.offer(context.promptQueue, {

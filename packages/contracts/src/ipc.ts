@@ -35,6 +35,9 @@ import type {
   ServerSignalProcessInput,
   ServerSignalProcessResult,
   ServerTraceDiagnosticsResult,
+  ServerCreateGlobalInstructionInput,
+  ServerGlobalInstructionsResult,
+  ServerSetGlobalInstructionEnabledInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import type {
@@ -305,6 +308,12 @@ export interface LocalApi {
     updateProvider: (input: ServerProviderUpdateInput) => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     removeKeybinding: (input: ServerRemoveKeybindingInput) => Promise<ServerRemoveKeybindingResult>;
+    createGlobalInstruction: (
+      input: ServerCreateGlobalInstructionInput,
+    ) => Promise<ServerGlobalInstructionsResult>;
+    setGlobalInstructionEnabled: (
+      input: ServerSetGlobalInstructionEnabledInput,
+    ) => Promise<ServerGlobalInstructionsResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>;

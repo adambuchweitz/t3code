@@ -73,6 +73,8 @@ import {
   ServerConfig,
   ServerProviderUpdateError,
   ServerProviderUpdateInput,
+  ServerCreateGlobalInstructionInput,
+  ServerGlobalInstructionsResult,
   ServerLifecycleStreamEvent,
   ServerRemoveKeybindingInput,
   ServerRemoveKeybindingResult,
@@ -81,9 +83,11 @@ import {
   ServerProcessDiagnosticsResult,
   ServerSignalProcessInput,
   ServerSignalProcessResult,
+  ServerSetGlobalInstructionEnabledInput,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
+import { GlobalInstructionsConfigError } from "./globalInstructions.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -140,6 +144,8 @@ export const WS_METHODS = {
   serverUpdateProvider: "server.updateProvider",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverRemoveKeybinding: "server.removeKeybinding",
+  serverCreateGlobalInstruction: "server.createGlobalInstruction",
+  serverSetGlobalInstructionEnabled: "server.setGlobalInstructionEnabled",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -175,7 +181,7 @@ export const WsServerRemoveKeybindingRpc = Rpc.make(WS_METHODS.serverRemoveKeybi
 export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
-  error: Schema.Union([KeybindingsConfigError, ServerSettingsError]),
+  error: Schema.Union([KeybindingsConfigError, GlobalInstructionsConfigError, ServerSettingsError]),
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -196,6 +202,24 @@ export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvide
   success: ServerProviderUpdatedPayload,
   error: ServerProviderUpdateError,
 });
+
+export const WsServerCreateGlobalInstructionRpc = Rpc.make(
+  WS_METHODS.serverCreateGlobalInstruction,
+  {
+    payload: ServerCreateGlobalInstructionInput,
+    success: ServerGlobalInstructionsResult,
+    error: GlobalInstructionsConfigError,
+  },
+);
+
+export const WsServerSetGlobalInstructionEnabledRpc = Rpc.make(
+  WS_METHODS.serverSetGlobalInstructionEnabled,
+  {
+    payload: ServerSetGlobalInstructionEnabledInput,
+    success: ServerGlobalInstructionsResult,
+    error: GlobalInstructionsConfigError,
+  },
+);
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
   payload: Schema.Struct({}),
@@ -436,7 +460,7 @@ export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTermina
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({}),
   success: ServerConfigStreamEvent,
-  error: Schema.Union([KeybindingsConfigError, ServerSettingsError]),
+  error: Schema.Union([KeybindingsConfigError, GlobalInstructionsConfigError, ServerSettingsError]),
   stream: true,
 });
 
@@ -458,6 +482,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateProviderRpc,
   WsServerUpsertKeybindingRpc,
   WsServerRemoveKeybindingRpc,
+  WsServerCreateGlobalInstructionRpc,
+  WsServerSetGlobalInstructionEnabledRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
   WsServerDiscoverSourceControlRpc,

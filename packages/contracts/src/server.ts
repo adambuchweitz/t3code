@@ -16,6 +16,12 @@ import {
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
+import {
+  CreateGlobalInstructionInput,
+  GlobalInstruction,
+  GlobalInstructionIssue,
+  SetGlobalInstructionEnabledInput,
+} from "./globalInstructions.ts";
 import { ModelCapabilities } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
@@ -348,6 +354,12 @@ export const ServerConfig = Schema.Struct({
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,
+  globalInstructions: Schema.Array(GlobalInstruction).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  globalInstructionIssues: Schema.Array(GlobalInstructionIssue).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   providers: ServerProviders,
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
@@ -380,6 +392,18 @@ export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.T
 
 export const ServerRemoveKeybindingResult = ServerUpsertKeybindingResult;
 export type ServerRemoveKeybindingResult = typeof ServerRemoveKeybindingResult.Type;
+export const ServerCreateGlobalInstructionInput = CreateGlobalInstructionInput;
+export type ServerCreateGlobalInstructionInput = typeof ServerCreateGlobalInstructionInput.Type;
+
+export const ServerSetGlobalInstructionEnabledInput = SetGlobalInstructionEnabledInput;
+export type ServerSetGlobalInstructionEnabledInput =
+  typeof ServerSetGlobalInstructionEnabledInput.Type;
+
+export const ServerGlobalInstructionsResult = Schema.Struct({
+  globalInstructions: Schema.Array(GlobalInstruction),
+  globalInstructionIssues: Schema.Array(GlobalInstructionIssue),
+});
+export type ServerGlobalInstructionsResult = typeof ServerGlobalInstructionsResult.Type;
 
 export const ServerConfigUpdatedPayload = Schema.Struct({
   issues: ServerConfigIssues,
@@ -404,6 +428,13 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
+
+export const ServerConfigGlobalInstructionsUpdatedPayload = Schema.Struct({
+  globalInstructions: Schema.Array(GlobalInstruction),
+  globalInstructionIssues: Schema.Array(GlobalInstructionIssue),
+});
+export type ServerConfigGlobalInstructionsUpdatedPayload =
+  typeof ServerConfigGlobalInstructionsUpdatedPayload.Type;
 
 export const ServerConfigStreamSnapshotEvent = Schema.Struct({
   version: Schema.Literal(1),
@@ -436,11 +467,20 @@ export const ServerConfigStreamSettingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamSettingsUpdatedEvent =
   typeof ServerConfigStreamSettingsUpdatedEvent.Type;
 
+export const ServerConfigStreamGlobalInstructionsUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("globalInstructionsUpdated"),
+  payload: ServerConfigGlobalInstructionsUpdatedPayload,
+});
+export type ServerConfigStreamGlobalInstructionsUpdatedEvent =
+  typeof ServerConfigStreamGlobalInstructionsUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
+  ServerConfigStreamGlobalInstructionsUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

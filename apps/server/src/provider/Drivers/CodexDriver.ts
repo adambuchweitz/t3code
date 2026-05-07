@@ -28,6 +28,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { GlobalInstructions } from "../../globalInstructions.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
@@ -65,6 +66,7 @@ export type CodexDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | GlobalInstructions
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig;

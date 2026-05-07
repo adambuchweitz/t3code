@@ -121,9 +121,9 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
     server: {
       getConfig: () =>
         rpcClient ? rpcClient.server.getConfig() : Promise.reject(unavailableLocalBackendError()),
-      refreshProviders: () =>
+      refreshProviders: (input) =>
         rpcClient
-          ? rpcClient.server.refreshProviders()
+          ? rpcClient.server.refreshProviders(input)
           : Promise.reject(unavailableLocalBackendError()),
       updateProvider: (input) =>
         rpcClient
@@ -136,6 +136,14 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
       removeKeybinding: (input) =>
         rpcClient
           ? rpcClient.server.removeKeybinding(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      createGlobalInstruction: (input) =>
+        rpcClient
+          ? rpcClient.server.createGlobalInstruction(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      setGlobalInstructionEnabled: (input) =>
+        rpcClient
+          ? rpcClient.server.setGlobalInstructionEnabled(input)
           : Promise.reject(unavailableLocalBackendError()),
       getSettings: () =>
         rpcClient ? rpcClient.server.getSettings() : Promise.reject(unavailableLocalBackendError()),
