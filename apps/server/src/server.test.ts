@@ -109,6 +109,8 @@ const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unk
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as SpeechCache from "./speechCache.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import {
   isThreadDetailEvent,
@@ -841,6 +843,12 @@ const buildAppUnderTest = (options?: {
             state: Effect.succeed(EMPTY_DEVICE_STATE),
             currentReadiness: () => Effect.succeed(null),
             sessionsForThread: () => Effect.succeed([]),
+          }),
+          Layer.mock(TextGeneration.TextGeneration)({
+            generateSpeechText: (input) => Effect.succeed({ speech: input.message }),
+          }),
+          Layer.mock(SpeechCache.SpeechCache)({
+            polished: (_key, lookup) => lookup,
           }),
         ),
       ),
@@ -1673,6 +1681,8 @@ const assertBrowserApiCorsPreflightHeaders = (
     "content-type",
     "dpop",
     "traceparent",
+    "x-t3-tts-api-key",
+    "x-t3-tts-voice",
   ]);
 };
 const crossOriginClientOrigin = "http://remote-client.test:3773";
@@ -5585,6 +5595,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "content-type",
         "dpop",
         "traceparent",
+        "x-t3-tts-api-key",
+        "x-t3-tts-voice",
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

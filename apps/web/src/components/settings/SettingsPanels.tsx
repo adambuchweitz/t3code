@@ -563,6 +563,11 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Auto-settle merged threads"]
         : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
+      ...(settings.readAloudEnabled !== DEFAULT_UNIFIED_SETTINGS.readAloudEnabled ||
+      settings.readAloudApiKey.length > 0 ||
+      settings.readAloudVoice !== DEFAULT_UNIFIED_SETTINGS.readAloudVoice
+        ? ["Read aloud"]
+        : []),
       ...getChangedTypographySettingLabels(settings),
       ...(settings.diffFilesCollapsed !== DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed
         ? ["Default diff file state"]
@@ -681,6 +686,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.notificationMode,
       settings.inAppNotificationsEnabled,
       settings.wordWrap,
+      settings.readAloudApiKey,
+      settings.readAloudEnabled,
+      settings.readAloudVoice,
       followSystem,
       theme,
       themeHalves,
@@ -757,6 +765,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffFilesCollapsed: DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed,
+      readAloudEnabled: DEFAULT_UNIFIED_SETTINGS.readAloudEnabled,
+      readAloudApiKey: DEFAULT_UNIFIED_SETTINGS.readAloudApiKey,
+      readAloudVoice: DEFAULT_UNIFIED_SETTINGS.readAloudVoice,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,

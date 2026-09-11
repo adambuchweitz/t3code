@@ -25,6 +25,7 @@ import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { ReadAloudAutoWatcher } from "~/components/chat/ReadAloudAutoWatcher";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 
 function ChatRouteGlobalShortcuts() {
@@ -187,7 +188,7 @@ function ChatRouteGlobalShortcuts() {
     terminalOpen,
   ]);
 
-  return null;
+  return <ReadAloudAutoWatcher activeThreadRef={routeThreadRef} />;
 }
 
 function ChatRouteLayout() {

@@ -75,6 +75,20 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface SpeechTextGenerationInput {
+  /** Raw assistant response markdown to reshape for spoken delivery. */
+  message: string;
+  /** Present when generation is rooted in a workspace; server metadata flows may omit it. */
+  cwd?: string | undefined;
+  /** What model and provider to use for generation. */
+  modelSelection: ModelSelection;
+}
+
+export interface SpeechTextGenerationResult {
+  /** Plain prose without markdown, ready for text-to-speech. */
+  speech: string;
+}
+
 /**
  * TextGeneration - Service tag for commit and change request text generation.
  */
@@ -106,6 +120,11 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+    /** Reshape an assistant response into plain prose for text-to-speech. */
+    readonly generateSpeechText: (
+      input: SpeechTextGenerationInput,
+    ) => Effect.Effect<SpeechTextGenerationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -113,7 +132,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generateSpeechText";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -165,6 +185,10 @@ export const make = Effect.gen(function* () {
             return yield* textGeneration.generateThreadTitle({ ...input, linkedContext });
           }),
         ),
+      ),
+    generateSpeechText: (input) =>
+      resolveInstance(registry, "generateSpeechText", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateSpeechText(input)),
       ),
   });
 });

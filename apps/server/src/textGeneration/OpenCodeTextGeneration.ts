@@ -18,12 +18,14 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildSpeechPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
+  sanitizeSpeechText,
   sanitizeThreadTitle,
 } from "./TextGenerationUtils.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
@@ -34,6 +36,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generatePrContent",
   "generateBranchName",
   "generateThreadTitle",
+  "generateSpeechText",
 ]);
 
 type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
@@ -453,10 +456,27 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generateSpeechText: TextGeneration.TextGeneration["Service"]["generateSpeechText"] =
+    Effect.fn("OpenCodeTextGeneration.generateSpeechText")(function* (input) {
+      const { prompt, outputSchema } = buildSpeechPrompt({ message: input.message });
+      const generated = yield* runOpenCodeJson({
+        operation: "generateSpeechText",
+        cwd: input.cwd ?? process.cwd(),
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        speech: sanitizeSpeechText(generated.speech),
+      } satisfies TextGeneration.SpeechTextGenerationResult;
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateSpeechText,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

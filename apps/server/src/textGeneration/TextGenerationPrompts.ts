@@ -282,6 +282,44 @@ Examples of the distinction:
 - A QR-sharing overhaul that ends with CI and merge work remains about QR sharing, not the PR lifecycle.`;
 }
 
+// ---------------------------------------------------------------------------
+// Speech (read aloud)
+// ---------------------------------------------------------------------------
+
+export interface SpeechPromptInput {
+  message: string;
+}
+
+const SPEECH_REFORMAT_PROMPT = `Reformat this assistant response so T3 Code text-to-speech can read it aloud naturally.
+Return JSON with exactly one key: speech.
+
+Before answering, silently identify:
+- Content: What is the response actually conveying to the user?
+- Structure: Which parts are visual scaffolding that only makes sense on screen?
+
+Speak the content. Reshape the scaffolding into sentences a person would say.
+
+Editorial rules:
+- Keep the meaning and order of the response. Do not summarize, add commentary, or answer on the response's behalf.
+- Say markdown tables as a few flowing sentences that cover the data.
+- Do not read code blocks or inline code verbatim. Briefly name what the code does instead.
+- Read headings and list items as flowing sentences.
+- Drop markdown syntax. Link text is enough, and never speak a URL character by character.
+- Use plain prose with paragraph breaks for pauses. No markdown, no surrounding quotes.
+- Keep the original language.`;
+
+export function buildSpeechPrompt(input: SpeechPromptInput) {
+  const message = limitSection(input.message, 8_000);
+  const prompt = `${SPEECH_REFORMAT_PROMPT}\n\nAssistant response:\n${message}`;
+
+  return {
+    prompt,
+    outputSchema: Schema.Struct({
+      speech: Schema.String,
+    }),
+  };
+}
+
 function preserveMessageEnd(message: string): string {
   const alreadyTruncated = message.startsWith(EARLIER_CONTENT_TRUNCATION_MARKER);
   const contents = alreadyTruncated

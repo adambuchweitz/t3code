@@ -5,4 +5,6 @@ export const browserApiCorsAllowedHeaders = [
   "traceparent",
   "content-type",
   "dpop",
+  "x-t3-tts-api-key",
+  "x-t3-tts-voice",
 ] as const;

@@ -931,7 +931,7 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   FileIcon,
   BotIcon,
@@ -940,8 +940,21 @@ import {
   PencilRulerIcon,
   PlayIcon,
   ShieldIcon,
+  SquareIcon,
+  Volume2Icon,
+  WavesIcon,
   XIcon,
 } from "lucide-react";
+import * as Option from "effect/Option";
+import {
+  isReadAloudTargetSupported,
+  readTtsEnvironmentStatus,
+  requestReadAloudStream,
+  type ReadAloudTarget,
+} from "~/lib/readAloud";
+import { playAudioStream, type AudioPlayback } from "~/lib/audioStreamPlayer";
+import { setAutoReadAloud, useAutoReadAloud } from "~/readAloudAutoStore";
+import { usePreparedConnection } from "~/state/session";
 import { proposedPlanTitle } from "../../proposedPlan";
 import { hasProviderSetup } from "./ProviderStatusBanner";
 import {
@@ -1482,6 +1495,225 @@ export interface ChatComposerProps {
 // Component
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Read-aloud button. Plays the last assistant response via server TTS.
+// No mic, no duplex. Key and voice come from Settings → Integrations → Voice,
+// with OPENAI_API_KEY on the server as fallback. Hidden until supported.
+// --------------------------------------------------------------------------
+
+const ComposerReadAloudButton = memo(function ComposerReadAloudButton({
+  text,
+  apiKey,
+  voice,
+  target,
+  threadKey,
+  autoReadAloud,
+}: {
+  text: string | null;
+  apiKey: string;
+  voice: string;
+  target: ReadAloudTarget | null;
+  threadKey: string;
+  autoReadAloud: boolean;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+  const playbackRef = useRef<AudioPlayback | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // Bumped on unmount, on stop, and when the response changes so a request
+  // that resolves later cannot start playing audio for a thread the user
+  // already left.
+  const requestRef = useRef(0);
+
+  const cancelActive = useCallback(() => {
+    requestRef.current += 1;
+    playbackRef.current?.stop();
+    playbackRef.current = null;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setState("idle");
+  }, []);
+
+  useEffect(() => cancelActive, [cancelActive]);
+
+  // A new response (new turn), a thread switch, or a switch to another thread
+  // with identical text all cancel the read so stale audio cannot leak through.
+  const lastTextRef = useRef(text);
+  useEffect(() => {
+    if (lastTextRef.current === text) return;
+    lastTextRef.current = text;
+    cancelActive();
+  }, [text, cancelActive]);
+  useEffect(() => cancelActive(), [threadKey, cancelActive]);
+
+  const toggle = useCallback(async () => {
+    // Loading is cancellable too, so a stalled request is never a dead end.
+    if (state === "playing" || state === "loading") {
+      cancelActive();
+      return;
+    }
+    if (!text || !isReadAloudTargetSupported(target)) return;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setState("loading");
+    try {
+      const { response, truncated } = await requestReadAloudStream(
+        text,
+        { apiKey, voice },
+        target,
+        controller.signal,
+      );
+      if (requestRef.current !== requestId) {
+        void response.body?.cancel();
+        return;
+      }
+      if (truncated) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Reading the first part",
+            description: "This response was too long to read in full.",
+          }),
+        );
+      }
+      const playback = await playAudioStream(response);
+      if (requestRef.current !== requestId) {
+        playback.stop();
+        return;
+      }
+      playbackRef.current = playback;
+      void playback.finished
+        .then(() => {
+          if (requestRef.current !== requestId) return;
+          playbackRef.current = null;
+          setState("idle");
+        })
+        .catch((error: unknown) => {
+          if (requestRef.current !== requestId) return;
+          playbackRef.current = null;
+          setState("idle");
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Read-aloud failed",
+              description:
+                error instanceof Error ? error.message : "Could not play the response audio.",
+            }),
+          );
+        });
+      setState("playing");
+    } catch (error) {
+      if (requestRef.current !== requestId) return;
+      abortRef.current = null;
+      playbackRef.current?.stop();
+      playbackRef.current = null;
+      setState("idle");
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Read-aloud failed",
+          description: error instanceof Error ? error.message : "Could not read the response.",
+        }),
+      );
+    }
+  }, [text, apiKey, voice, target, state, cancelActive]);
+
+  // With auto mode on, read each new settled response as it arrives. The first
+  // pass only arms: a response that completed before this thread was focused
+  // must not start talking on its own.
+  const toggleRef = useRef(toggle);
+  toggleRef.current = toggle;
+  const autoPlayedTextRef = useRef<string | null>(null);
+  const autoArmedRef = useRef(false);
+  useEffect(() => {
+    if (!autoReadAloud) {
+      autoArmedRef.current = false;
+      return;
+    }
+    if (text === null) return;
+    if (autoPlayedTextRef.current === text) return;
+    autoPlayedTextRef.current = text;
+    if (!autoArmedRef.current) {
+      autoArmedRef.current = true;
+      return;
+    }
+    if (state === "idle") {
+      void toggleRef.current();
+    }
+  }, [autoReadAloud, text, state]);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={
+              state === "idle"
+                ? "Read response aloud"
+                : state === "loading"
+                  ? "Cancel reading response"
+                  : "Stop reading response"
+            }
+            disabled={!text}
+            onClick={toggle}
+            type="button"
+            size="icon-sm"
+            variant="ghost-muted"
+            className="shrink-0"
+          />
+        }
+      >
+        {state === "idle" ? <Volume2Icon className="size-4" /> : <SquareIcon className="size-4" />}
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>
+          {!text
+            ? "No response to read yet"
+            : state === "idle"
+              ? "Read response aloud"
+              : state === "loading"
+                ? "Cancel"
+                : "Stop reading"}
+        </p>
+      </TooltipPopup>
+    </Tooltip>
+  );
+});
+
+const ComposerAutoReadAloudButton = memo(function ComposerAutoReadAloudButton({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={
+              enabled ? "Turn off automatic read aloud" : "Read new responses aloud automatically"
+            }
+            aria-pressed={enabled}
+            onClick={onToggle}
+            type="button"
+            size="icon-sm"
+            variant={enabled ? "secondary" : "ghost-muted"}
+            className="shrink-0"
+          />
+        }
+      >
+        <WavesIcon className="size-4" />
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>{enabled ? "Automatic read aloud is on" : "Read new responses aloud automatically"}</p>
+      </TooltipPopup>
+    </Tooltip>
+  );
+});
+
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
     composerDraftTarget,
@@ -1586,6 +1818,64 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const shownSyncPhase = useDelayedStatus(composerDraftTargetKey, props.threadSyncPhase);
   const activeTasksProgress = shownSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = shownSyncPhase === null ? props.activeTaskSteps : null;
+
+  // Read aloud: the last settled assistant response, resolved per environment.
+  const lastAssistantText = useMemo(() => {
+    const messages = activeThread?.messages;
+    if (!messages) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role === "assistant" && !message.streaming && message.text.trim()) {
+        return message.text;
+      }
+    }
+    return null;
+  }, [activeThread?.messages]);
+
+  const readAloudApiKey = settings.readAloudApiKey.trim();
+  const preparedReadAloudConnection = Option.getOrNull(usePreparedConnection(environmentId));
+  const readAloudBaseUrl = preparedReadAloudConnection?.httpBaseUrl ?? null;
+  const readAloudAuthorization = preparedReadAloudConnection?.httpAuthorization ?? null;
+  const readAloudTarget = useMemo<ReadAloudTarget | null>(
+    () =>
+      readAloudBaseUrl === null
+        ? null
+        : { baseUrl: readAloudBaseUrl, authorization: readAloudAuthorization },
+    [readAloudBaseUrl, readAloudAuthorization],
+  );
+  const readAloudSupported = isReadAloudTargetSupported(readAloudTarget);
+  const readAloudThreadKey = `${environmentId}:${activeThreadId ?? "draft"}`;
+  const [hasTtsEnvironmentKey, setHasTtsEnvironmentKey] = useState(false);
+  useEffect(() => {
+    if (!settings.readAloudEnabled || !readAloudSupported) {
+      setHasTtsEnvironmentKey(false);
+      return;
+    }
+    let active = true;
+    setHasTtsEnvironmentKey(false);
+    void readTtsEnvironmentStatus(readAloudTarget)
+      .then((status) => {
+        if (active) setHasTtsEnvironmentKey(status.openai);
+      })
+      .catch(() => {
+        if (active) setHasTtsEnvironmentKey(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [settings.readAloudEnabled, readAloudSupported, readAloudTarget]);
+  const readAloudVisible =
+    settings.readAloudEnabled &&
+    readAloudSupported &&
+    lastAssistantText !== null &&
+    (readAloudApiKey.length > 0 || hasTtsEnvironmentKey);
+  const autoReadAloudThreadKey = activeThreadId ? readAloudThreadKey : null;
+  const autoReadAloudEnabled = useAutoReadAloud(autoReadAloudThreadKey);
+  const toggleAutoReadAloud = useCallback(() => {
+    if (!environmentId || !activeThreadId) return;
+    setAutoReadAloud({ environmentId, threadId: activeThreadId }, !autoReadAloudEnabled);
+  }, [environmentId, activeThreadId, autoReadAloudEnabled]);
+
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
@@ -6975,6 +7265,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {readAloudVisible ? (
+                    <>
+                      <ComposerAutoReadAloudButton
+                        enabled={autoReadAloudEnabled}
+                        onToggle={toggleAutoReadAloud}
+                      />
+                      <ComposerReadAloudButton
+                        text={lastAssistantText}
+                        apiKey={readAloudApiKey}
+                        voice={settings.readAloudVoice}
+                        target={readAloudTarget}
+                        threadKey={readAloudThreadKey}
+                        autoReadAloud={autoReadAloudEnabled}
+                      />
+                    </>
+                  ) : null}
                   {showComposerAttachAction ? (
                     <>
                       <input

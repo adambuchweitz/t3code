@@ -47,6 +47,10 @@
       "types": "./src/githubMedia.ts",
       "import": "./src/githubMedia.ts"
     },
+    "./readAloudText": {
+      "types": "./src/readAloudText.ts",
+      "import": "./src/readAloudText.ts"
+    },
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"

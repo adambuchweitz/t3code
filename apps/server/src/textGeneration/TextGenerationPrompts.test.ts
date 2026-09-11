@@ -4,6 +4,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildSpeechPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import {
@@ -224,6 +225,18 @@ describe("buildThreadTitlePrompt", () => {
       `Thread contents:\n[Earlier content truncated]\n\n${retainedContext}`,
     );
     expect(result.prompt.match(/\[Earlier content truncated\]/g)).toHaveLength(1);
+  });
+});
+
+describe("buildSpeechPrompt", () => {
+  it("includes the assistant response under a labeled section", () => {
+    const result = buildSpeechPrompt({
+      message: "| name | value |\n| --- | --- |\n| alpha | 1 |",
+    });
+
+    expect(result.prompt).toContain("Return JSON with exactly one key: speech.");
+    expect(result.prompt).toContain("Assistant response:");
+    expect(result.prompt).toContain("| alpha | 1 |");
   });
 });
 

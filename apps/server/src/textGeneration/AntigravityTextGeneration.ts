@@ -25,11 +25,13 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildSpeechPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
+  sanitizeSpeechText,
   sanitizeThreadTitle,
 } from "./TextGenerationUtils.ts";
 
@@ -405,10 +407,21 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       };
     });
 
+  const generateSpeechText: TextGeneration.TextGeneration["Service"]["generateSpeechText"] =
+    Effect.fn("AntigravityTextGeneration.generateSpeechText")(function* (input) {
+      const generated = yield* runAntigravityJson({
+        operation: "generateSpeechText",
+        ...buildSpeechPrompt({ message: input.message }),
+        modelSelection: input.modelSelection,
+      });
+      return { speech: sanitizeSpeechText(generated.speech) };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateSpeechText,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

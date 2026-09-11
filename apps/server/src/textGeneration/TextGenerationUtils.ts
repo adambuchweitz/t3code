@@ -56,6 +56,18 @@ export function sanitizePrTitle(raw: string): string {
 // from pushing a paragraph into the sidebar, header, and window title.
 const MAX_THREAD_TITLE_CHARS = 120;
 
+/** Normalise raw spoken-form output: prose paragraphs, no wrapper quotes. */
+export function sanitizeSpeechText(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^```(?:md|markdown)?\n/, "")
+    .replace(/\n?```$/, "")
+    .replace(/^["'`]/, "")
+    .replace(/["'`]$/, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Normalise a raw thread title to a single line. Clients truncate for display. */
 export function sanitizeThreadTitle(raw: string): string {
   // Unwrap a JSON-formatted title before truncation can cut off the closing brace.
