@@ -47,8 +47,10 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import { synthesizeSpeech, ttsEnvironmentApiKeyStatus } from "./tts.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
+const TTS_PATH = "/api/tts";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
 const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
@@ -364,6 +366,65 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
     }),
   ),
 );
+
+export const ttsStatusRouteLayer = HttpRouter.add(
+  "GET",
+  TTS_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+    const openai = yield* ttsEnvironmentApiKeyStatus();
+    return HttpServerResponse.jsonUnsafe({ openai }, { status: 200 });
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+    }),
+  ),
+);
+
+export const ttsRouteLayer = HttpRouter.add(
+  "POST",
+  TTS_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationOperateScope);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const payload = (yield* request.json.pipe(Effect.orElseSucceed(() => null))) as {
+      readonly text?: unknown;
+    } | null;
+    const text = typeof payload?.text === "string" ? payload.text : "";
+    const audio = yield* synthesizeSpeech({
+      text,
+      apiKey: request.headers["x-t3-tts-api-key"] ?? "",
+      voice: request.headers["x-t3-tts-voice"] ?? "",
+    });
+    return HttpServerResponse.uint8Array(audio, {
+      status: 200,
+      contentType: "audio/mpeg",
+    });
+  }).pipe(
+    Effect.catchTags({
+      EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
+      EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
+      TtsApiKeyMissingError: (cause) =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe({ error: cause.message }, { status: 400 })),
+      TtsBadInputError: (cause) =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe({ error: cause.message }, { status: 400 })),
+      TtsProviderError: (cause) =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { error: cause.message, providerStatus: cause.providerStatus },
+            { status: 502 },
+          ),
+        ),
+      TtsRequestError: (cause) =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe({ error: cause.message }, { status: 502 })),
+    }),
+  ),
+);
+
+export const ttsRouteLayers = Layer.mergeAll(ttsStatusRouteLayer, ttsRouteLayer);
 
 export const assetRouteLayer = HttpRouter.add(
   "GET",

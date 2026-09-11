@@ -843,7 +843,7 @@ function ComposerCommandMenuLayer(props: { anchor: HTMLElement | null; children:
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   BotIcon,
   CircleAlertIcon,
@@ -855,8 +855,18 @@ import {
   LockOpenIcon,
   PenLineIcon,
   SparklesIcon,
+  SquareIcon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
+import * as Option from "effect/Option";
+import {
+  isReadAloudTargetSupported,
+  readTtsEnvironmentStatus,
+  requestReadAloudAudio,
+  type ReadAloudTarget,
+} from "~/lib/readAloud";
+import { usePreparedConnection } from "~/state/session";
 import { proposedPlanTitle } from "../../proposedPlan";
 import { hasProviderSetup } from "./ProviderStatusBanner";
 import {
@@ -1392,6 +1402,182 @@ export interface ChatComposerProps {
 // Component
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Read-aloud button. Plays the last assistant response via server TTS.
+// No mic, no duplex. Key and voice come from Settings → Integrations → Voice,
+// with OPENAI_API_KEY on the server as fallback. Hidden until supported.
+// --------------------------------------------------------------------------
+
+const ComposerReadAloudButton = memo(function ComposerReadAloudButton({
+  text,
+  apiKey,
+  voice,
+  target,
+  threadKey,
+}: {
+  text: string | null;
+  apiKey: string;
+  voice: string;
+  target: ReadAloudTarget | null;
+  threadKey: string;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // Bumped on unmount, on stop, and when the response changes so a request
+  // that resolves later cannot start playing audio for a thread the user
+  // already left.
+  const requestRef = useRef(0);
+
+  const releaseUrl = useCallback(() => {
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+  }, []);
+
+  const cancelActive = useCallback(() => {
+    requestRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    audioRef.current?.pause();
+    audioRef.current = null;
+    releaseUrl();
+    setState("idle");
+  }, [releaseUrl]);
+
+  useEffect(() => cancelActive, [cancelActive]);
+
+  // A new response (new turn), a thread switch, or a switch to another thread
+  // with identical text all cancel the read so stale audio cannot leak through.
+  const lastTextRef = useRef(text);
+  useEffect(() => {
+    if (lastTextRef.current === text) return;
+    lastTextRef.current = text;
+    cancelActive();
+  }, [text, cancelActive]);
+  useEffect(() => cancelActive(), [threadKey, cancelActive]);
+
+  const toggle = useCallback(async () => {
+    // Loading is cancellable too, so a stalled request is never a dead end.
+    if (state === "playing" || state === "loading") {
+      cancelActive();
+      return;
+    }
+    if (!text || !isReadAloudTargetSupported(target)) return;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setState("loading");
+    let mediaErrorHandled = false;
+    try {
+      const { blob, truncated } = await requestReadAloudAudio(
+        text,
+        { apiKey, voice },
+        target,
+        controller.signal,
+      );
+      if (requestRef.current !== requestId) return;
+      abortRef.current = null;
+      if (truncated) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Reading the first part",
+            description: "This response was too long to read in full.",
+          }),
+        );
+      }
+      releaseUrl();
+      const url = URL.createObjectURL(blob);
+      urlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      // Guard on the captured URL so a stale element's events cannot tear down
+      // a newer read's audio or object URL.
+      audio.addEventListener("ended", () => {
+        if (urlRef.current !== url) return;
+        audioRef.current = null;
+        releaseUrl();
+        setState("idle");
+      });
+      audio.addEventListener("error", () => {
+        if (urlRef.current !== url) return;
+        mediaErrorHandled = true;
+        audioRef.current = null;
+        releaseUrl();
+        setState("idle");
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Read-aloud failed",
+            description: "Could not play the response audio.",
+          }),
+        );
+      });
+      await audio.play();
+      if (requestRef.current !== requestId) {
+        audio.pause();
+        return;
+      }
+      setState("playing");
+    } catch (error) {
+      if (requestRef.current !== requestId) return;
+      // The media error handler already reported and cleaned up.
+      if (mediaErrorHandled) return;
+      audioRef.current = null;
+      releaseUrl();
+      setState("idle");
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Read-aloud failed",
+          description: error instanceof Error ? error.message : "Could not read the response.",
+        }),
+      );
+    }
+  }, [text, apiKey, voice, target, state, cancelActive, releaseUrl]);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={
+              state === "idle"
+                ? "Read response aloud"
+                : state === "loading"
+                  ? "Cancel reading response"
+                  : "Stop reading response"
+            }
+            disabled={!text}
+            onClick={toggle}
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="shrink-0 px-2 text-muted-foreground hover:text-foreground"
+          />
+        }
+      >
+        {state === "idle" ? <Volume2Icon className="size-4" /> : <SquareIcon className="size-4" />}
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>
+          {!text
+            ? "No response to read yet"
+            : state === "idle"
+              ? "Read response aloud"
+              : state === "loading"
+                ? "Cancel"
+                : "Stop reading"}
+        </p>
+      </TooltipPopup>
+    </Tooltip>
+  );
+});
+
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const {
     composerDraftTarget,
@@ -1485,6 +1671,58 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
+
+  // Read aloud: the last settled assistant response, resolved per environment.
+  const lastAssistantText = useMemo(() => {
+    const messages = activeThread?.messages;
+    if (!messages) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role === "assistant" && !message.streaming && message.text.trim()) {
+        return message.text;
+      }
+    }
+    return null;
+  }, [activeThread?.messages]);
+
+  const readAloudApiKey = settings.readAloudApiKey.trim();
+  const preparedReadAloudConnection = Option.getOrNull(usePreparedConnection(environmentId));
+  const readAloudBaseUrl = preparedReadAloudConnection?.httpBaseUrl ?? null;
+  const readAloudAuthorization = preparedReadAloudConnection?.httpAuthorization ?? null;
+  const readAloudTarget = useMemo<ReadAloudTarget | null>(
+    () =>
+      readAloudBaseUrl === null
+        ? null
+        : { baseUrl: readAloudBaseUrl, authorization: readAloudAuthorization },
+    [readAloudBaseUrl, readAloudAuthorization],
+  );
+  const readAloudSupported = isReadAloudTargetSupported(readAloudTarget);
+  const readAloudThreadKey = `${environmentId}:${activeThreadId ?? "draft"}`;
+  const [hasTtsEnvironmentKey, setHasTtsEnvironmentKey] = useState(false);
+  useEffect(() => {
+    if (!settings.readAloudEnabled || !readAloudSupported) {
+      setHasTtsEnvironmentKey(false);
+      return;
+    }
+    let active = true;
+    setHasTtsEnvironmentKey(false);
+    void readTtsEnvironmentStatus(readAloudTarget)
+      .then((status) => {
+        if (active) setHasTtsEnvironmentKey(status.openai);
+      })
+      .catch(() => {
+        if (active) setHasTtsEnvironmentKey(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [settings.readAloudEnabled, readAloudSupported, readAloudTarget]);
+  const readAloudVisible =
+    settings.readAloudEnabled &&
+    readAloudSupported &&
+    lastAssistantText !== null &&
+    (readAloudApiKey.length > 0 || hasTtsEnvironmentKey);
+
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
@@ -5788,6 +6026,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {readAloudVisible ? (
+                    <ComposerReadAloudButton
+                      text={lastAssistantText}
+                      apiKey={readAloudApiKey}
+                      voice={settings.readAloudVoice}
+                      target={readAloudTarget}
+                      threadKey={readAloudThreadKey}
+                    />
+                  ) : null}
                   {showComposerAttachAction ? (
                     <>
                       <input

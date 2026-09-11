@@ -274,6 +274,32 @@ export const LoadBalancingWeights = Schema.Record(
 
 export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 
+// ── Read aloud (one-way TTS for hands-free listening) ──────────
+// Voices mirror the OpenAI TTS `voice` parameter. A stored value outside this
+// list is not a decode error: the field is a plain string and the server falls
+// back to the default, so removing a voice can never brick saved settings.
+export const TTS_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "fable",
+  "nova",
+  "onyx",
+  "sage",
+  "shimmer",
+  "verse",
+  "marin",
+  "cedar",
+] as const;
+export const TtsVoice = Schema.Literals(TTS_VOICES);
+export type TtsVoice = typeof TtsVoice.Type;
+export const DEFAULT_TTS_VOICE: TtsVoice = "alloy";
+
+/** Max characters sent to the TTS provider. Shared by client and server. */
+export const MAX_TTS_TEXT_CHARS = 4000;
+
 export const ClientSettingsSchema = Schema.Struct({
   diffColorScheme: DiffColorScheme.pipe(
     Schema.withDecodingDefault(Effect.succeed("red-green" as const)),
@@ -452,6 +478,9 @@ export const ClientSettingsSchema = Schema.Struct({
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  readAloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  readAloudApiKey: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  readAloudVoice: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_TTS_VOICE))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -1399,5 +1428,8 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
+  readAloudEnabled: Schema.optionalKey(Schema.Boolean),
+  readAloudApiKey: Schema.optionalKey(TrimmedString),
+  readAloudVoice: Schema.optionalKey(TrimmedString),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

@@ -600,6 +600,24 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/archived",
     searchTerms: ["restore reopen deleted history projects"],
   },
+  {
+    id: "read-aloud-enabled",
+    title: "Read responses aloud",
+    to: "/settings/integrations",
+    searchTerms: ["voice text to speech tts speak hands free audio openai"],
+  },
+  {
+    id: "read-aloud-api-key",
+    title: "Read aloud OpenAI API key",
+    to: "/settings/integrations",
+    searchTerms: ["voice text to speech tts openai key secret"],
+  },
+  {
+    id: "read-aloud-voice",
+    title: "Read aloud voice",
+    to: "/settings/integrations",
+    searchTerms: ["voice text to speech tts alloy nova onyx openai"],
+  },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 
 export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];

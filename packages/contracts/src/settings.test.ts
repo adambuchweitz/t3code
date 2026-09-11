@@ -184,6 +184,23 @@ describe("ClientSettings word wrap", () => {
   });
 });
 
+describe("ClientSettings read aloud", () => {
+  it("defaults read aloud off with the default voice and no key", () => {
+    const decoded = decodeClientSettings({});
+    expect(decoded.readAloudEnabled).toBe(false);
+    expect(decoded.readAloudVoice).toBe("alloy");
+    expect(decoded.readAloudApiKey).toBe("");
+  });
+
+  it("keeps an unrecognized stored voice instead of failing to decode", () => {
+    // Removing a voice from TTS_VOICES must not make saved client settings
+    // undecodable, which would wipe every other preference.
+    expect(decodeClientSettings({ readAloudVoice: "retired-voice" }).readAloudVoice).toBe(
+      "retired-voice",
+    );
+  });
+});
+
 describe("ClientSettings window capture", () => {
   it("defaults capture off while keeping its feedback enabled", () => {
     const settings = decodeClientSettings({});

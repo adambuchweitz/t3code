@@ -34,18 +34,30 @@ import {
   type BrowserImportSource,
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
+  TTS_VOICES,
 } from "@t3tools/contracts";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
 import { Link } from "@tanstack/react-router";
+import * as Option from "effect/Option";
 import { MoreVertical, Plus as PlusIcon } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ScreenRotationIcon } from "~/browser/ScreenRotationIcon";
 import { AnimatedHeight } from "~/components/AnimatedHeight";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import { previewBridge } from "~/components/preview/previewBridge";
+import {
+  isReadAloudTargetSupported,
+  readTtsEnvironmentStatus,
+  type ReadAloudTarget,
+} from "~/lib/readAloud";
 import { cn, randomUUID } from "~/lib/utils";
-import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
+import {
+  useEnvironments,
+  usePrimaryEnvironment,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
+import { usePreparedConnection } from "~/state/session";
 import { deviceEnvironment, useDeviceState } from "~/state/device";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
@@ -82,6 +94,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
+import { Input } from "../ui/input";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import {
   Select,
@@ -1322,6 +1335,143 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
+function ReadAloudApiKeyInput({
+  value,
+  hasEnvironmentApiKey,
+  onCommit,
+}: {
+  value: string;
+  hasEnvironmentApiKey: boolean;
+  onCommit: (value: string) => void;
+}) {
+  // Local draft so a secret is not written to settings on every keystroke; the
+  // value commits on blur or Enter.
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  return (
+    <Input
+      type="password"
+      autoComplete="off"
+      className="w-full sm:w-64"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        if (draft !== value) onCommit(draft);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      placeholder={hasEnvironmentApiKey ? "Using OPENAI_API_KEY" : "Required"}
+      aria-label="OpenAI API key for read aloud"
+    />
+  );
+}
+
+/**
+ * Read aloud: a one-way text-to-speech readback of the last assistant response.
+ * OpenAI backs the voice layer, so it is grouped with the other external
+ * surfaces here.
+ */
+function VoiceSettings() {
+  const readAloudEnabled = useClientSettings((settings) => settings.readAloudEnabled);
+  const readAloudApiKey = useClientSettings((settings) => settings.readAloudApiKey);
+  const readAloudVoice = useClientSettings((settings) => settings.readAloudVoice);
+  const updateSettings = useUpdatePrimarySettings();
+  const [hasEnvironmentApiKey, setHasEnvironmentApiKey] = useState(false);
+
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const preparedConnection = Option.getOrNull(usePreparedConnection(primaryEnvironmentId));
+  const preparedBaseUrl = preparedConnection?.httpBaseUrl ?? null;
+  const preparedAuthorization = preparedConnection?.httpAuthorization ?? null;
+  const readAloudTarget = useMemo<ReadAloudTarget | null>(
+    () =>
+      preparedBaseUrl === null
+        ? null
+        : { baseUrl: preparedBaseUrl, authorization: preparedAuthorization },
+    [preparedBaseUrl, preparedAuthorization],
+  );
+
+  useEffect(() => {
+    if (!readAloudEnabled || !isReadAloudTargetSupported(readAloudTarget)) {
+      setHasEnvironmentApiKey(false);
+      return;
+    }
+    let active = true;
+    setHasEnvironmentApiKey(false);
+    void readTtsEnvironmentStatus(readAloudTarget)
+      .then((status) => {
+        if (active) setHasEnvironmentApiKey(status.openai);
+      })
+      .catch(() => {
+        if (active) setHasEnvironmentApiKey(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [readAloudEnabled, readAloudTarget]);
+
+  return (
+    <SettingsSection id="voice" title="Voice">
+      <SettingsRow
+        {...searchableSetting("read-aloud-enabled")}
+        description="Adds a speaker button to the composer that reads the last response with an OpenAI voice. Handy when your hands are busy."
+        control={
+          <Switch
+            checked={readAloudEnabled}
+            onCheckedChange={(checked) => updateSettings({ readAloudEnabled: Boolean(checked) })}
+            aria-label="Read responses aloud"
+          />
+        }
+      />
+      {readAloudEnabled ? (
+        <>
+          <SettingsRow
+            {...searchableSetting("read-aloud-api-key")}
+            description={
+              hasEnvironmentApiKey
+                ? "OPENAI_API_KEY is configured on the connected T3 server. Enter a key here to override it for this client."
+                : "Stored only in this client's local settings. You can also set OPENAI_API_KEY on the connected T3 server."
+            }
+            control={
+              <ReadAloudApiKeyInput
+                value={readAloudApiKey}
+                hasEnvironmentApiKey={hasEnvironmentApiKey}
+                onCommit={(value) => updateSettings({ readAloudApiKey: value })}
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("read-aloud-voice")}
+            description="The OpenAI voice used to read responses."
+            control={
+              <Select
+                value={readAloudVoice}
+                onValueChange={(value) => {
+                  if (value !== null) updateSettings({ readAloudVoice: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Read aloud voice">
+                  <SelectValue>{readAloudVoice}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {TTS_VOICES.map((voice) => (
+                    <SelectItem hideIndicator key={voice} value={voice}>
+                      {voice}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
 export function IntegrationsSettingsPanel() {
   // Client-local preview defaults are editable only where the preview exists.
   const previewDefaultsDisabled = !isElectron;
@@ -1352,6 +1502,7 @@ export function IntegrationsSettingsPanel() {
           previewDefaults
         )}
       </SettingsSection>
+      <VoiceSettings />
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );
