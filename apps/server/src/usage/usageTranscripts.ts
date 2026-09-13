@@ -486,3 +486,110 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
 }
 
 export { EMPTY_TOTALS };
+
+/* -------------------------------------------------------------------------- */
+/* OpenCode                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One row of opencode's SQLite store, from either the `session_message` or
+ * the older `message` table. A message id can appear in both, so it is the
+ * `dedupeKey`.
+ */
+export interface OpenCodeRow {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly data: unknown;
+}
+
+function openCodeTokens(value: unknown): UsageTokenTotals | null {
+  if (typeof value !== "object" || value === null) return null;
+  const tokens = value as Record<string, unknown>;
+  const cache = tokens["cache"];
+  const cacheRecord =
+    typeof cache === "object" && cache !== null ? (cache as Record<string, unknown>) : {};
+  // Unlike Codex and Grok, opencode's input count excludes cached tokens: real
+  // rows carry a small input beside a huge cache read, so subtracting would
+  // zero out genuine input.
+  const inputTokens = int(tokens["input"]);
+  const cachedInputTokens = int(cacheRecord["read"]);
+  const cacheCreationTokens = int(cacheRecord["write"]);
+  const outputTokens = int(tokens["output"]);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: inputTokens,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    // Reported inside output_tokens, surfaced separately for the token mix.
+    reasoningTokens: Math.min(outputTokens, int(tokens["reasoning"])),
+  };
+  return totalTokens(totals) === 0 ? null : totals;
+}
+
+/**
+ * Parses one opencode assistant message into a usage record.
+ *
+ * Only `opencode-go` rows are collected. The same store also carries Zen
+ * (`opencode`) rows, which bill a different account, and ChatGPT OAuth
+ * (`openai`) rows, which the Codex rollout scan already counts. The session
+ * rollup table is never read: it holds aggregates, and summing those beside
+ * these per-message rows would double count.
+ */
+export function parseOpenCodeRow(row: OpenCodeRow): UsageRecord | null {
+  if (row.id.length === 0 || row.sessionId.length === 0) return null;
+  const data = typeof row.data === "string" ? safeJsonParse(row.data) : row.data;
+  if (typeof data !== "object" || data === null) return null;
+  const record = data as Record<string, unknown>;
+
+  const time = record["time"];
+  const timeRecord =
+    typeof time === "object" && time !== null ? (time as Record<string, unknown>) : {};
+  // Turn end when known, turn start otherwise.
+  const completed = timeRecord["completed"];
+  const created = timeRecord["created"];
+  const timestampMs =
+    typeof completed === "number" && Number.isFinite(completed)
+      ? Math.trunc(completed)
+      : typeof created === "number" && Number.isFinite(created)
+        ? Math.trunc(created)
+        : null;
+  if (timestampMs === null) return null;
+
+  const modelValue = record["model"];
+  let providerId: unknown;
+  let modelId: unknown;
+  if (typeof modelValue === "object" && modelValue !== null) {
+    // `session_message` shape: { id, providerID, variant }.
+    providerId = (modelValue as Record<string, unknown>)["providerID"];
+    modelId = (modelValue as Record<string, unknown>)["id"];
+  } else {
+    // `message` shape: flat providerID/modelID beside a role.
+    if (record["role"] !== "assistant") return null;
+    providerId = record["providerID"];
+    modelId = record["modelID"];
+  }
+  if (providerId !== "opencode-go") return null;
+  if (typeof modelId !== "string" || modelId.length === 0) return null;
+
+  const totals = openCodeTokens(record["tokens"]);
+  if (totals === null) return null;
+
+  const cost = record["cost"];
+  return {
+    provider: "opencode",
+    timestampMs,
+    model: modelId,
+    sessionId: row.sessionId,
+    totals,
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
+    dedupeKey: row.id,
+  };
+}
+
+function safeJsonParse(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}

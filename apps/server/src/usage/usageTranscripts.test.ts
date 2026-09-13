@@ -6,6 +6,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseOpenCodeRow,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -562,5 +563,74 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+describe("parseOpenCodeRow", () => {
+  const sessionRow = (data: unknown) => ({
+    id: "msg_08ba980f10012j84CRi6WnfdxD",
+    sessionId: "ses_f6e41b053ffezKFbvL77QqtkJH",
+    data,
+  });
+
+  /** Shaped after a real session_message assistant row. */
+  const goMessage = {
+    time: { created: 1789049539823, completed: 1789049546376 },
+    agent: "build",
+    model: { id: "deepseek-v4.1-flash", providerID: "opencode-go", variant: "default" },
+    cost: 0.001217988,
+    tokens: { input: 702, output: 780, reasoning: 766, cache: { read: 61696, write: 0 } },
+  };
+
+  it("extracts a Go record with exclusive input and reported cost", () => {
+    expect(parseOpenCodeRow(sessionRow(goMessage))).toEqual({
+      provider: "opencode",
+      timestampMs: 1789049546376,
+      model: "deepseek-v4.1-flash",
+      sessionId: "ses_f6e41b053ffezKFbvL77QqtkJH",
+      totals: {
+        uncachedInputTokens: 702,
+        cachedInputTokens: 61696,
+        cacheCreationTokens: 0,
+        outputTokens: 780,
+        reasoningTokens: 766,
+      },
+      reportedCostUsd: 0.001217988,
+      dedupeKey: "msg_08ba980f10012j84CRi6WnfdxD",
+    });
+  });
+
+  it("parses the legacy message shape and string payloads", () => {
+    const legacy =
+      '{"role":"assistant","time":{"created":1771010924191,"completed":1771010952563},' +
+      '"providerID":"opencode-go","modelID":"glm-5.3-flash","cost":0.004,' +
+      '"tokens":{"total":12863,"input":11522,"output":1341,"reasoning":905,' +
+      '"cache":{"read":0,"write":0}}}';
+    const record = parseOpenCodeRow(sessionRow(legacy));
+    expect(record?.model).toBe("glm-5.3-flash");
+    expect(record?.timestampMs).toBe(1771010952563);
+    expect(record?.totals.uncachedInputTokens).toBe(11522);
+  });
+
+  it("leaves Zen and OAuth rows for their own accounting", () => {
+    const zen = {
+      ...goMessage,
+      model: { id: "claude-haiku-4-5", providerID: "opencode", variant: "default" },
+    };
+    expect(parseOpenCodeRow(sessionRow(zen))).toBe(null);
+    const oauth = {
+      ...goMessage,
+      model: { id: "gpt-5.3-codex", providerID: "openai", variant: "default" },
+    };
+    expect(parseOpenCodeRow(sessionRow(oauth))).toBe(null);
+  });
+
+  it("rejects rows without usage", () => {
+    expect(parseOpenCodeRow(sessionRow({ type: "assistant" }))).toBe(null);
+    expect(parseOpenCodeRow(sessionRow({ ...goMessage, tokens: { input: 0, output: 0 } }))).toBe(
+      null,
+    );
+    expect(parseOpenCodeRow({ id: "", sessionId: "s", data: goMessage })).toBe(null);
+    expect(parseOpenCodeRow(sessionRow("not json"))).toBe(null);
   });
 });
