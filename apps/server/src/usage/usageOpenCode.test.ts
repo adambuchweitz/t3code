@@ -60,7 +60,7 @@ async function seedDb(dir: string): Promise<string> {
       "assistant",
       goMessage("glm-5.3-flash", 1_700_000_000_000),
     );
-    // OAuth passthrough and user rows are never usage.
+    // Turns routed to other upstreams count too; user rows never do.
     insertCurrent.run(
       "msg_oauth_1",
       "ses_1",
@@ -103,6 +103,7 @@ describe("readOpenCodeRecords", () => {
       expect(result.records.map((record) => record.dedupeKey).sort()).toEqual([
         "msg_go_1",
         "msg_legacy_1",
+        "msg_oauth_1",
       ]);
       expect(result.records[0]?.provider).toBe("opencode");
       expect(result.records[0]?.model).toBe("glm-5.3-flash");
@@ -123,9 +124,9 @@ describe("readOpenCodeRecords", () => {
       const result = await readOpenCodeRecords(dbPath, 1_786_000_000_000);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.records.map((record) => record.dedupeKey)).toEqual([
-        table === "message" ? "msg_legacy_1" : "msg_go_1",
-      ]);
+      expect(result.records.map((record) => record.dedupeKey)).toEqual(
+        table === "message" ? ["msg_legacy_1"] : ["msg_go_1", "msg_oauth_1"],
+      );
       expect(result.partial).toBe(false);
     } finally {
       await NodeFSP.rm(home, { recursive: true, force: true });
@@ -164,6 +165,7 @@ describe("readOpenCodeRecords", () => {
         "long_turn",
         "msg_go_1",
         "msg_legacy_1",
+        "msg_oauth_1",
       ]);
     } finally {
       await NodeFSP.rm(home, { recursive: true, force: true });

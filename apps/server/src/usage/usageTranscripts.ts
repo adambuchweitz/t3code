@@ -529,9 +529,9 @@ function openCodeTokens(value: unknown): UsageTokenTotals | null {
 /**
  * Parses one opencode assistant message into a usage record.
  *
- * Only `opencode-go` rows are collected. The same store also carries Zen
- * (`opencode`) rows, which bill a different account, and ChatGPT OAuth
- * (`openai`) rows, which the Codex rollout scan already counts. The session
+ * Every assistant row counts, whichever upstream provider opencode routed the
+ * turn to (Go, Zen, ChatGPT OAuth, OpenRouter, ...). None of those write the
+ * other providers' transcripts, so nothing is counted twice. The session
  * rollup table is never read: it holds aggregates, and summing those beside
  * these per-message rows would double count.
  */
@@ -556,24 +556,22 @@ export function parseOpenCodeRow(row: OpenCodeRow): UsageRecord | null {
   if (timestampMs === null) return null;
 
   const modelValue = record["model"];
-  let providerId: unknown;
   let modelId: unknown;
   if (typeof modelValue === "object" && modelValue !== null) {
     // `session_message` shape: { id, providerID, variant }.
-    providerId = (modelValue as Record<string, unknown>)["providerID"];
     modelId = (modelValue as Record<string, unknown>)["id"];
   } else {
     // `message` shape: flat providerID/modelID beside a role.
     if (record["role"] !== "assistant") return null;
-    providerId = record["providerID"];
     modelId = record["modelID"];
   }
-  if (providerId !== "opencode-go") return null;
   if (typeof modelId !== "string" || modelId.length === 0) return null;
 
   const totals = openCodeTokens(record["tokens"]);
   if (totals === null) return null;
 
+  // opencode writes 0 when it has no rate for the model, so 0 means unknown
+  // and the rate table prices the tokens instead.
   const cost = record["cost"];
   return {
     provider: "opencode",
@@ -581,7 +579,7 @@ export function parseOpenCodeRow(row: OpenCodeRow): UsageRecord | null {
     model: modelId,
     sessionId: row.sessionId,
     totals,
-    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
     dedupeKey: row.id,
   };
 }

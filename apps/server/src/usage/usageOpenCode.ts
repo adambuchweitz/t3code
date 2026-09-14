@@ -8,8 +8,8 @@
  * completed inside the requested window. Handles stay read-only and do not
  * wait on database locks on the server thread.
  *
- * Only `opencode-go` rows are collected; see `parseOpenCodeRow` for why the
- * Zen and OAuth rows sharing these tables are left out.
+ * Every assistant row counts, whichever upstream provider opencode routed it
+ * to; see `parseOpenCodeRow`.
  *
  * @module usageOpenCode
  */
@@ -33,12 +33,8 @@ export type OpenCodeReadResult =
 const READ_BATCH_SIZE = 256;
 
 const TABLES = [
-  { table: "session_message", assistant: "type = 'assistant'", provider: "$.model.providerID" },
-  {
-    table: "message",
-    assistant: "json_extract(data, '$.role') = 'assistant'",
-    provider: "$.providerID",
-  },
+  { table: "session_message", assistant: "type = 'assistant'" },
+  { table: "message", assistant: "json_extract(data, '$.role') = 'assistant'" },
 ] as const;
 
 /**
@@ -70,7 +66,7 @@ export async function readOpenCodeRecords(
     let malformedRecords = 0;
     let readableTables = 0;
     let partial = false;
-    for (const { table, assistant, provider } of TABLES) {
+    for (const { table, assistant } of TABLES) {
       if (!present.has(table)) continue;
       const start = records.length;
       const malformedStart = malformedRecords;
@@ -85,7 +81,6 @@ export async function readOpenCodeRecords(
         const read = db.prepare(`SELECT rowid, id, session_id AS sessionId,
           CASE WHEN json_valid(data) THEN
             CASE WHEN ${assistant}
-              AND json_extract(data, '${provider}') = 'opencode-go'
               AND coalesce(json_extract(data, '$.time.completed'),
                 json_extract(data, '$.time.created')) >= ?
             THEN data END

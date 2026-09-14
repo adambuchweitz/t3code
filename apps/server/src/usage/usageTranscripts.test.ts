@@ -612,17 +612,21 @@ describe("parseOpenCodeRow", () => {
     expect(record?.totals.uncachedInputTokens).toBe(11522);
   });
 
-  it("leaves Zen and OAuth rows for their own accounting", () => {
+  it("counts turns routed to any upstream provider", () => {
     const zen = {
       ...goMessage,
       model: { id: "claude-haiku-4-5", providerID: "opencode", variant: "default" },
     };
-    expect(parseOpenCodeRow(sessionRow(zen))).toBe(null);
+    expect(parseOpenCodeRow(sessionRow(zen))?.model).toBe("claude-haiku-4-5");
     const oauth = {
       ...goMessage,
       model: { id: "gpt-5.3-codex", providerID: "openai", variant: "default" },
     };
-    expect(parseOpenCodeRow(sessionRow(oauth))).toBe(null);
+    expect(parseOpenCodeRow(sessionRow(oauth))?.model).toBe("gpt-5.3-codex");
+  });
+
+  it("treats a zero cost as unknown so the rate table prices it", () => {
+    expect(parseOpenCodeRow(sessionRow({ ...goMessage, cost: 0 }))?.reportedCostUsd).toBe(null);
   });
 
   it("rejects rows without usage", () => {

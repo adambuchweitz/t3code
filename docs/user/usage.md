@@ -2,7 +2,7 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, Grok Build, and OpenCode Go session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, and OpenCode session history from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost. These estimates are not your subscription bill.
 
