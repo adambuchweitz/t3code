@@ -172,9 +172,8 @@ beforeEach(() => {
 const testLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
   Layer.provideMerge(NodeServices.layer),
-  // The probe reads Go quota over HTTP when a key exists. Tests pin HOME away
-  // from any real auth.json, so this client is unreachable by construction; a
-  // loud defect beats an accidental live request if that ever changes.
+  // Tests pin HOME away from any real auth.json, so the Go quota probe never
+  // reaches this client; a loud defect beats an accidental live request.
   Layer.provideMerge(
     Layer.succeed(
       HttpClient.HttpClient,
@@ -198,9 +197,7 @@ const checkProvider = Effect.fn("checkProvider")(function* (
   cwd = process.cwd(),
   environment?: NodeJS.ProcessEnv,
 ) {
-  // The probe reads the machine's opencode auth.json for Go quota. Pin the
-  // home away from the developer's real setup so tests never depend on (or
-  // touch) it, whichever subscriptions that machine holds.
+  // Keep the probe away from the developer's real opencode auth.json.
   const scopedHome = NodePath.join(NodeOS.tmpdir(), "t3-opencode-test-nohome");
   const scopedEnvironment = {
     ...process.env,

@@ -24,7 +24,6 @@ import {
 const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 
 const OpenCodeGoUsageWindow = Schema.Struct({
-  status: Schema.optional(Schema.String),
   percent: Schema.optional(Schema.NullOr(Schema.Number)),
   resetsAt: Schema.optional(Schema.NullOr(Schema.String)),
 });
@@ -46,7 +45,7 @@ const OpenCodeAuthFile = Schema.Record(
 const decodeOpenCodeAuthFile = Schema.decodeUnknownOption(OpenCodeAuthFile);
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
-export function openCodeGoApiKeyFromAuthFile(value: unknown): string | null {
+function openCodeGoApiKeyFromAuthFile(value: unknown): string | null {
   const decoded = decodeOpenCodeAuthFile(value);
   if (decoded._tag === "None") return null;
   const key = decoded.value["opencode-go"]?.key;
