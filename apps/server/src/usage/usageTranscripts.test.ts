@@ -592,12 +592,20 @@ describe("parseOpenCodeRow", () => {
         uncachedInputTokens: 702,
         cachedInputTokens: 61696,
         cacheCreationTokens: 0,
-        outputTokens: 780,
+        outputTokens: 1546,
         reasoningTokens: 766,
       },
       reportedCostUsd: 0.001217988,
       dedupeKey: "msg_08ba980f10012j84CRi6WnfdxD",
     });
+  });
+
+  it("keeps reasoning that exceeds the visible output", () => {
+    const totals = parseOpenCodeRow(
+      sessionRow({ ...goMessage, tokens: { input: 10, output: 9, reasoning: 191 } }),
+    )?.totals;
+    expect(totals?.outputTokens).toBe(200);
+    expect(totals?.reasoningTokens).toBe(191);
   });
 
   it("parses the legacy message shape and string payloads", () => {

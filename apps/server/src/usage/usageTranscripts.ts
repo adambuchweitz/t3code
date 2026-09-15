@@ -514,14 +514,15 @@ function openCodeTokens(value: unknown): UsageTokenTotals | null {
   const inputTokens = int(tokens["input"]);
   const cachedInputTokens = int(cacheRecord["read"]);
   const cacheCreationTokens = int(cacheRecord["write"]);
-  const outputTokens = int(tokens["output"]);
+  // opencode reports `reasoning` beside `output`, not inside it (its `total`
+  // is the sum of all five counts), so fold it in to match the contract.
+  const reasoningTokens = int(tokens["reasoning"]);
   const totals: UsageTokenTotals = {
     uncachedInputTokens: inputTokens,
     cachedInputTokens,
     cacheCreationTokens,
-    outputTokens,
-    // Reported inside output_tokens, surfaced separately for the token mix.
-    reasoningTokens: Math.min(outputTokens, int(tokens["reasoning"])),
+    outputTokens: int(tokens["output"]) + reasoningTokens,
+    reasoningTokens,
   };
   return totalTokens(totals) === 0 ? null : totals;
 }
