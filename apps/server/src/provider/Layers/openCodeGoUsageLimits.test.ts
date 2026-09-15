@@ -122,6 +122,29 @@ describe("readOpenCodeGoUsageLimits", () => {
     }),
   );
 
+  effectIt.effect("reports an unreadable auth.json instead of treating it as no subscription", () =>
+    Effect.gen(function* () {
+      const home = yield* goHome("sk-test-go");
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(NodePath.join(home, ".local", "share", "opencode", "auth.json"), "{oops"),
+      );
+      const limits = yield* readOpenCodeGoUsageLimits({
+        environment: { HOME: home },
+        checkedAt,
+      }).pipe(
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() =>
+            Effect.die(new Error("HttpClient must not be called without a key")),
+          ),
+        ),
+        Effect.provide(NodeServices.layer),
+      );
+      expect(limits?.unavailable).toMatchObject({ reason: "probeFailed" });
+      expect(limits?.unavailable?.message).toContain("auth.json");
+    }),
+  );
+
   effectIt.effect("leaves limits alone without a Go subscription", () =>
     Effect.gen(function* () {
       const home = yield* goHome(null);

@@ -110,6 +110,9 @@ export function openCodeGoUsageToLimits(input: {
   });
 }
 
+/** auth.json exists but could not be read or decoded, which is not the same as having no Go entry. */
+const UNREADABLE = Symbol("unreadable");
+
 const readGoApiKey = Effect.fn("openCodeGoUsageLimits.readGoApiKey")(function* (
   environment: NodeJS.ProcessEnv | undefined,
 ) {
@@ -117,10 +120,12 @@ const readGoApiKey = Effect.fn("openCodeGoUsageLimits.readGoApiKey")(function* (
   const path = yield* Path.Path;
   const raw = yield* fileSystem
     .readFileString(path.join(resolveOpenCodeDataDir(environment), "auth.json"))
-    .pipe(Effect.catchCause(() => Effect.succeed(null)));
-  if (raw === null) return null;
+    .pipe(
+      Effect.catch((error) => Effect.succeed(error.reason._tag === "NotFound" ? null : UNREADABLE)),
+    );
+  if (raw === null || raw === UNREADABLE) return raw;
   const parsed = decodeJson(raw);
-  return parsed._tag === "None" ? null : openCodeGoApiKeyFromAuthFile(parsed.value);
+  return parsed._tag === "None" ? UNREADABLE : openCodeGoApiKeyFromAuthFile(parsed.value);
 });
 
 /**
@@ -139,6 +144,13 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
 > {
   const apiKey = yield* readGoApiKey(input.environment);
   if (apiKey === null) return undefined;
+  if (apiKey === UNREADABLE) {
+    return makeUnavailableUsageLimits({
+      checkedAt: input.checkedAt,
+      reason: "probeFailed",
+      message: "Could not read opencode's auth.json to check the OpenCode Go quota.",
+    });
+  }
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(OPENCODE_GO_USAGE_URL).pipe(
     HttpClientRequest.setHeader("Authorization", `Bearer ${apiKey}`),
