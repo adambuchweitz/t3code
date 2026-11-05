@@ -378,6 +378,16 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
+import {
+  TotAdoptInput,
+  TotError,
+  TotListInput,
+  TotListResult,
+  TotMutationResult,
+  TotReleaseInput,
+  TotReleaseResult,
+  TotUpdateInput,
+} from "./tot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -540,6 +550,11 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+
+  totsSubscribe: "tots.subscribe",
+  totsAdopt: "tots.adopt",
+  totsUpdate: "tots.update",
+  totsRelease: "tots.release",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -1919,6 +1934,31 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+const WsTotsSubscribeRpc = Rpc.make(WS_METHODS.totsSubscribe, {
+  payload: TotListInput,
+  success: TotListResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsTotsAdoptRpc = Rpc.make(WS_METHODS.totsAdopt, {
+  payload: TotAdoptInput,
+  success: TotMutationResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
+const WsTotsUpdateRpc = Rpc.make(WS_METHODS.totsUpdate, {
+  payload: TotUpdateInput,
+  success: TotMutationResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
+const WsTotsReleaseRpc = Rpc.make(WS_METHODS.totsRelease, {
+  payload: TotReleaseInput,
+  success: TotReleaseResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2065,6 +2105,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
+  WsTotsSubscribeRpc,
+  WsTotsAdoptRpc,
+  WsTotsUpdateRpc,
+  WsTotsReleaseRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

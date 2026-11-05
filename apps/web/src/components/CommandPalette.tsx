@@ -75,6 +75,7 @@ import {
   PinOffIcon,
   SquarePenIcon,
   TextSearchIcon,
+  SmileIcon,
   UserPlusIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
@@ -247,6 +248,8 @@ import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
+import { openTotDialog } from "./tots/totDialogState";
+import { readTotForThread, totMenuState } from "../state/tots";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -1421,6 +1424,35 @@ function OpenCommandPaletteDialog(props: {
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
+      },
+    });
+  }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:open-tots",
+    searchTerms: ["tots", "agents", "always on", "characters"],
+    title: "Open Tots",
+    icon: <SmileIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/tots" });
+    },
+  });
+
+  if (
+    activeThread !== null &&
+    totMenuState(scopeThreadRef(activeThread.environmentId, activeThread.id), activeThread).tot
+  ) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const isTot = readTotForThread(threadRef) !== null;
+    actionItems.push({
+      kind: "action",
+      value: "action:tot-for-thread",
+      searchTerms: ["tot", "agent", "character", "name", "face"],
+      title: isTot ? "Edit Tot" : "Make this thread a Tot",
+      icon: <SmileIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openTotDialog({ kind: "thread", threadRef });
       },
     });
   }

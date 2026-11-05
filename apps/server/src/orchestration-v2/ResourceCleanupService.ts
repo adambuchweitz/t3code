@@ -11,6 +11,7 @@ import * as ServerConfig from "../config.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as TotService from "../tots/TotService.ts";
 
 export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupError>()(
   "ResourceCleanupError",
@@ -46,18 +47,18 @@ export const layer = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const config = yield* ServerConfig.ServerConfig;
     const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+    const tots = yield* TotService.TotService;
     return {
       cleanupScheduledTasks: Effect.fn("ResourceCleanupService.cleanupScheduledTasks")(function (
         threadId: ThreadId,
       ) {
-        return scheduledTasks
-          .deleteForThread(threadId)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ResourceCleanupError({ operation: "scheduled-tasks", threadId, cause }),
-            ),
-          );
+        // Runs once when a thread is deleted, and a Tot can't outlive its thread.
+        return scheduledTasks.deleteForThread(threadId).pipe(
+          Effect.andThen(tots.deleteForThread(threadId)),
+          Effect.mapError(
+            (cause) => new ResourceCleanupError({ operation: "scheduled-tasks", threadId, cause }),
+          ),
+        );
       }),
       cleanupTerminals: Effect.fn("ResourceCleanupService.cleanupTerminals")(function (
         threadId: string,

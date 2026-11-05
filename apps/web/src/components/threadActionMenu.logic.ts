@@ -21,6 +21,7 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "tot"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -95,6 +96,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Absent for threads that can't become Tots, such as subagents. */
+  readonly tot?: "adopt" | "edit";
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -180,6 +183,15 @@ export function buildThreadActionMenuItems(
     { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: "Share with guest", icon: "user-plus" }]
+      : []),
+    ...(state.tot
+      ? [
+          {
+            id: "tot" as const,
+            label: state.tot === "edit" ? "Edit Tot" : "Make this a Tot",
+            icon: "smile",
+          },
+        ]
       : []),
     ...(state.projectFilter
       ? [

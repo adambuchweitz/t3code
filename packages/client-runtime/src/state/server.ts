@@ -1330,6 +1330,16 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-task:webhook-delivery",
       tag: WS_METHODS.scheduledTasksGetWebhookDelivery,
     }),
+    // An older server doesn't know this method, so wait for the next session instead of ending.
+    totsLive: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:tots:live",
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.totsSubscribe>) =>
+        subscribe(WS_METHODS.totsSubscribe, input, {
+          onDefect: () => Effect.void,
+          onExpectedFailure: () => Effect.void,
+          retryExpectedFailureAfter: "1 second",
+        }),
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
@@ -1550,6 +1560,18 @@ export function createServerEnvironmentAtoms<R, E>(
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,
+    }),
+    adoptTot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:tot:adopt",
+      tag: WS_METHODS.totsAdopt,
+    }),
+    updateTot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:tot:update",
+      tag: WS_METHODS.totsUpdate,
+    }),
+    releaseTot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:tot:release",
+      tag: WS_METHODS.totsRelease,
     }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",
