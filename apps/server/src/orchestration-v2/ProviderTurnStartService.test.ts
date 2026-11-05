@@ -3707,6 +3707,8 @@ effectIt.effect.each([
       "project manager",
       "Ship the HTTP fix.",
       "excitable toddler",
+      "Be proactive.",
+      "`t3_tot_ask_to_talk`",
       '- Reviews: providerInstanceId "codex", model "gpt-6.1-sol"',
     ],
     absent: [],

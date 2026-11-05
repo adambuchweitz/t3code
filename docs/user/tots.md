@@ -1,6 +1,6 @@
 # Tots
 
-A Tot is a long-running thread with a name, a face, a job, a voice and a charter. Making a thread a Tot keeps its history, automations, watches and crew threads. From its next turn the Tot is told its job, voice and charter.
+A Tot is a long-running thread with a name, a face, a job, a voice and a charter, and it moves its work forward without being asked. Making a thread a Tot keeps its history, automations, watches and crew threads. From its next turn the Tot is told its job, voice and charter, and it starts waking on its own.
 
 ## Make a Tot
 
@@ -18,6 +18,18 @@ Open **Tots** from the bottom of the sidebar. Each Tot shows one of four states:
 - **Offline:** T3 Code can't reach the machine it lives on.
 
 A thread's header also shows the Tot connected to it: the thread's own Tot, the Tot that started the work, or the Tot for its project. A Tot and its project have to be on the same machine for the project link to appear.
+
+## How a Tot acts on its own
+
+Each Tot gets a **Heartbeat**, a schedule that wakes it every hour with a summary of what changed in its project's threads: anything waiting on a request, anything working, and anything new since its last heartbeat. Change or pause it in **Settings → Scheduled tasks**. If you delete it, it comes back paused. A heartbeat is skipped while the Tot is busy, during quiet hours and over the daily limit.
+
+When a Tot has nothing specific to do, it takes the first step that applies:
+
+1. Do what you've approved or its charter allows.
+2. Explore the project to find out what's next.
+3. Ask you. It explains what it needs in its thread and asks to talk. The request shows at the top of the Tots page until you write in the thread or dismiss it.
+
+It still asks before anything destructive, public or hard to undo, unless its charter already allows it. To give a Tot more freedom, say so in its charter.
 
 ## Give a Tot a charter
 

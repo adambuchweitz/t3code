@@ -10,12 +10,13 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type Tot,
+  type TotTalkRequest,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { resolveSidebarThreadStatus } from "../components/Sidebar.logic";
-import { resolveTotState, type TotState } from "../components/tots/tots.logic";
+import { openTalkRequest, resolveTotState, type TotState } from "../components/tots/tots.logic";
 import { environmentCatalog } from "../connection/catalog";
 import { getLocalStorageItem, setLocalStorageItem } from "../hooks/useLocalStorage";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -35,6 +36,7 @@ export interface TotEntry {
   readonly projectName: string | null;
   readonly machineLabel: string | null;
   readonly state: TotState;
+  readonly talkRequest: TotTalkRequest | null;
 }
 
 const EMPTY_TOTS: ReadonlyArray<Tot> = Object.freeze([]);
@@ -81,6 +83,7 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
         environmentProjects.projectAtom(scopeProjectRef(environmentId, tot.projectId)),
       );
       const projectName = project?.title ?? null;
+      const talkRequest = openTalkRequest(tot.talkRequest, thread?.latestUserAuthoredMessageAt);
       entries.push({
         environmentId,
         threadId: tot.threadId,
@@ -91,10 +94,12 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
         displayName: tot.nameEnabled ? tot.name : (projectName ?? tot.name),
         projectName,
         machineLabel: presentation?.entry.target.label ?? null,
+        talkRequest,
         state: resolveTotState({
           connected: presentation?.connection.phase === "connected",
           threadStatus: thread === null ? null : resolveSidebarThreadStatus(thread),
           hasCharterProposal: tot.charterProposal !== null,
+          wantsToTalk: talkRequest !== null,
         }),
       });
     }

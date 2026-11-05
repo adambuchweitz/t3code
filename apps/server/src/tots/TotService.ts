@@ -10,6 +10,7 @@ import {
   type TotAnswerCharterProposalInput,
   type TotListResult,
   type TotMutationResult,
+  type TotAskToTalkInput,
   type TotProposeCharterInput,
   type TotReleaseInput,
   type TotReleaseResult,
@@ -44,6 +45,8 @@ interface TotRow {
   readonly proposed_at: string | null;
   readonly wake_settings: string;
   readonly crew_models: string;
+  readonly talk_topic: string | null;
+  readonly talk_asked_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -81,6 +84,8 @@ const totFromRow = (row: TotRow, projectId: ProjectId, wakesHeld: number) =>
                 reason: row.proposal_reason,
                 proposedAt: row.proposed_at,
               },
+        talkRequest:
+          row.talk_topic === null ? null : { topic: row.talk_topic, askedAt: row.talk_asked_at },
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }),
@@ -104,6 +109,10 @@ export class TotService extends Context.Service<
     readonly proposeCharter: (
       threadId: ThreadId,
       input: TotProposeCharterInput,
+    ) => Effect.Effect<TotMutationResult, TotError>;
+    readonly askToTalk: (
+      threadId: ThreadId,
+      input: TotAskToTalkInput,
     ) => Effect.Effect<TotMutationResult, TotError>;
     readonly answerCharterProposal: (
       input: TotAnswerCharterProposalInput,
@@ -246,6 +255,8 @@ const make = Effect.gen(function* () {
           wake_settings = COALESCE(${wakeSettings}, wake_settings),
           crew_models = COALESCE(${crewModels}, crew_models),
           charter = COALESCE(${charter}, charter),
+          talk_topic = CASE WHEN ${input.dismissTalkRequest === true ? 1 : 0} = 1 THEN NULL ELSE talk_topic END,
+          talk_asked_at = CASE WHEN ${input.dismissTalkRequest === true ? 1 : 0} = 1 THEN NULL ELSE talk_asked_at END,
           proposal_id = CASE WHEN ${keepsProposal} THEN proposal_id END,
           proposed_charter = CASE WHEN ${keepsProposal} THEN proposed_charter END,
           proposal_reason = CASE WHEN ${keepsProposal} THEN proposal_reason END,
@@ -297,6 +308,21 @@ const make = Effect.gen(function* () {
     return yield* mutated(rows[0], "Only a Tot's own thread can propose a charter.");
   });
 
+  const askToTalk: TotService["Service"]["askToTalk"] = Effect.fn("TotService.askToTalk")(
+    function* (threadId, input) {
+      const askedAt = yield* now;
+      const rows = yield* sql<TotRow>`
+        UPDATE tots SET
+          talk_topic = ${input.topic},
+          talk_asked_at = ${askedAt},
+          updated_at = ${askedAt}
+        WHERE thread_id = ${threadId}
+        RETURNING *
+      `.pipe(Effect.mapError(storageError("Could not save the request to talk.")));
+      return yield* mutated(rows[0], "Only a Tot's own thread can ask to talk.");
+    },
+  );
+
   const answerCharterProposal: TotService["Service"]["answerCharterProposal"] = Effect.fn(
     "TotService.answerCharterProposal",
   )(function* (input) {
@@ -323,6 +349,7 @@ const make = Effect.gen(function* () {
     release,
     deleteForThread,
     proposeCharter,
+    askToTalk,
     answerCharterProposal,
     notifyChanged,
   });

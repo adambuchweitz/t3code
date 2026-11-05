@@ -77,6 +77,13 @@ export type TotCrewModel = typeof TotCrewModel.Type;
 
 const TotCrewModels = Schema.Array(TotCrewModel).check(Schema.isMaxLength(12));
 
+/** A Tot asking for a discussion. It stands until the user next writes in its thread. */
+export const TotTalkRequest = Schema.Struct({
+  topic: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  askedAt: IsoDateTime,
+});
+export type TotTalkRequest = typeof TotTalkRequest.Type;
+
 /** A lasting identity wrapped around one thread. */
 export const Tot = Schema.Struct({
   id: TotId,
@@ -99,6 +106,9 @@ export const Tot = Schema.Struct({
   ),
   crewModels: TotCrewModels.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   wakesHeld: NonNegativeInt.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  talkRequest: Schema.NullOr(TotTalkRequest).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -133,6 +143,7 @@ export const TotUpdateInput = Schema.Struct({
   voice: Schema.optionalKey(TotVoice),
   wakeSettings: Schema.optionalKey(TotWakeSettings),
   crewModels: Schema.optionalKey(TotCrewModels),
+  dismissTalkRequest: Schema.optionalKey(Schema.Literal(true)),
 });
 export type TotUpdateInput = typeof TotUpdateInput.Type;
 
@@ -143,6 +154,13 @@ export const TotProposeCharterInput = Schema.Struct({
   }),
 });
 export type TotProposeCharterInput = typeof TotProposeCharterInput.Type;
+
+export const TotAskToTalkInput = Schema.Struct({
+  topic: TotTalkRequest.fields.topic.annotate({
+    description: "What you need to discuss, in a sentence the user can read on its own.",
+  }),
+});
+export type TotAskToTalkInput = typeof TotAskToTalkInput.Type;
 
 export const TotAnswerCharterProposalInput = Schema.Struct({
   id: TotId,

@@ -13,6 +13,10 @@ const ADDED_COLUMNS = {
   crew_models: "TEXT NOT NULL DEFAULT '[]'",
   wake_day: "TEXT",
   wake_count: "INTEGER NOT NULL DEFAULT 0",
+  heartbeat_created: "INTEGER NOT NULL DEFAULT 0",
+  briefed_at: "TEXT",
+  talk_topic: "TEXT",
+  talk_asked_at: "TEXT",
 } as const;
 
 // Not a numbered migration: this feature lives on a fork, and a database that recorded an id

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   diffCharterLines,
   resolveConnectedTot,
+  openTalkRequest,
   resolveTotState,
   type ConnectedThreadInput,
 } from "./tots.logic";
@@ -32,7 +33,30 @@ const brace = {
   projectId: project,
 };
 
+describe("openTalkRequest", () => {
+  const request = { topic: "What's next?", askedAt: "2026-11-05T10:00:00.000Z" };
+
+  it.each([
+    ["the user hasn't written yet", null, request],
+    ["the user last wrote before it asked", "2026-11-05T09:00:00.000Z", request],
+    ["the user wrote after it asked", "2026-11-05T11:00:00.000Z", null],
+  ])("when %s", (_name, latest, expected) => {
+    expect(openTalkRequest(request, latest)).toEqual(expected);
+  });
+});
+
 describe("resolveTotState", () => {
+  it("needs the user when it wants to talk", () => {
+    expect(
+      resolveTotState({
+        connected: true,
+        threadStatus: "ready",
+        hasCharterProposal: false,
+        wantsToTalk: true,
+      }),
+    ).toBe("needs");
+  });
+
   it.each([
     ["approval", "needs"],
     ["input", "needs"],
@@ -45,20 +69,35 @@ describe("resolveTotState", () => {
     ["ready", "idle"],
     [null, "idle"],
   ] as const)("maps a %s thread to %s", (threadStatus, expected) => {
-    expect(resolveTotState({ connected: true, threadStatus, hasCharterProposal: false })).toBe(
-      expected,
-    );
+    expect(
+      resolveTotState({
+        connected: true,
+        threadStatus,
+        hasCharterProposal: false,
+        wantsToTalk: false,
+      }),
+    ).toBe(expected);
   });
 
   it("is offline whenever its machine is unreachable, even mid-run", () => {
     expect(
-      resolveTotState({ connected: false, threadStatus: "working", hasCharterProposal: true }),
+      resolveTotState({
+        connected: false,
+        threadStatus: "working",
+        hasCharterProposal: true,
+        wantsToTalk: false,
+      }),
     ).toBe("offline");
   });
 
   it("needs you for a charter proposal, even while busy", () => {
     expect(
-      resolveTotState({ connected: true, threadStatus: "working", hasCharterProposal: true }),
+      resolveTotState({
+        connected: true,
+        threadStatus: "working",
+        hasCharterProposal: true,
+        wantsToTalk: false,
+      }),
     ).toBe("needs");
   });
 });

@@ -4,6 +4,7 @@ import type {
   OrchestrationV2AppThreadLineage,
   ProjectId,
   ThreadId,
+  TotTalkRequest,
   TotVoice,
 } from "@t3tools/contracts";
 
@@ -62,14 +63,27 @@ export const TOT_STATE_POSE: Record<TotState, TotPose> = {
   offline: "asleep",
 };
 
+/** Writing in the thread answers it. Wakes and agent messages don't count as the user writing. */
+export function openTalkRequest(
+  request: TotTalkRequest | null,
+  latestUserAuthoredMessageAt: string | null | undefined,
+): TotTalkRequest | null {
+  if (request === null) return null;
+  return latestUserAuthoredMessageAt != null &&
+    Date.parse(latestUserAuthoredMessageAt) > Date.parse(request.askedAt)
+    ? null
+    : request;
+}
+
 /** Failures need the user too: nothing else will restart a Tot that stopped. */
 export function resolveTotState(input: {
   readonly connected: boolean;
   readonly threadStatus: SidebarThreadStatus | null;
   readonly hasCharterProposal: boolean;
+  readonly wantsToTalk: boolean;
 }): TotState {
   if (!input.connected) return "offline";
-  if (input.hasCharterProposal) return "needs";
+  if (input.hasCharterProposal || input.wantsToTalk) return "needs";
   switch (input.threadStatus) {
     case "approval":
     case "input":

@@ -91,7 +91,7 @@ export function TotWakesPanel(props: {
         ) : null}
         <p className="text-xs text-muted-foreground">
           On {entry.machineLabel ?? "its machine"}'s clock. Scheduled wakes wait and merge into one
-          turn when these end.
+          turn when these end. Heartbeats are skipped instead.
         </p>
       </div>
       <div className="grid gap-2">
@@ -110,7 +110,8 @@ export function TotWakesPanel(props: {
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          Counts scheduled wakes. Extra ones wait until the next day.
+          Counts scheduled wakes. Extra ones wait until the next day, and extra heartbeats are
+          skipped.
         </p>
       </div>
       <div className="grid gap-2">
@@ -151,7 +152,8 @@ export function TotWakesPanel(props: {
         {boundTasks.length > 0 ? (
           <p className="text-xs text-muted-foreground">
             A check runs in the Tot's folder before the wake. Exit 1 skips the wake. Any other
-            failure still wakes it, and it's told the check failed.
+            failure still wakes it, and it's told the check failed. Change or pause a schedule in
+            Settings → Scheduled tasks.
           </p>
         ) : null}
       </div>
