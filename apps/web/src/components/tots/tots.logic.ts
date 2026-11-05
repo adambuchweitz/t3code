@@ -4,6 +4,7 @@ import type {
   OrchestrationV2AppThreadLineage,
   ProjectId,
   ThreadId,
+  TotVoice,
 } from "@t3tools/contracts";
 
 import type { SidebarThreadStatus } from "../Sidebar.logic";
@@ -20,6 +21,40 @@ export const TOT_STATE_LABEL: Record<TotState, string> = {
   offline: "Offline",
 };
 
+const TOT_VOICE_STATE_LABEL: Record<TotVoice, Record<TotState, string>> = {
+  toddler: {
+    needs: "Tugging your sleeve",
+    working: "Playing",
+    idle: "Just looking",
+    offline: "Napping",
+  },
+  polite: { needs: "Needs you", working: "Working", idle: "Watching", offline: "Offline" },
+  grown_up: TOT_STATE_LABEL,
+};
+
+/** One Tot's own words for its state. Group headings stay in `TOT_STATE_LABEL`, as they mix voices. */
+export function totStateLabel(state: TotState, voice: TotVoice): string {
+  return TOT_VOICE_STATE_LABEL[voice][state];
+}
+
+export const TOT_VOICE_OPTIONS: ReadonlyArray<{
+  readonly value: TotVoice;
+  readonly label: string;
+  readonly sample: string;
+}> = [
+  {
+    value: "toddler",
+    label: "Full toddler",
+    sample: "I did it! The checks are all green! Can I merge it? Pleeease?",
+  },
+  {
+    value: "polite",
+    label: "Polite",
+    sample: "The checks passed. I'll merge it when you're happy.",
+  },
+  { value: "grown_up", label: "Grown-up", sample: "Checks passed. Ready to merge." },
+];
+
 export const TOT_STATE_POSE: Record<TotState, TotPose> = {
   needs: "needs",
   working: "working",
@@ -31,8 +66,10 @@ export const TOT_STATE_POSE: Record<TotState, TotPose> = {
 export function resolveTotState(input: {
   readonly connected: boolean;
   readonly threadStatus: SidebarThreadStatus | null;
+  readonly hasCharterProposal: boolean;
 }): TotState {
   if (!input.connected) return "offline";
+  if (input.hasCharterProposal) return "needs";
   switch (input.threadStatus) {
     case "approval":
     case "input":
@@ -122,4 +159,45 @@ export function suggestTotCharacterIndex(threadId: string, characterCount: numbe
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   }
   return hash % characterCount;
+}
+
+export interface CharterDiffLine {
+  readonly kind: "same" | "added" | "removed";
+  readonly text: string;
+}
+
+/** A longest-common-subsequence line diff. Charters are capped, so the table stays small. */
+export function diffCharterLines(before: string, after: string): ReadonlyArray<CharterDiffLine> {
+  const left = before === "" ? [] : before.split("\n");
+  const right = after === "" ? [] : after.split("\n");
+  const widths = right.length + 1;
+  const lengths = new Uint16Array((left.length + 1) * widths);
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      lengths[i * widths + j] =
+        left[i] === right[j]
+          ? lengths[(i + 1) * widths + j + 1]! + 1
+          : Math.max(lengths[(i + 1) * widths + j]!, lengths[i * widths + j + 1]!);
+    }
+  }
+  const lines: Array<CharterDiffLine> = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i] === right[j]) {
+      lines.push({ kind: "same", text: left[i]! });
+      i += 1;
+      j += 1;
+    } else if (
+      j < right.length &&
+      (i === left.length || lengths[i * widths + j + 1]! >= lengths[(i + 1) * widths + j]!)
+    ) {
+      lines.push({ kind: "added", text: right[j]! });
+      j += 1;
+    } else {
+      lines.push({ kind: "removed", text: left[i]! });
+      i += 1;
+    }
+  }
+  return lines;
 }

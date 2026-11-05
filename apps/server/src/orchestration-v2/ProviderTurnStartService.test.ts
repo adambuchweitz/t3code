@@ -89,6 +89,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
+import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
@@ -243,6 +244,7 @@ function startWithMissingWorktree(
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        Layer.mock(TotInstructions.TotInstructions)({ forThread: () => Effect.succeed(null) }),
       ),
     ),
   );
@@ -490,6 +492,9 @@ function makeLocalCommandHarness(input: {
   readonly fileSystem?: FileSystem.FileSystem;
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly recreatedBeforeDispatch?: boolean;
+  readonly tot?: Effect.Success<
+    ReturnType<TotInstructions.TotInstructions["Service"]["forThread"]>
+  >;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly createdBy?: "agent" | "system";
@@ -1449,6 +1454,9 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
+        }),
+        Layer.mock(TotInstructions.TotInstructions)({
+          forThread: () => Effect.succeed(input.tot ?? null),
         }),
       ),
     ),
@@ -3681,5 +3689,57 @@ effectIt.effect("rejects citation expansion before opening a provider session", 
       },
     ]);
     expect(harness.projection().messages[0]?.text).toBe(text);
+  }),
+);
+
+effectIt.effect.each([
+  {
+    name: "a Tot's turn carries its charter, name, job and voice",
+    text: "Check the backlog",
+    tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship the HTTP fix." },
+    expected: ['named "Brace"', "project manager", "Ship the HTTP fix.", "excitable toddler"],
+    absent: [],
+  },
+  {
+    name: "name off, no charter and the plain voice leave those out",
+    text: "Check the backlog",
+    tot: { name: null, job: "hands_on", voice: "grown_up", charter: "" },
+    expected: ["This thread is a Tot:", "hands-on", "You have no charter yet."],
+    absent: ["toddler", "stay plain"],
+  },
+  {
+    name: "a plain thread gets nothing",
+    text: "Check the backlog",
+    tot: null,
+    absent: ["<t3_tot>"],
+  },
+] as const)("Tot instructions: $name", (scenario) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: scenario.text,
+      tot: scenario.tot,
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+    yield* harness.start;
+    const prompt = harness.startRootRun.mock.calls[0]?.[0].message.text;
+    expect(prompt?.endsWith(scenario.text)).toBe(true);
+    for (const text of "expected" in scenario ? scenario.expected : []) {
+      expect(prompt).toContain(text);
+    }
+    for (const text of scenario.absent) expect(prompt).not.toContain(text);
+  }),
+);
+
+effectIt.effect("leaves a Tot's slash command for the provider to parse", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "/custom",
+      tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship it." },
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+    yield* harness.start;
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe("/custom");
   }),
 );

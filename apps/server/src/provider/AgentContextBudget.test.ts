@@ -43,6 +43,7 @@ import { IssueService } from "../issue/IssueService.ts";
 import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewGuideService.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
+import { TotService } from "../tots/TotService.ts";
 import { SecretRequests } from "../secrets/SecretRequests.ts";
 import { FeedbackStore } from "../feedback/FeedbackStore.ts";
 import { AnalyticsService } from "../telemetry/AnalyticsService.ts";
@@ -99,6 +100,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ThreadSearch)({}),
+  Layer.mock(TotService)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 

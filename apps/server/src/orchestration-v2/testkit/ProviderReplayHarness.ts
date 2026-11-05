@@ -59,6 +59,7 @@ import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
+import * as TotInstructions from "../../tots/TotInstructions.ts";
 import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
@@ -622,7 +623,13 @@ export function layerWithRegistry<Error>(
     layerCommandOutputHubProvided,
     ThreadCommandExecutor.layer,
   ).pipe(
-    Layer.provide(ProviderTurnStartServiceTestkit.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        ProviderTurnStartServiceTestkit.layer,
+        // No thread in a replay is a Tot.
+        Layer.mock(TotInstructions.TotInstructions)({ forThread: () => Effect.succeed(null) }),
+      ),
+    ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 

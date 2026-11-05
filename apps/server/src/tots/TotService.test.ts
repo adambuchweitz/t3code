@@ -12,11 +12,14 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as TotService from "./TotService.ts";
+import { ensureTotsTable } from "./totsTable.ts";
 
 const isTotError = Schema.is(TotError);
 
@@ -97,6 +100,74 @@ it.layer(layerWith(shell()))("TotService", (it) => {
     }),
   );
 
+  it.effect("a proposal waits for approval, and only the one on screen can be approved", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const { tot } = yield* tots.adopt({ ...brace, charter: "Old rules." });
+      assert.strictEqual(tot.voice, "toddler");
+
+      const first = yield* tots.proposeCharter(threadId, { charter: "First.", reason: "Why one." });
+      assert.strictEqual(first.tot.charter, "Old rules.");
+      const firstAt = first.tot.charterProposal!.proposedAt;
+
+      yield* TestClock.adjust("1 second");
+      const second = yield* tots.proposeCharter(threadId, {
+        charter: "Second.",
+        reason: "Why two.",
+      });
+      const stale = yield* Effect.flip(
+        tots.answerCharterProposal({ id: tot.id, proposedAt: firstAt, approve: true }),
+      );
+      assert.isTrue(isTotError(stale));
+
+      const approved = yield* tots.answerCharterProposal({
+        id: tot.id,
+        proposedAt: second.tot.charterProposal!.proposedAt,
+        approve: true,
+      });
+      assert.strictEqual(approved.tot.charter, "Second.");
+      assert.isNull(approved.tot.charterProposal);
+
+      yield* tots.release({ id: tot.id });
+    }),
+  );
+
+  it.effect("dismissing keeps the charter, and editing it clears a stale proposal", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const { tot } = yield* tots.adopt({ ...brace, charter: "Old rules." });
+
+      const proposed = yield* tots.proposeCharter(threadId, { charter: "New.", reason: "Why." });
+      const dismissed = yield* tots.answerCharterProposal({
+        id: tot.id,
+        proposedAt: proposed.tot.charterProposal!.proposedAt,
+        approve: false,
+      });
+      assert.strictEqual(dismissed.tot.charter, "Old rules.");
+      assert.isNull(dismissed.tot.charterProposal);
+
+      yield* tots.proposeCharter(threadId, { charter: "New.", reason: "Why." });
+      const unchanged = yield* tots.update({ id: tot.id, charter: "Old rules.", voice: "polite" });
+      assert.isNotNull(unchanged.tot.charterProposal);
+      assert.strictEqual(unchanged.tot.voice, "polite");
+      const edited = yield* tots.update({ id: tot.id, charter: "Mine." });
+      assert.strictEqual(edited.tot.charter, "Mine.");
+      assert.isNull(edited.tot.charterProposal);
+
+      yield* tots.release({ id: tot.id });
+    }),
+  );
+
+  it.effect("refuses a proposal from a thread that isn't a Tot", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const failure = yield* Effect.flip(
+        tots.proposeCharter(ThreadId.make("plain"), { charter: "New.", reason: "Why." }),
+      );
+      assert.isTrue(isTotError(failure));
+    }),
+  );
+
   it.effect("refuses to update a Tot that is gone", () =>
     Effect.gen(function* () {
       const tots = yield* TotService.TotService;
@@ -160,3 +231,27 @@ it.effect.each([
     assert.deepStrictEqual((yield* tots.list()).tots, []);
   }).pipe(Effect.provide(layerWith(found))),
 );
+
+it.layer(SqlitePersistence.layerMemory)("Tots table", (it) => {
+  it.effect("adds the charter columns to a table from the first slice", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        CREATE TABLE tots (
+          tot_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+          name_enabled INTEGER NOT NULL, character_id TEXT NOT NULL, job TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO tots VALUES ('tot:1', 'thread-1', 'Brace', 1, 'brace', 'manager', 'a', 'a')
+      `;
+      yield* ensureTotsTable;
+      yield* ensureTotsTable;
+      const rows = yield* sql<{ readonly charter: string; readonly voice: string }>`
+        SELECT charter, voice FROM tots
+      `;
+      assert.deepStrictEqual(rows, [{ charter: "", voice: "toddler" }]);
+    }),
+  );
+});

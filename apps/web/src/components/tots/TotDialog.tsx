@@ -5,7 +5,13 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { isListedThreadLineage, type ScopedThreadRef, type TotJob } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  TOT_CHARTER_MAX_LENGTH,
+  type ScopedThreadRef,
+  type TotJob,
+  type TotVoice,
+} from "@t3tools/contracts";
 import { useState } from "react";
 
 import { useThreadShells } from "~/state/entities";
@@ -28,11 +34,12 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { TOT_CHARACTERS, TotCharacter, totCharacter } from "./TotCharacter";
 import { closeTotDialog, totDialogTargetAtom } from "./totDialogState";
-import { suggestTotCharacterIndex } from "./tots.logic";
+import { suggestTotCharacterIndex, TOT_VOICE_OPTIONS } from "./tots.logic";
 
 const MAX_PICKABLE_THREADS = 40;
 
@@ -80,7 +87,7 @@ function PickThreadTotDialog() {
         <DialogHeader>
           <DialogTitle>Which thread should become a Tot?</DialogTitle>
           <DialogDescription>
-            The thread keeps working exactly as it does now. You can turn it back at any time.
+            Its history and automations carry on. You can turn it back at any time.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -120,6 +127,8 @@ function TotFormDialog(props: {
   const [nameEdited, setNameEdited] = useState(tot !== null);
   const [nameEnabled, setNameEnabled] = useState(tot?.nameEnabled ?? true);
   const [job, setJob] = useState<TotJob>(tot?.job ?? "manager");
+  const [voice, setVoice] = useState<TotVoice>(tot?.voice ?? "toddler");
+  const [charter, setCharter] = useState(tot?.charter ?? "");
   const [saving, setSaving] = useState(false);
 
   const environmentId = threadRef.environmentId;
@@ -146,10 +155,17 @@ function TotFormDialog(props: {
 
   const save = async () => {
     setSaving(true);
-    const fields = { name: savedName, nameEnabled, character, job };
+    const fields = { name: savedName, nameEnabled, character, job, voice };
     const result = tot
-      ? await updateTot({ environmentId, input: { id: tot.id, ...fields } })
-      : await adoptTot({ environmentId, input: { threadId: threadRef.threadId, ...fields } });
+      ? await updateTot({
+          environmentId,
+          // Left out when untouched, so saving a name can't undo a charter approved elsewhere.
+          input: { id: tot.id, ...fields, ...(charter === tot.charter ? {} : { charter }) },
+        })
+      : await adoptTot({
+          environmentId,
+          input: { threadId: threadRef.threadId, ...fields, charter },
+        });
     setSaving(false);
     if (result._tag === "Success") {
       closeTotDialog();
@@ -182,8 +198,8 @@ function TotFormDialog(props: {
           <DialogTitle>{tot ? `Edit ${existing?.displayName}` : "Make this a Tot"}</DialogTitle>
           <DialogDescription>
             {tot
-              ? "These only change how the Tot shows up. Its thread is untouched."
-              : "The thread keeps working exactly as it does now. It just gets a name and a face."}
+              ? "Changes to its job, voice and charter apply from its next turn."
+              : "Its history and automations carry on. From its next turn it knows its job, voice and charter."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -251,7 +267,47 @@ function TotFormDialog(props: {
                 <Toggle value="hands_on">Hands-on</Toggle>
               </ToggleGroup>
               <p className="text-xs text-muted-foreground">
-                Only a label for now. It doesn't change what the thread can do.
+                A steer for the Tot, not a lock. It can still run the odd command either way.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>Voice</Label>
+              <ToggleGroup
+                aria-label="Voice"
+                variant="segmented"
+                value={[voice]}
+                onValueChange={(next) => {
+                  const picked = TOT_VOICE_OPTIONS.find((option) => option.value === next[0]);
+                  if (picked) setVoice(picked.value);
+                }}
+              >
+                {TOT_VOICE_OPTIONS.map((option) => (
+                  <Toggle key={option.value} value={option.value}>
+                    {option.label}
+                  </Toggle>
+                ))}
+              </ToggleGroup>
+              <p className="text-xs text-muted-foreground">
+                "{TOT_VOICE_OPTIONS.find((option) => option.value === voice)?.sample}" Commits and
+                PRs always stay plain.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="tot-charter">Charter</Label>
+              <Textarea
+                id="tot-charter"
+                value={charter}
+                rows={6}
+                maxLength={TOT_CHARTER_MAX_LENGTH}
+                placeholder={
+                  "What it looks after, the rules it must follow, and what matters right now.\nThe Tot can suggest changes for you to approve."
+                }
+                onChange={(event) => setCharter(event.currentTarget.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {tot?.charterProposal && charter !== tot.charter
+                  ? "Saving this dismisses the change the Tot proposed."
+                  : "Sent to the Tot on every turn, so shorter is better."}
               </p>
             </div>
           </div>

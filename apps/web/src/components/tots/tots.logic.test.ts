@@ -1,7 +1,12 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveConnectedTot, resolveTotState, type ConnectedThreadInput } from "./tots.logic";
+import {
+  diffCharterLines,
+  resolveConnectedTot,
+  resolveTotState,
+  type ConnectedThreadInput,
+} from "./tots.logic";
 
 const envA = EnvironmentId.make("env-a");
 const envB = EnvironmentId.make("env-b");
@@ -40,11 +45,21 @@ describe("resolveTotState", () => {
     ["ready", "idle"],
     [null, "idle"],
   ] as const)("maps a %s thread to %s", (threadStatus, expected) => {
-    expect(resolveTotState({ connected: true, threadStatus })).toBe(expected);
+    expect(resolveTotState({ connected: true, threadStatus, hasCharterProposal: false })).toBe(
+      expected,
+    );
   });
 
   it("is offline whenever its machine is unreachable, even mid-run", () => {
-    expect(resolveTotState({ connected: false, threadStatus: "working" })).toBe("offline");
+    expect(
+      resolveTotState({ connected: false, threadStatus: "working", hasCharterProposal: true }),
+    ).toBe("offline");
+  });
+
+  it("needs you for a charter proposal, even while busy", () => {
+    expect(
+      resolveTotState({ connected: true, threadStatus: "working", hasCharterProposal: true }),
+    ).toBe("needs");
   });
 });
 
@@ -158,5 +173,22 @@ describe("resolveConnectedTot", () => {
         readThread: () => ({ lineage: lineage("loop") }),
       }),
     ).toBeNull();
+  });
+});
+
+describe("diffCharterLines", () => {
+  it("keeps shared lines and marks what changed, including repeated lines", () => {
+    expect(diffCharterLines("keep\nold\nkeep", "keep\nnew\nkeep\nend")).toEqual([
+      { kind: "same", text: "keep" },
+      { kind: "added", text: "new" },
+      { kind: "removed", text: "old" },
+      { kind: "same", text: "keep" },
+      { kind: "added", text: "end" },
+    ]);
+  });
+
+  it("treats an empty charter as having no lines", () => {
+    expect(diffCharterLines("", "first")).toEqual([{ kind: "added", text: "first" }]);
+    expect(diffCharterLines("gone", "")).toEqual([{ kind: "removed", text: "gone" }]);
   });
 });

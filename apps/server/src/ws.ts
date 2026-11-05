@@ -2450,6 +2450,7 @@ export const layerWsRpc = (
         [WS_METHODS.totsAdopt]: (input) => tots.adopt(input),
         [WS_METHODS.totsUpdate]: (input) => tots.update(input),
         [WS_METHODS.totsRelease]: (input) => tots.release(input),
+        [WS_METHODS.totsAnswerCharterProposal]: (input) => tots.answerCharterProposal(input),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

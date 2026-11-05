@@ -11,8 +11,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { TotCharacter } from "./TotCharacter";
 import {
   resolveConnectedTot,
-  TOT_STATE_LABEL,
   TOT_STATE_POSE,
+  totStateLabel,
   type TotConnection,
 } from "./tots.logic";
 
@@ -45,6 +45,7 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
   if (connected === null) return null;
   const { tot: entry, connection } = connected;
   const text = CONNECTION_TEXT[connection](entry.displayName);
+  const stateLabel = totStateLabel(entry.state, entry.tot.voice);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -53,7 +54,7 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
             variant="ghost"
             size="xs"
             data-testid="tot-thread-chip"
-            aria-label={`${text}. ${TOT_STATE_LABEL[entry.state]}`}
+            aria-label={`${text}. ${stateLabel}`}
             className="shrink-0"
             onClick={() => {
               if (connection === "self") {
@@ -76,7 +77,7 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
         <span className="hidden max-w-28 truncate sm:inline">{entry.displayName}</span>
       </TooltipTrigger>
       <TooltipPopup side="bottom">
-        {text} · {TOT_STATE_LABEL[entry.state]}
+        {text} · {stateLabel}
       </TooltipPopup>
     </Tooltip>
   );
