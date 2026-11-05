@@ -1,7 +1,9 @@
 import {
   isListedThreadLineage,
   Tot,
+  TotCrewModel,
   TotError,
+  TotWakeSettings,
   TotId,
   type ProjectId,
   type TotAdoptInput,
@@ -36,37 +38,53 @@ interface TotRow {
   readonly job: string;
   readonly charter: string;
   readonly voice: string;
+  readonly proposal_id: string | null;
   readonly proposed_charter: string | null;
   readonly proposal_reason: string | null;
   readonly proposed_at: string | null;
+  readonly wake_settings: string;
+  readonly crew_models: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
 
 const decodeTot = Schema.decodeUnknownEffect(Tot);
+const WakeSettingsJson = Schema.fromJsonString(TotWakeSettings);
+const CrewModelsJson = Schema.fromJsonString(Schema.Array(TotCrewModel));
+const decodeTotJson = Schema.decodeUnknownEffect(
+  Schema.Struct({ wakeSettings: WakeSettingsJson, crewModels: CrewModelsJson }),
+);
+const encodeWakeSettings = Schema.encodeEffect(WakeSettingsJson);
+const encodeCrewModels = Schema.encodeEffect(CrewModelsJson);
 
-const totFromRow = (row: TotRow, projectId: ProjectId) =>
-  decodeTot({
-    id: row.tot_id,
-    threadId: row.thread_id,
-    projectId,
-    name: row.name,
-    nameEnabled: row.name_enabled !== 0,
-    character: row.character_id,
-    job: row.job,
-    charter: row.charter,
-    voice: row.voice,
-    charterProposal:
-      row.proposed_charter === null
-        ? null
-        : {
-            charter: row.proposed_charter,
-            reason: row.proposal_reason,
-            proposedAt: row.proposed_at,
-          },
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }).pipe(
+const totFromRow = (row: TotRow, projectId: ProjectId, wakesHeld: number) =>
+  decodeTotJson({ wakeSettings: row.wake_settings, crewModels: row.crew_models }).pipe(
+    Effect.flatMap((json) =>
+      decodeTot({
+        ...json,
+        wakesHeld,
+        id: row.tot_id,
+        threadId: row.thread_id,
+        projectId,
+        name: row.name,
+        nameEnabled: row.name_enabled !== 0,
+        character: row.character_id,
+        job: row.job,
+        charter: row.charter,
+        voice: row.voice,
+        charterProposal:
+          row.proposed_charter === null
+            ? null
+            : {
+                id: row.proposal_id,
+                charter: row.proposed_charter,
+                reason: row.proposal_reason,
+                proposedAt: row.proposed_at,
+              },
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }),
+    ),
     Effect.mapError(
       (cause) => new TotError({ message: `Could not read Tot ${row.tot_id}.`, cause }),
     ),
@@ -90,6 +108,8 @@ export class TotService extends Context.Service<
     readonly answerCharterProposal: (
       input: TotAnswerCharterProposalInput,
     ) => Effect.Effect<TotMutationResult, TotError>;
+    /** Re-sends the list after something outside this service changes a Tot, like a held wake. */
+    readonly notifyChanged: Effect.Effect<void>;
   }
 >()("t3/tots/TotService") {}
 
@@ -104,6 +124,14 @@ const make = Effect.gen(function* () {
 
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
+  const heldCount = (threadId: string) =>
+    sql<{ readonly held: number }>`
+      SELECT count(*) AS held FROM tot_held_wakes WHERE thread_id = ${threadId}
+    `.pipe(
+      Effect.map((rows) => rows[0]?.held ?? 0),
+      Effect.mapError(storageError("Could not read a Tot's held wakes.")),
+    );
+
   const list: TotService["Service"]["list"] = Effect.fn("TotService.list")(function* () {
     const rows = yield* sql<TotRow>`SELECT * FROM tots ORDER BY created_at, tot_id`.pipe(
       Effect.mapError(storageError("Could not list Tots.")),
@@ -114,7 +142,9 @@ const make = Effect.gen(function* () {
         Effect.flatMap((shell) =>
           shell === null || shell.deletedAt !== null
             ? Effect.succeed(null)
-            : totFromRow(row, shell.projectId),
+            : heldCount(row.thread_id).pipe(
+                Effect.flatMap((held) => totFromRow(row, shell.projectId, held)),
+              ),
         ),
       ),
     );
@@ -167,7 +197,7 @@ const make = Effect.gen(function* () {
     if (row === undefined) {
       return yield* new TotError({ message: "That thread is already a Tot." });
     }
-    const tot = yield* totFromRow(row, shell.projectId);
+    const tot = yield* totFromRow(row, shell.projectId, 0);
     yield* notifyChanged;
     return { tot };
   });
@@ -180,7 +210,7 @@ const make = Effect.gen(function* () {
     if (shell === null) {
       return yield* new TotError({ message: "That Tot's thread no longer exists." });
     }
-    const tot = yield* totFromRow(row, shell.projectId);
+    const tot = yield* totFromRow(row, shell.projectId, yield* heldCount(row.thread_id));
     yield* notifyChanged;
     return { tot };
   });
@@ -188,6 +218,18 @@ const make = Effect.gen(function* () {
   const update: TotService["Service"]["update"] = Effect.fn("TotService.update")(function* (input) {
     const updatedAt = yield* now;
     const charter = input.charter ?? null;
+    const wakeSettings =
+      input.wakeSettings === undefined
+        ? null
+        : yield* encodeWakeSettings(input.wakeSettings).pipe(
+            Effect.mapError(storageError("Could not save the Tot's wake settings.")),
+          );
+    const crewModels =
+      input.crewModels === undefined
+        ? null
+        : yield* encodeCrewModels(input.crewModels).pipe(
+            Effect.mapError(storageError("Could not save the Tot's crew models.")),
+          );
     // Editing the charter settles a pending proposal, which was written against the old text.
     const keepsProposal = sql`(${charter} IS NULL OR ${charter} = charter)`;
     const rows = yield* sql<TotRow>`
@@ -200,7 +242,10 @@ const make = Effect.gen(function* () {
           character_id = COALESCE(${input.character ?? null}, character_id),
           job = COALESCE(${input.job ?? null}, job),
           voice = COALESCE(${input.voice ?? null}, voice),
+          wake_settings = COALESCE(${wakeSettings}, wake_settings),
+          crew_models = COALESCE(${crewModels}, crew_models),
           charter = COALESCE(${charter}, charter),
+          proposal_id = CASE WHEN ${keepsProposal} THEN proposal_id END,
           proposed_charter = CASE WHEN ${keepsProposal} THEN proposed_charter END,
           proposal_reason = CASE WHEN ${keepsProposal} THEN proposal_reason END,
           proposed_at = CASE WHEN ${keepsProposal} THEN proposed_at END,
@@ -225,6 +270,7 @@ const make = Effect.gen(function* () {
     "TotService.deleteForThread",
   )(function* (threadId) {
     yield* sql`DELETE FROM tots WHERE thread_id = ${threadId}`.pipe(
+      Effect.andThen(sql`DELETE FROM tot_held_wakes WHERE thread_id = ${threadId}`),
       Effect.mapError(storageError("Could not remove the deleted thread's Tot.")),
     );
     yield* notifyChanged;
@@ -234,8 +280,12 @@ const make = Effect.gen(function* () {
     "TotService.proposeCharter",
   )(function* (threadId, input) {
     const proposedAt = yield* now;
+    const proposalId = yield* random
+      .uuidV4()
+      .pipe(Effect.mapError(storageError("Could not save the proposal.")));
     const rows = yield* sql<TotRow>`
       UPDATE tots SET
+        proposal_id = ${proposalId},
         proposed_charter = ${input.charter},
         proposal_reason = ${input.reason},
         proposed_at = ${proposedAt},
@@ -253,11 +303,12 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<TotRow>`
       UPDATE tots SET
         charter = CASE WHEN ${input.approve ? 1 : 0} = 1 THEN proposed_charter ELSE charter END,
+        proposal_id = NULL,
         proposed_charter = NULL,
         proposal_reason = NULL,
         proposed_at = NULL,
         updated_at = ${updatedAt}
-      WHERE tot_id = ${input.id} AND proposed_at = ${input.proposedAt}
+      WHERE tot_id = ${input.id} AND proposal_id = ${input.proposalId}
       RETURNING *
     `.pipe(Effect.mapError(storageError("Could not save your answer.")));
     return yield* mutated(rows[0], "That proposal has changed. Check the newest one.");
@@ -272,6 +323,7 @@ const make = Effect.gen(function* () {
     deleteForThread,
     proposeCharter,
     answerCharterProposal,
+    notifyChanged,
   });
 });
 

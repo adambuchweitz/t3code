@@ -274,7 +274,6 @@ export const layer: Layer.Layer<
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TaskFolders.TaskFolders
-  | TotInstructions.TotInstructions
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
