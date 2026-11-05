@@ -21,6 +21,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as TotService from "./TotService.ts";
+import { formatTotBriefing, totHeartbeatTaskId } from "./totHeartbeat.ts";
 import { ensureTotsTable } from "./totsTable.ts";
 
 export type TotWakeDecision =
@@ -96,6 +97,8 @@ export interface TotWakesShape {
     readonly title: string;
     readonly prompt: string;
     readonly runCheck: boolean;
+    /** The user asked for this wake, so nothing screens it. */
+    readonly manual?: boolean;
   }) => Effect.Effect<TotWakeDecision>;
   readonly releaseDue: Effect.Effect<void>;
 }
@@ -109,9 +112,11 @@ export class TotWakes extends Context.Reference<TotWakesShape>("t3/tots/TotWakes
 }) {}
 
 interface TotWakeRow {
+  readonly tot_id: string;
   readonly wake_settings: string;
   readonly wake_day: string | null;
   readonly wake_count: number;
+  readonly briefed_at: string | null;
 }
 
 const make = Effect.gen(function* () {
@@ -124,7 +129,8 @@ const make = Effect.gen(function* () {
 
   const readTot = (threadId: string) =>
     sql<TotWakeRow>`
-      SELECT wake_settings, wake_day, wake_count FROM tots WHERE thread_id = ${threadId}
+      SELECT tot_id, wake_settings, wake_day, wake_count, briefed_at
+      FROM tots WHERE thread_id = ${threadId}
     `.pipe(
       Effect.flatMap((rows) =>
         rows[0] === undefined
@@ -174,6 +180,27 @@ const make = Effect.gen(function* () {
     return { skip: false, note: `it exited with code ${output.code ?? "unknown"}` };
   });
 
+  /** Taken before reading, so a change during the read shows up again rather than never. */
+  const withBriefing = Effect.fn("TotWakes.withBriefing")(function* (
+    threadId: ThreadId,
+    briefedAt: string | null,
+    prompt: string,
+  ) {
+    const shell = yield* threads.getThreadShell(threadId);
+    if (shell === null) return prompt;
+    const now = yield* DateTime.now;
+    const since = briefedAt === null ? null : DateTime.makeUnsafe(briefedAt);
+    const others = yield* threads.listProjectThreads({
+      projectId: shell.projectId,
+      includeSubagents: false,
+    });
+    const briefing = formatTotBriefing({ threads: others, selfId: threadId, since });
+    yield* sql`
+      UPDATE tots SET briefed_at = ${DateTime.formatIso(now)} WHERE thread_id = ${threadId}
+    `;
+    return `${prompt}\n\n${briefing}`;
+  });
+
   const admit: TotWakesShape["admit"] = Effect.fn("TotWakes.admit")(
     function* (input) {
       // A pending webhook retries after a restart. Once its wake was held, it stays that row's job.
@@ -183,6 +210,19 @@ const make = Effect.gen(function* () {
       if (alreadyHeld.length > 0) return { _tag: "held" as const };
       const before = yield* readTot(input.threadId);
       if (before === null) return { _tag: "run" as const, prompt: input.prompt };
+      const isHeartbeat = input.scheduledTaskId === totHeartbeatTaskId(before.row.tot_id);
+      if (input.manual === true) {
+        return {
+          _tag: "run" as const,
+          prompt: isHeartbeat
+            ? yield* withBriefing(input.threadId, before.row.briefed_at, input.prompt)
+            : input.prompt,
+        };
+      }
+      // Queuing heartbeats behind a long turn would only pile up the same question.
+      if (isHeartbeat && (yield* threads.getThreadShell(input.threadId))?.activeRunId != null) {
+        return { _tag: "skipped" as const };
+      }
       const check = input.runCheck
         ? before.settings.wakeChecks.find((c) => c.scheduledTaskId === input.scheduledTaskId)
         : undefined;
@@ -200,7 +240,16 @@ const make = Effect.gen(function* () {
       const open =
         !isWithinQuietHours(clock.minuteOfDay, tot.settings.quietHours) &&
         (yield* reserveWake(input.threadId, clock.day, tot.settings.dailyWakeLimit));
-      if (open) return { _tag: "run" as const, prompt };
+      if (open) {
+        return {
+          _tag: "run" as const,
+          prompt: isHeartbeat
+            ? yield* withBriefing(input.threadId, tot.row.briefed_at, prompt)
+            : prompt,
+        };
+      }
+      // The next heartbeat brings a newer briefing, so there's nothing here worth keeping.
+      if (isHeartbeat) return { _tag: "skipped" as const };
       yield* sql`
         INSERT INTO tot_held_wakes (
           held_id, thread_id, scheduled_task_id, title, prompt, held_at

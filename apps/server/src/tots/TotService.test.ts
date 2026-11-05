@@ -156,6 +156,20 @@ it.layer(layerWith(shell()))("TotService", (it) => {
     }),
   );
 
+  it.effect("a Tot can ask to talk, and the user can dismiss it", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const { tot } = yield* tots.adopt(brace);
+      const asked = yield* tots.askToTalk(threadId, { topic: "What should I do next?" });
+      assert.strictEqual(asked.tot.talkRequest?.topic, "What should I do next?");
+      const kept = yield* tots.update({ id: tot.id, name: "Bracer" });
+      assert.strictEqual(kept.tot.talkRequest?.topic, "What should I do next?");
+      const dismissed = yield* tots.update({ id: tot.id, dismissTalkRequest: true });
+      assert.strictEqual(dismissed.tot.talkRequest, null);
+      yield* tots.release({ id: tot.id });
+    }),
+  );
+
   it.effect("refuses a proposal from a thread that isn't a Tot", () =>
     Effect.gen(function* () {
       const tots = yield* TotService.TotService;

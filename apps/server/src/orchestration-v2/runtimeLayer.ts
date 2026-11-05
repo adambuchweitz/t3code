@@ -57,6 +57,7 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as TotHeartbeats from "../tots/TotHeartbeats.ts";
 import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as TotService from "../tots/TotService.ts";
 import * as TotWakes from "../tots/TotWakes.ts";
@@ -395,6 +396,11 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerTotProvided,
+  TotHeartbeats.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(layerScheduledTaskProvided, layerTotProvided, layerThreadManagementProvided),
+    ),
+  ),
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(
