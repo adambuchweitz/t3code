@@ -70,6 +70,20 @@ export class TotService extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // Not a numbered migration: this feature lives on a fork, and a database that recorded an id
+  // upstream later reuses refuses to start. Move this into a migration if Tots go upstream.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS tots (
+      tot_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      name_enabled INTEGER NOT NULL,
+      character_id TEXT NOT NULL,
+      job TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `.pipe(Effect.orDie);
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const random = yield* SecureRandom.SecureRandom;
   // Each change re-emits the whole list, so slow subscribers need only the newest signal.
