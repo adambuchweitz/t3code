@@ -126,7 +126,8 @@ const make = Effect.gen(function* () {
 
   const heldCount = (threadId: string) =>
     sql<{ readonly held: number }>`
-      SELECT count(*) AS held FROM tot_held_wakes WHERE thread_id = ${threadId}
+      SELECT count(*) AS held FROM tot_held_wakes
+      WHERE thread_id = ${threadId} AND released_at IS NULL
     `.pipe(
       Effect.map((rows) => rows[0]?.held ?? 0),
       Effect.mapError(storageError("Could not read a Tot's held wakes.")),

@@ -31,9 +31,13 @@ const shell = {
   lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
 } as unknown as OrchestrationV2ThreadShell;
 
+const accepted = Ref.makeUnsafe<ReadonlySet<string>>(new Set());
+
 const makeLayer = (input: {
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
   readonly checkCode?: number;
+  /** "accepted": orchestration took it, then a crash. "unseen": it never got there. */
+  readonly failSends?: Ref.Ref<"none" | "accepted" | "unseen">;
 }) =>
   TotWakes.layer.pipe(
     Layer.provideMerge(TotService.layer),
@@ -41,8 +45,22 @@ const makeLayer = (input: {
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: () => Effect.succeed(shell),
+          hasReceipt: (commandId) =>
+            Ref.get(accepted).pipe(Effect.map((ids) => ids.has(commandId))),
           sendToThread: (send) =>
-            Ref.update(input.sent, (sent) => [...sent, send.text]).pipe(Effect.as({} as never)),
+            Effect.gen(function* () {
+              const failure =
+                input.failSends === undefined ? "none" : yield* Ref.get(input.failSends);
+              if (failure === "unseen") {
+                return yield* Effect.fail({ _tag: "never reached orchestration" } as never);
+              }
+              yield* Ref.update(accepted, (ids) => new Set([...ids, send.commandId]));
+              yield* Ref.update(input.sent, (sent) => [...sent, send.text]);
+              if (failure === "accepted") {
+                return yield* Effect.fail({ _tag: "crashed after sending" } as never);
+              }
+              return {} as never;
+            }),
         }),
         Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(ProcessRunner.ProcessRunner)({
@@ -234,4 +252,103 @@ it.effect("a check that can't decide still wakes the Tot and says so, and webhoo
       prompt: "From a webhook",
     });
   }).pipe(Effect.provide(makeLayer({ sent: noMessages(), checkCode: 127 }))),
+);
+
+it.effect(
+  "a release that crashed replays only its own wakes, and later ones wait their turn",
+  () => {
+    const sent = noMessages();
+    const failSends = Ref.makeUnsafe<"none" | "accepted" | "unseen">("accepted");
+    return Effect.gen(function* () {
+      const wakes = yield* TotWakes.TotWakes;
+      const { tots, tot } = yield* adopt;
+      const quietFromNow = Effect.gen(function* () {
+        const minute = yield* localMinute;
+        yield* tots.update({
+          id: tot.id,
+          wakeSettings: {
+            quietHours: { start: clockTime(minute), end: clockTime(minute + 60) },
+            dailyWakeLimit: null,
+            wakeChecks: [],
+          },
+        });
+      });
+      yield* quietFromNow;
+      yield* wakes.admit(wake("a", "First"));
+      yield* TestClock.adjust("2 hours");
+      assert.deepStrictEqual([...new Set(yield* Ref.get(sent))], ["First"]);
+
+      yield* quietFromNow;
+      yield* wakes.admit(wake("b", "Second"));
+      yield* Ref.set(failSends, "none");
+      yield* wakes.releaseDue;
+      assert.deepStrictEqual([...new Set(yield* Ref.get(sent))], ["First"]);
+      assert.strictEqual((yield* tots.list()).tots[0]?.wakesHeld, 1);
+
+      yield* TestClock.adjust("2 hours");
+      assert.deepStrictEqual((yield* Ref.get(sent)).at(-1), "Second");
+      assert.strictEqual((yield* tots.list()).tots[0]?.wakesHeld, 0);
+    }).pipe(Effect.provide(makeLayer({ sent, failSends })));
+  },
+);
+
+it.effect("a webhook retrying after a restart doesn't resend a wake it already held", () => {
+  const sent = noMessages();
+  return Effect.gen(function* () {
+    const wakes = yield* TotWakes.TotWakes;
+    const { tots, tot } = yield* adopt;
+    yield* tots.update({
+      id: tot.id,
+      wakeSettings: { quietHours: null, dailyWakeLimit: 1, wakeChecks: [] },
+    });
+    yield* wakes.admit(wake("a", "Uses the limit", false));
+    assert.deepStrictEqual(yield* wakes.admit(wake("delivery", "Webhook", false)), {
+      _tag: "held",
+    });
+    yield* TestClock.adjust("25 hours");
+    assert.deepStrictEqual(yield* wakes.admit(wake("delivery", "Webhook", false)), {
+      _tag: "held",
+    });
+    yield* wakes.releaseDue;
+    assert.deepStrictEqual(yield* Ref.get(sent), ["Webhook"]);
+    assert.deepStrictEqual(yield* wakes.admit(wake("delivery", "Webhook", false)), {
+      _tag: "held",
+    });
+    yield* wakes.releaseDue;
+    assert.deepStrictEqual(yield* Ref.get(sent), ["Webhook"]);
+  }).pipe(Effect.provide(makeLayer({ sent })));
+});
+
+it.effect(
+  "a batch that never reached orchestration still obeys the limit of the day it runs",
+  () => {
+    const sent = noMessages();
+    const failSends = Ref.makeUnsafe<"none" | "accepted" | "unseen">("unseen");
+    return Effect.gen(function* () {
+      yield* Ref.set(accepted, new Set());
+      const wakes = yield* TotWakes.TotWakes;
+      const { tots, tot } = yield* adopt;
+      yield* tots.update({
+        id: tot.id,
+        wakeSettings: { quietHours: null, dailyWakeLimit: 1, wakeChecks: [] },
+      });
+      yield* wakes.admit(wake("a", "Uses today"));
+      yield* wakes.admit(wake("b", "Held"));
+      yield* TestClock.adjust("25 hours");
+      assert.deepStrictEqual(yield* Ref.get(sent), []);
+      assert.strictEqual((yield* tots.list()).tots[0]?.wakesHeld, 1);
+
+      // The retry already took today's one wake, so a new wake has to wait, and the retry
+      // doesn't pay twice when it finally goes through.
+      assert.deepStrictEqual(yield* wakes.admit(wake("c", "Waits a day")), { _tag: "held" });
+      yield* Ref.set(failSends, "none");
+      yield* wakes.releaseDue;
+      assert.deepStrictEqual(yield* Ref.get(sent), ["Held"]);
+      yield* wakes.releaseDue;
+      assert.deepStrictEqual(yield* Ref.get(sent), ["Held"]);
+
+      yield* TestClock.adjust("24 hours");
+      assert.deepStrictEqual(yield* Ref.get(sent), ["Held", "Waits a day"]);
+    }).pipe(Effect.provide(makeLayer({ sent, failSends })));
+  },
 );

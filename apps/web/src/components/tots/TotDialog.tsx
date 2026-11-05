@@ -135,6 +135,11 @@ function TotFormDialog(props: {
   const [voice, setVoice] = useState<TotVoice>(tot?.voice ?? "toddler");
   // The live Tot can change while this is open, so edits are measured against what it opened with.
   const [opened] = useState(() => ({
+    name: tot?.name,
+    nameEnabled: tot?.nameEnabled,
+    character: tot?.character,
+    job: tot?.job,
+    voice: tot?.voice,
     charter: tot?.charter ?? "",
     wakeSettings: tot?.wakeSettings ?? EMPTY_TOT_WAKE_SETTINGS,
     crewModels: tot?.crewModels ?? [],
@@ -169,14 +174,17 @@ function TotFormDialog(props: {
 
   const save = async () => {
     setSaving(true);
-    const fields = { name: savedName, nameEnabled, character, job, voice };
     const result = tot
       ? await updateTot({
           environmentId,
-          // Untouched fields stay out, so saving a name can't undo a change made elsewhere.
+          // Untouched fields stay out, so saving one can't undo a change made elsewhere.
           input: {
             id: tot.id,
-            ...fields,
+            ...(savedName === opened.name ? {} : { name: savedName }),
+            ...(nameEnabled === opened.nameEnabled ? {} : { nameEnabled }),
+            ...(character === opened.character ? {} : { character }),
+            ...(job === opened.job ? {} : { job }),
+            ...(voice === opened.voice ? {} : { voice }),
             ...(charter === opened.charter ? {} : { charter }),
             // Identity works: the panels only make a new value when the user changes something.
             ...(wakeSettings === opened.wakeSettings
@@ -195,7 +203,15 @@ function TotFormDialog(props: {
         })
       : await adoptTot({
           environmentId,
-          input: { threadId: threadRef.threadId, ...fields, charter },
+          input: {
+            threadId: threadRef.threadId,
+            name: savedName,
+            nameEnabled,
+            character,
+            job,
+            voice,
+            charter,
+          },
         });
     setSaving(false);
     if (result._tag === "Success") {
