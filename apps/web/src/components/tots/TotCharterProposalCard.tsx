@@ -39,7 +39,7 @@ export function TotCharterProposalCard(props: {
     setAnswering(true);
     const result = await answer({
       environmentId: entry.environmentId,
-      input: { id: entry.tot.id, proposedAt: proposal.proposedAt, approve },
+      input: { id: entry.tot.id, proposalId: proposal.id, approve },
     });
     setAnswering(false);
     if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;

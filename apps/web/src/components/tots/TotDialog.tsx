@@ -9,8 +9,11 @@ import {
   isListedThreadLineage,
   TOT_CHARTER_MAX_LENGTH,
   type ScopedThreadRef,
+  EMPTY_TOT_WAKE_SETTINGS,
+  type TotCrewModel,
   type TotJob,
   type TotVoice,
+  type TotWakeSettings,
 } from "@t3tools/contracts";
 import { useState } from "react";
 
@@ -38,6 +41,8 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { TOT_CHARACTERS, TotCharacter, totCharacter } from "./TotCharacter";
+import { TotCrewPanel } from "./TotCrewPanel";
+import { TotWakesPanel } from "./TotWakesPanel";
 import { closeTotDialog, totDialogTargetAtom } from "./totDialogState";
 import { suggestTotCharacterIndex, TOT_VOICE_OPTIONS } from "./tots.logic";
 
@@ -128,7 +133,16 @@ function TotFormDialog(props: {
   const [nameEnabled, setNameEnabled] = useState(tot?.nameEnabled ?? true);
   const [job, setJob] = useState<TotJob>(tot?.job ?? "manager");
   const [voice, setVoice] = useState<TotVoice>(tot?.voice ?? "toddler");
-  const [charter, setCharter] = useState(tot?.charter ?? "");
+  // The live Tot can change while this is open, so edits are measured against what it opened with.
+  const [opened] = useState(() => ({
+    charter: tot?.charter ?? "",
+    wakeSettings: tot?.wakeSettings ?? EMPTY_TOT_WAKE_SETTINGS,
+    crewModels: tot?.crewModels ?? [],
+  }));
+  const [charter, setCharter] = useState(opened.charter);
+  const [wakeSettings, setWakeSettings] = useState<TotWakeSettings>(opened.wakeSettings);
+  const [crewModels, setCrewModels] = useState<ReadonlyArray<TotCrewModel>>(opened.crewModels);
+  const [section, setSection] = useState<"profile" | "wakes" | "crew">("profile");
   const [saving, setSaving] = useState(false);
 
   const environmentId = threadRef.environmentId;
@@ -159,8 +173,25 @@ function TotFormDialog(props: {
     const result = tot
       ? await updateTot({
           environmentId,
-          // Left out when untouched, so saving a name can't undo a charter approved elsewhere.
-          input: { id: tot.id, ...fields, ...(charter === tot.charter ? {} : { charter }) },
+          // Untouched fields stay out, so saving a name can't undo a change made elsewhere.
+          input: {
+            id: tot.id,
+            ...fields,
+            ...(charter === opened.charter ? {} : { charter }),
+            // Identity works: the panels only make a new value when the user changes something.
+            ...(wakeSettings === opened.wakeSettings
+              ? {}
+              : {
+                  wakeSettings: {
+                    ...wakeSettings,
+                    wakeChecks: wakeSettings.wakeChecks.flatMap((check) => {
+                      const command = check.command.trim();
+                      return command === "" ? [] : [{ ...check, command }];
+                    }),
+                  },
+                }),
+            ...(crewModels === opened.crewModels ? {} : { crewModels }),
+          },
         })
       : await adoptTot({
           environmentId,
@@ -203,7 +234,31 @@ function TotFormDialog(props: {
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          <div className="grid gap-5">
+          {existing ? (
+            <div className="mb-5">
+              <ToggleGroup
+                aria-label="Section"
+                variant="segmented"
+                value={[section]}
+                onValueChange={(next) => {
+                  if (next[0] === "profile" || next[0] === "wakes" || next[0] === "crew") {
+                    setSection(next[0]);
+                  }
+                }}
+              >
+                <Toggle value="profile">Tot</Toggle>
+                <Toggle value="wakes">Wakes</Toggle>
+                <Toggle value="crew">Crew models</Toggle>
+              </ToggleGroup>
+            </div>
+          ) : null}
+          {existing && section === "wakes" ? (
+            <TotWakesPanel entry={existing} value={wakeSettings} onChange={setWakeSettings} />
+          ) : null}
+          {existing && section === "crew" ? (
+            <TotCrewPanel entry={existing} value={crewModels} onChange={setCrewModels} />
+          ) : null}
+          <div className={cn("grid gap-5", existing && section !== "profile" && "hidden")}>
             <div className="grid gap-2">
               <Label>Character</Label>
               <div className="grid grid-cols-3 gap-1 sm:grid-cols-6">
@@ -305,7 +360,7 @@ function TotFormDialog(props: {
                 onChange={(event) => setCharter(event.currentTarget.value)}
               />
               <p className="text-xs text-muted-foreground">
-                {tot?.charterProposal && charter !== tot.charter
+                {tot?.charterProposal && charter !== opened.charter
                   ? "Saving this dismisses the change the Tot proposed."
                   : "Sent to the Tot on every turn, so shorter is better."}
               </p>
@@ -327,7 +382,12 @@ function TotFormDialog(props: {
             Cancel
           </Button>
           <Button
-            disabled={saving || !canOperate || (nameEnabled && trimmedName.length === 0)}
+            disabled={
+              saving ||
+              !canOperate ||
+              (nameEnabled && trimmedName.length === 0) ||
+              crewModels.some((row) => row.role.trim() === "")
+            }
             onClick={() => void save()}
           >
             {tot ? "Save" : "Make it a Tot"}

@@ -411,7 +411,6 @@ export const layer: Layer.Layer<
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TaskFolders.TaskFolders
   | ThreadWorktreeRestore
-  | TotInstructions.TotInstructions
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {

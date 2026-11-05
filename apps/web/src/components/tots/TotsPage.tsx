@@ -71,6 +71,11 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
               {thread.archivedAt ? `Archived: ${thread.title}` : thread.title}
             </span>
           ) : null}
+          {tot.wakesHeld > 0 ? (
+            <span className="truncate text-xs text-warning-foreground">
+              {tot.wakesHeld === 1 ? "1 wake waiting" : `${tot.wakesHeld} wakes waiting`}
+            </span>
+          ) : null}
         </span>
       </button>
       <Tooltip>
@@ -141,7 +146,7 @@ export function TotsPage() {
             {entries.map((entry) =>
               entry.tot.charterProposal ? (
                 <TotCharterProposalCard
-                  key={`${entry.tot.id}:${entry.tot.charterProposal.proposedAt}`}
+                  key={entry.tot.charterProposal.id}
                   entry={entry}
                   proposal={entry.tot.charterProposal}
                 />

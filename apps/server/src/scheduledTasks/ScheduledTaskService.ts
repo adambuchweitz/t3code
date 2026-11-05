@@ -53,6 +53,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
+import * as TotWakes from "../tots/TotWakes.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
@@ -495,6 +496,7 @@ export const layer = Layer.effect(
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const serviceScope = yield* Effect.scope;
+    const totWakes = yield* TotWakes.TotWakes;
     const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
@@ -1083,6 +1085,19 @@ export const layer = Layer.effect(
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         const prompt = webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
+        // "Run now" is the user asking, so a Tot's quiet hours, limit and checks don't apply.
+        const wake =
+          active.threadId === null || trigger === "manual"
+            ? { _tag: "run" as const, prompt }
+            : yield* totWakes.admit({
+                threadId: ThreadId.make(active.threadId),
+                heldId: fireKey,
+                scheduledTaskId: active.id,
+                title: active.title,
+                prompt,
+                runCheck: trigger === "scheduled",
+              });
+        const wakePrompt = wake._tag === "run" ? wake.prompt : prompt;
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
@@ -1098,7 +1113,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
-              text: prompt,
+              text: wakePrompt,
               attachments: [],
               mode: "queue",
               ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
@@ -1154,9 +1169,11 @@ export const layer = Layer.effect(
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run
                 // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
+                wake._tag !== "run"
+                  ? Effect.succeed(ThreadId.make(active.threadId))
+                  : sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                      Effect.as(ThreadId.make(active.threadId)),
+                    ),
               );
 
         const runSucceeded = result._tag === "Success";
