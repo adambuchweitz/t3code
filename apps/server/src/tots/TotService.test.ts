@@ -14,7 +14,6 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -108,21 +107,20 @@ it.layer(layerWith(shell()))("TotService", (it) => {
 
       const first = yield* tots.proposeCharter(threadId, { charter: "First.", reason: "Why one." });
       assert.strictEqual(first.tot.charter, "Old rules.");
-      const firstAt = first.tot.charterProposal!.proposedAt;
+      const firstId = first.tot.charterProposal!.id;
 
-      yield* TestClock.adjust("1 second");
       const second = yield* tots.proposeCharter(threadId, {
         charter: "Second.",
         reason: "Why two.",
       });
       const stale = yield* Effect.flip(
-        tots.answerCharterProposal({ id: tot.id, proposedAt: firstAt, approve: true }),
+        tots.answerCharterProposal({ id: tot.id, proposalId: firstId, approve: true }),
       );
       assert.isTrue(isTotError(stale));
 
       const approved = yield* tots.answerCharterProposal({
         id: tot.id,
-        proposedAt: second.tot.charterProposal!.proposedAt,
+        proposalId: second.tot.charterProposal!.id,
         approve: true,
       });
       assert.strictEqual(approved.tot.charter, "Second.");
@@ -140,7 +138,7 @@ it.layer(layerWith(shell()))("TotService", (it) => {
       const proposed = yield* tots.proposeCharter(threadId, { charter: "New.", reason: "Why." });
       const dismissed = yield* tots.answerCharterProposal({
         id: tot.id,
-        proposedAt: proposed.tot.charterProposal!.proposedAt,
+        proposalId: proposed.tot.charterProposal!.id,
         approve: false,
       });
       assert.strictEqual(dismissed.tot.charter, "Old rules.");

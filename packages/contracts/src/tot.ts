@@ -1,7 +1,17 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, ProjectId, ThreadId, TotId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  PositiveInt,
+  ProjectId,
+  ScheduledTaskId,
+  ThreadId,
+  TotId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 /** Project managers delegate the work; hands-on Tots do it themselves. */
 export const TotJob = Schema.Literals(["manager", "hands_on"]);
@@ -22,11 +32,50 @@ const TotCharter = Schema.String.check(Schema.isMaxLength(TOT_CHARTER_MAX_LENGTH
 
 /** A Tot's proposed replacement for its whole charter, until the user answers it. */
 export const TotCharterProposal = Schema.Struct({
+  /** Which proposal was on screen when the user answered, so a newer one can't be approved unseen. */
+  id: TrimmedNonEmptyString,
   charter: TotCharter,
   reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
   proposedAt: IsoDateTime,
 });
 export type TotCharterProposal = typeof TotCharterProposal.Type;
+
+const TotClockTime = Schema.String.check(Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/));
+
+/** On the Tot's machine's clock. The window can cross midnight; equal times mean no window. */
+export const TotQuietHours = Schema.Struct({ start: TotClockTime, end: TotClockTime });
+export type TotQuietHours = typeof TotQuietHours.Type;
+
+/** A plain command run before a schedule wakes the Tot: exit 1 skips the wake. */
+export const TotWakeCheck = Schema.Struct({
+  scheduledTaskId: ScheduledTaskId,
+  command: TrimmedNonEmptyString.check(Schema.isMaxLength(2000)),
+});
+export type TotWakeCheck = typeof TotWakeCheck.Type;
+
+export const TotWakeSettings = Schema.Struct({
+  quietHours: Schema.NullOr(TotQuietHours),
+  /** Scheduled wakes a day. Anything over the limit waits for the next day. */
+  dailyWakeLimit: Schema.NullOr(PositiveInt),
+  wakeChecks: Schema.Array(TotWakeCheck).check(Schema.isMaxLength(64)),
+});
+export type TotWakeSettings = typeof TotWakeSettings.Type;
+
+export const EMPTY_TOT_WAKE_SETTINGS: TotWakeSettings = {
+  quietHours: null,
+  dailyWakeLimit: null,
+  wakeChecks: [],
+};
+
+/** Which model a Tot should give each kind of crew work. Told to the Tot, not enforced. */
+export const TotCrewModel = Schema.Struct({
+  role: TrimmedNonEmptyString.check(Schema.isMaxLength(60)),
+  instanceId: ProviderInstanceId,
+  model: TrimmedNonEmptyString,
+});
+export type TotCrewModel = typeof TotCrewModel.Type;
+
+const TotCrewModels = Schema.Array(TotCrewModel).check(Schema.isMaxLength(12));
 
 /** A lasting identity wrapped around one thread. */
 export const Tot = Schema.Struct({
@@ -45,6 +94,11 @@ export const Tot = Schema.Struct({
   charterProposal: Schema.NullOr(TotCharterProposal).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  wakeSettings: TotWakeSettings.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(EMPTY_TOT_WAKE_SETTINGS)),
+  ),
+  crewModels: TotCrewModels.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  wakesHeld: NonNegativeInt.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -77,6 +131,8 @@ export const TotUpdateInput = Schema.Struct({
   job: Schema.optionalKey(TotJob),
   charter: Schema.optionalKey(TotCharter),
   voice: Schema.optionalKey(TotVoice),
+  wakeSettings: Schema.optionalKey(TotWakeSettings),
+  crewModels: Schema.optionalKey(TotCrewModels),
 });
 export type TotUpdateInput = typeof TotUpdateInput.Type;
 
@@ -90,8 +146,7 @@ export type TotProposeCharterInput = typeof TotProposeCharterInput.Type;
 
 export const TotAnswerCharterProposalInput = Schema.Struct({
   id: TotId,
-  /** Which proposal was on screen, so a newer one can't be approved unseen. */
-  proposedAt: IsoDateTime,
+  proposalId: TrimmedNonEmptyString,
   approve: Schema.Boolean,
 });
 export type TotAnswerCharterProposalInput = typeof TotAnswerCharterProposalInput.Type;

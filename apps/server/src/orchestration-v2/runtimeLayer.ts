@@ -56,8 +56,10 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as TotService from "../tots/TotService.ts";
+import * as TotWakes from "../tots/TotWakes.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -285,6 +287,16 @@ const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
 const layerTotProvided = TotService.layer.pipe(Layer.provide(layerThreadManagementProvided));
+const layerTotWakesProvided = TotWakes.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerThreadManagementProvided,
+      layerTotProvided,
+      layerProjectService,
+      ProcessRunner.layer,
+    ),
+  ),
+);
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -292,6 +304,7 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
+      layerTotWakesProvided,
     ),
   ),
 );

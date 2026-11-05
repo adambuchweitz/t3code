@@ -29,6 +29,18 @@ A Tot can't change its own charter. It can propose a new one, and the change app
 
 **Full toddler**, **Polite** and **Grown-up** change the words the app uses for that Tot and how it writes to you. Commits, pull requests, code and messages to other threads stay plain.
 
+## Control when it wakes
+
+The **Wakes** tab on a Tot lists its schedules, watches and crew.
+
+- **Quiet hours** and a **Daily wake limit** make scheduled wakes wait. Waiting wakes merge into one turn when they can run, keeping only the latest prompt from each schedule. They use the clock on the machine the Tot lives on.
+- A schedule can have a **check**: a command run in the Tot's folder before it wakes. Exit 1 skips the wake. Any other failure still wakes the Tot and tells it the check failed.
+- Your messages, pull request watches, crew results and **Run now** always go straight through.
+
+## Choose which models do what
+
+**Crew models** lists roles like "Reviews" with a model for each, and the Tot uses them when it starts crew threads. The Tot can still choose differently if you tell it to. Its own turns, including wakes, use the model set on its thread.
+
 ## Change or remove a Tot
 
 Use the pencil on its card, or **Edit Tot** in its thread's menu. Turn off **Use its own name** to have the Tot go by its project's name.

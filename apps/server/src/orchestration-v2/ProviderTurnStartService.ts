@@ -147,7 +147,6 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
-  | TotInstructions.TotInstructions
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {

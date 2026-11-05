@@ -194,7 +194,6 @@ function startWithMissingWorktree(
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
-        Layer.mock(TotInstructions.TotInstructions)({ forThread: () => Effect.succeed(null) }),
       ),
     ),
   );
@@ -276,9 +275,7 @@ function makeLocalCommandHarness(input: {
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
   readonly fileSystem?: FileSystem.FileSystem;
-  readonly tot?: Effect.Success<
-    ReturnType<TotInstructions.TotInstructions["Service"]["forThread"]>
-  >;
+  readonly tot?: Effect.Success<ReturnType<TotInstructions.TotInstructionsShape["forThread"]>>;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -1008,7 +1005,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
-        Layer.mock(TotInstructions.TotInstructions)({
+        Layer.succeed(TotInstructions.TotInstructions, {
           forThread: () => Effect.succeed(input.tot ?? null),
         }),
       ),
@@ -1862,16 +1859,30 @@ effectIt.effect.each([
   {
     name: "a Tot's turn carries its charter, name, job and voice",
     text: "Check the backlog",
-    tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship the HTTP fix." },
-    expected: ['named "Brace"', "project manager", "Ship the HTTP fix.", "excitable toddler"],
+    tot: {
+      name: "Brace",
+      job: "manager",
+      voice: "toddler",
+      charter: "Ship the HTTP fix.",
+      crewModels: [
+        { role: "Reviews", instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+      ],
+    },
+    expected: [
+      'named "Brace"',
+      "project manager",
+      "Ship the HTTP fix.",
+      "excitable toddler",
+      '- Reviews: providerInstanceId "codex", model "gpt-6.1-sol"',
+    ],
     absent: [],
   },
   {
     name: "name off, no charter and the plain voice leave those out",
     text: "Check the backlog",
-    tot: { name: null, job: "hands_on", voice: "grown_up", charter: "" },
-    expected: ["This thread is a Tot:", "hands-on", "You have no charter yet."],
-    absent: ["toddler", "stay plain"],
+    tot: { name: null, job: "hands_on", voice: "grown_up", charter: "", crewModels: [] },
+    expected: ["This thread is a Tot:", "hands-on", "You have no charter yet.", "no persona"],
+    absent: ["toddler", "stay plain", "crew threads"],
   },
   {
     name: "a plain thread gets nothing",
@@ -1901,11 +1912,24 @@ effectIt.effect("leaves a Tot's slash command for the provider to parse", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "/custom",
-      tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship it." },
+      tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship it.", crewModels: [] },
       previousTurn: { runStatus: "completed", turnStatus: "completed" },
     });
     harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
     yield* harness.start;
     expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe("/custom");
+  }),
+);
+
+effectIt.effect("a Tot's attachment-only turn still carries its instructions", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "",
+      tot: { name: "Brace", job: "manager", voice: "polite", charter: "Ship it.", crewModels: [] },
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+    yield* harness.start;
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toContain("Ship it.");
   }),
 );

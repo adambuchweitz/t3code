@@ -1,4 +1,4 @@
-import { TotJob, TotVoice, type ThreadId } from "@t3tools/contracts";
+import { TotCrewModel, TotJob, TotVoice, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -13,33 +13,38 @@ const TotInstructionsRow = Schema.Struct({
   job: TotJob,
   voice: TotVoice,
   charter: Schema.String,
+  crew_models: Schema.fromJsonString(Schema.Array(TotCrewModel)),
 });
 const decodeRow = Schema.decodeUnknownEffect(TotInstructionsRow);
 
+export interface TotInstructionsShape {
+  readonly forThread: (threadId: ThreadId) => Effect.Effect<{
+    readonly name: string | null;
+    readonly job: TotJob;
+    readonly voice: TotVoice;
+    readonly charter: string;
+    readonly crewModels: ReadonlyArray<TotCrewModel>;
+  } | null>;
+}
+
 /**
  * What a Tot's next turn tells the model. Apart from `TotService`, which depends on thread
- * management and so can't sit underneath turn start.
+ * management and so can't sit underneath turn start. A reference so that turn start's many test
+ * layers need nothing: without this service provided, no thread is a Tot.
  */
-export class TotInstructions extends Context.Service<
-  TotInstructions,
-  {
-    readonly forThread: (threadId: ThreadId) => Effect.Effect<{
-      readonly name: string | null;
-      readonly job: TotJob;
-      readonly voice: TotVoice;
-      readonly charter: string;
-    } | null>;
-  }
->()("t3/tots/TotInstructions") {}
+export class TotInstructions extends Context.Reference<TotInstructionsShape>(
+  "t3/tots/TotInstructions",
+  { defaultValue: () => ({ forThread: () => Effect.succeed(null) }) },
+) {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* ensureTotsTable;
-  return TotInstructions.of({
+  return {
     forThread: Effect.fn("TotInstructions.forThread")(
       function* (threadId) {
         const rows = yield* sql`
-        SELECT name, name_enabled, job, voice, charter FROM tots WHERE thread_id = ${threadId}
+        SELECT name, name_enabled, job, voice, charter, crew_models FROM tots WHERE thread_id = ${threadId}
       `;
         if (rows[0] === undefined) return null;
         const row = yield* decodeRow(rows[0]);
@@ -48,6 +53,7 @@ const make = Effect.gen(function* () {
           job: row.job,
           voice: row.voice,
           charter: row.charter,
+          crewModels: row.crew_models,
         };
       },
       (effect) =>
@@ -60,7 +66,7 @@ const make = Effect.gen(function* () {
           ),
         ),
     ),
-  });
+  } satisfies TotInstructionsShape;
 });
 
 export const layer = Layer.effect(TotInstructions, make);
