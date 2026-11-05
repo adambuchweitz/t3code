@@ -37,6 +37,8 @@ import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPr
 import { readIssueListPreferences } from "../issue/issueListPreferences";
 import { IssueGlyph } from "../issue/issuePresentation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
+import { TotCharacter } from "../tots/TotCharacter";
+import { useTotEntries } from "../../state/tots";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
@@ -225,6 +227,17 @@ function SidebarUtilityItem({
   );
 }
 
+const SidebarTotsItem = memo(function SidebarTotsItem(props: { onClick: () => void }) {
+  const needsYou = useTotEntries().some((entry) => entry.state === "needs");
+  return (
+    <SidebarUtilityItem
+      icon={<TotCharacter character="brace" pose={needsYou ? "needs" : "awake"} size={20} />}
+      label={needsYou ? "Tots: one needs you" : "Tots"}
+      onClick={props.onClick}
+    />
+  );
+});
+
 const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
@@ -261,6 +274,11 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       setOpenMobile(false);
     }
     void navigate({ to: "/usage" });
+  };
+
+  const handleTotsClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/tots" });
   };
 
   const handleBackClick = () => {
@@ -305,6 +323,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label={gt("Usage")}
             onClick={handleUsageClick}
           />
+          <SidebarTotsItem onClick={handleTotsClick} />
         </>
       )}
       <SidebarThreadUndoNotice />
