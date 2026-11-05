@@ -250,6 +250,13 @@ it.layer(SqlitePersistence.layerMemory)("Tots table", (it) => {
         SELECT charter, voice FROM tots
       `;
       assert.deepStrictEqual(rows, [{ charter: "", voice: "toddler" }]);
+
+      yield* sql`UPDATE tots SET proposed_charter = 'New', proposal_id = NULL`;
+      yield* ensureTotsTable;
+      const proposals = yield* sql<{ readonly proposal_id: string | null }>`
+        SELECT proposal_id FROM tots
+      `;
+      assert.isNotNull(proposals[0]?.proposal_id);
     }),
   );
 });

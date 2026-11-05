@@ -45,8 +45,26 @@ export const ensureTotsTable = Effect.gen(function* () {
       scheduled_task_id TEXT NOT NULL,
       title TEXT NOT NULL,
       prompt TEXT NOT NULL,
-      held_at TEXT NOT NULL
+      held_at TEXT NOT NULL,
+      batch_id TEXT,
+      batch_day TEXT,
+      released_at TEXT
     )
+  `;
+  const heldColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('tot_held_wakes')
+  `;
+  const heldPresent = new Set(heldColumns.map((column) => column.name));
+  if (!heldPresent.has("batch_id")) yield* sql`ALTER TABLE tot_held_wakes ADD COLUMN batch_id TEXT`;
+  if (!heldPresent.has("batch_day"))
+    yield* sql`ALTER TABLE tot_held_wakes ADD COLUMN batch_day TEXT`;
+  if (!heldPresent.has("released_at")) {
+    yield* sql`ALTER TABLE tot_held_wakes ADD COLUMN released_at TEXT`;
+  }
+  // A proposal saved before proposals had ids still needs one to be answered.
+  yield* sql`
+    UPDATE tots SET proposal_id = lower(hex(randomblob(16)))
+    WHERE proposed_charter IS NOT NULL AND proposal_id IS NULL
   `;
   yield* sql`CREATE INDEX IF NOT EXISTS tot_held_wakes_thread ON tot_held_wakes (thread_id)`;
 }).pipe(Effect.orDie);

@@ -31,6 +31,8 @@ export type TotWakeDecision =
 const CHECK_TIMEOUT = "60 seconds";
 const RELEASE_EVERY = "1 minute";
 const SKIP_EXIT_CODE = 1;
+// Far beyond any restart, because a pending webhook has no expiry of its own to match.
+const FORGET_RELEASED_AFTER_DAYS = 90;
 
 const decodeSettings = Schema.decodeUnknownEffect(Schema.fromJsonString(TotWakeSettings));
 
@@ -133,22 +135,16 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const isOpen = (
-    tot: { readonly row: TotWakeRow; readonly settings: TotWakeSettings },
-    clock: { readonly minuteOfDay: number; readonly day: string },
-  ) => {
-    if (isWithinQuietHours(clock.minuteOfDay, tot.settings.quietHours)) return false;
-    const limit = tot.settings.dailyWakeLimit;
-    const used = tot.row.wake_day === clock.day ? tot.row.wake_count : 0;
-    return limit === null || used < limit;
-  };
-
-  const countWake = (threadId: string, day: string) => sql`
-    UPDATE tots SET
-      wake_count = CASE WHEN wake_day = ${day} THEN wake_count + 1 ELSE 1 END,
-      wake_day = ${day}
-    WHERE thread_id = ${threadId}
-  `;
+  /** Takes one wake from the day's limit, atomically, so concurrent wakes can't both have the last. */
+  const reserveWake = (threadId: string, day: string, limit: TotWakeSettings["dailyWakeLimit"]) =>
+    sql<{ readonly thread_id: string }>`
+      UPDATE tots SET
+        wake_count = CASE WHEN wake_day = ${day} THEN wake_count + 1 ELSE 1 END,
+        wake_day = ${day}
+      WHERE thread_id = ${threadId}
+        AND (${limit} IS NULL OR wake_day IS NOT ${day} OR wake_count < ${limit})
+      RETURNING thread_id
+    `.pipe(Effect.map((rows) => rows.length > 0));
 
   /** A check that can't give a clear answer shouldn't silence the Tot, so it says so and wakes. */
   const runWakeCheck = Effect.fn("TotWakes.runWakeCheck")(function* (
@@ -180,10 +176,15 @@ const make = Effect.gen(function* () {
 
   const admit: TotWakesShape["admit"] = Effect.fn("TotWakes.admit")(
     function* (input) {
-      const tot = yield* readTot(input.threadId);
-      if (tot === null) return { _tag: "run" as const, prompt: input.prompt };
+      // A pending webhook retries after a restart. Once its wake was held, it stays that row's job.
+      const alreadyHeld = yield* sql`
+        SELECT 1 FROM tot_held_wakes WHERE held_id = ${input.heldId}
+      `;
+      if (alreadyHeld.length > 0) return { _tag: "held" as const };
+      const before = yield* readTot(input.threadId);
+      if (before === null) return { _tag: "run" as const, prompt: input.prompt };
       const check = input.runCheck
-        ? tot.settings.wakeChecks.find((c) => c.scheduledTaskId === input.scheduledTaskId)
+        ? before.settings.wakeChecks.find((c) => c.scheduledTaskId === input.scheduledTaskId)
         : undefined;
       const checked =
         check === undefined ? null : yield* runWakeCheck(input.threadId, check.command);
@@ -192,22 +193,25 @@ const make = Effect.gen(function* () {
         checked?.note == null
           ? input.prompt
           : `This wake's check couldn't decide because ${checked.note}, so it ran anyway.\n\n${input.prompt}`;
+      // The check can take a while, and the settings or the Tot can change during it.
+      const tot = yield* readTot(input.threadId);
+      if (tot === null) return { _tag: "run" as const, prompt };
       const clock = yield* localClock;
-      if (!isOpen(tot, clock)) {
-        yield* sql`
-          INSERT INTO tot_held_wakes (
-            held_id, thread_id, scheduled_task_id, title, prompt, held_at
-          ) VALUES (
-            ${input.heldId}, ${input.threadId}, ${input.scheduledTaskId}, ${input.title},
-            ${prompt}, ${clock.iso}
-          )
-          ON CONFLICT (held_id) DO NOTHING
-        `;
-        yield* tots.notifyChanged;
-        return { _tag: "held" as const };
-      }
-      yield* countWake(input.threadId, clock.day);
-      return { _tag: "run" as const, prompt };
+      const open =
+        !isWithinQuietHours(clock.minuteOfDay, tot.settings.quietHours) &&
+        (yield* reserveWake(input.threadId, clock.day, tot.settings.dailyWakeLimit));
+      if (open) return { _tag: "run" as const, prompt };
+      yield* sql`
+        INSERT INTO tot_held_wakes (
+          held_id, thread_id, scheduled_task_id, title, prompt, held_at
+        ) VALUES (
+          ${input.heldId}, ${input.threadId}, ${input.scheduledTaskId}, ${input.title},
+          ${prompt}, ${clock.iso}
+        )
+        ON CONFLICT (held_id) DO NOTHING
+      `;
+      yield* tots.notifyChanged;
+      return { _tag: "held" as const };
     },
     (effect, input) =>
       effect.pipe(
@@ -227,19 +231,62 @@ const make = Effect.gen(function* () {
       return;
     }
     const clock = yield* localClock;
-    const tot = yield* readTot(threadId);
-    // Turning the Tot back into a thread leaves no window to wait for.
-    if (tot !== null && !isOpen(tot, clock)) return;
+    const unfinishedBatch = yield* sql<{ readonly batch_id: string; readonly batch_day: string }>`
+      SELECT batch_id, batch_day FROM tot_held_wakes
+      WHERE thread_id = ${threadId} AND released_at IS NULL AND batch_id IS NOT NULL
+      LIMIT 1
+    `;
+    const unfinished = unfinishedBatch[0];
+    const accepted =
+      unfinished !== undefined &&
+      (yield* threads.hasReceipt(CommandId.make(`tot-wake:${unfinished.batch_id}`)));
+    // Fixing the batch before sending means a crash replays exactly these wakes, and any held
+    // later wait for the next batch. A batch orchestration already accepted just finishes; one it
+    // never saw is still a new wake, so it waits like one and uses the limit of the day it runs.
+    const batchId = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (unfinished !== undefined && accepted) return unfinished.batch_id;
+        const tot = yield* readTot(threadId);
+        // Turning the Tot back into a thread leaves no window to wait for.
+        if (tot !== null && isWithinQuietHours(clock.minuteOfDay, tot.settings.quietHours)) {
+          return null;
+        }
+        const first = yield* sql<{ readonly held_id: string }>`
+          SELECT held_id FROM tot_held_wakes
+          WHERE thread_id = ${threadId} AND released_at IS NULL
+          ORDER BY held_at, held_id
+          LIMIT 1
+        `;
+        if (first[0] === undefined) return null;
+        const alreadyReserved = unfinished?.batch_day === clock.day;
+        if (tot !== null && !alreadyReserved) {
+          const reserved = yield* reserveWake(threadId, clock.day, tot.settings.dailyWakeLimit);
+          if (!reserved) return null;
+        }
+        if (unfinished !== undefined) {
+          yield* sql`
+            UPDATE tot_held_wakes SET batch_day = ${clock.day}
+            WHERE batch_id = ${unfinished.batch_id}
+          `;
+          return unfinished.batch_id;
+        }
+        yield* sql`
+          UPDATE tot_held_wakes SET batch_id = ${first[0].held_id}, batch_day = ${clock.day}
+          WHERE thread_id = ${threadId} AND released_at IS NULL
+        `;
+        return first[0].held_id;
+      }),
+    );
+    if (batchId === null) return;
     const wakes = yield* sql<HeldWake>`
-      SELECT * FROM tot_held_wakes WHERE thread_id = ${threadId} ORDER BY held_at, held_id
+      SELECT * FROM tot_held_wakes WHERE batch_id = ${batchId} ORDER BY held_at, held_id
     `;
     const first = wakes[0];
     if (first === undefined) return;
     yield* threads.sendToThread({
       projectId: ProjectId.make(shell.projectId),
-      // Named after the first wake, so a crash before the delete below replays safely.
-      commandId: CommandId.make(`tot-wake:${first.held_id}`),
-      messageId: MessageId.make(`tot-wake-message:${first.held_id}`),
+      commandId: CommandId.make(`tot-wake:${batchId}`),
+      messageId: MessageId.make(`tot-wake-message:${batchId}`),
       threadId: id,
       ...(wakes.every((wake) => wake.scheduled_task_id === first.scheduled_task_id)
         ? { scheduledTaskId: ScheduledTaskId.make(first.scheduled_task_id) }
@@ -250,20 +297,22 @@ const make = Effect.gen(function* () {
       createdBy: "agent",
       creationSource: "web",
     });
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        for (const wake of wakes) {
-          yield* sql`DELETE FROM tot_held_wakes WHERE held_id = ${wake.held_id}`;
-        }
-        if (tot !== null) yield* countWake(threadId, clock.day);
-      }),
-    );
+    // Kept without its prompt as a record, so a webhook retrying after a restart doesn't resend it.
+    yield* sql`
+      UPDATE tot_held_wakes SET released_at = ${clock.iso}, prompt = ''
+      WHERE batch_id = ${batchId}
+    `;
     yield* tots.notifyChanged;
   });
 
   const releaseDue: TotWakesShape["releaseDue"] = Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const forgetBefore = DateTime.formatIso(
+      DateTime.subtract(now, { days: FORGET_RELEASED_AFTER_DAYS }),
+    );
+    yield* sql`DELETE FROM tot_held_wakes WHERE released_at < ${forgetBefore}`;
     const held = yield* sql<{ readonly thread_id: string }>`
-      SELECT DISTINCT thread_id FROM tot_held_wakes
+      SELECT DISTINCT thread_id FROM tot_held_wakes WHERE released_at IS NULL
     `;
     for (const { thread_id } of held) {
       yield* releaseThread(thread_id).pipe(
