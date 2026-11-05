@@ -461,6 +461,16 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
+import {
+  TotAdoptInput,
+  TotError,
+  TotListInput,
+  TotListResult,
+  TotMutationResult,
+  TotReleaseInput,
+  TotReleaseResult,
+  TotUpdateInput,
+} from "./tot.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
@@ -654,6 +664,11 @@ export const WS_METHODS = {
   workflowsGetDefinition: "workflows.getDefinition",
   workflowsSaveDefinition: "workflows.saveDefinition",
   workflowsDeleteDefinition: "workflows.deleteDefinition",
+
+  totsSubscribe: "tots.subscribe",
+  totsAdopt: "tots.adopt",
+  totsUpdate: "tots.update",
+  totsRelease: "tots.release",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -2410,6 +2425,31 @@ const WsWorkflowsDeleteDefinitionRpc = Rpc.make(WS_METHODS.workflowsDeleteDefini
   error: EnvironmentAuthorizationError,
 });
 
+const WsTotsSubscribeRpc = Rpc.make(WS_METHODS.totsSubscribe, {
+  payload: TotListInput,
+  success: TotListResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsTotsAdoptRpc = Rpc.make(WS_METHODS.totsAdopt, {
+  payload: TotAdoptInput,
+  success: TotMutationResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
+const WsTotsUpdateRpc = Rpc.make(WS_METHODS.totsUpdate, {
+  payload: TotUpdateInput,
+  success: TotMutationResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
+const WsTotsReleaseRpc = Rpc.make(WS_METHODS.totsRelease, {
+  payload: TotReleaseInput,
+  success: TotReleaseResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2596,6 +2636,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowsGetDefinitionRpc,
   WsWorkflowsSaveDefinitionRpc,
   WsWorkflowsDeleteDefinitionRpc,
+  WsTotsSubscribeRpc,
+  WsTotsAdoptRpc,
+  WsTotsUpdateRpc,
+  WsTotsReleaseRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

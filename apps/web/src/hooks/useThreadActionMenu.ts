@@ -2,6 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
+import { openTotDialog } from "../components/tots/totDialogState";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -42,6 +43,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { totMenuState } from "../state/tots";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -153,6 +155,7 @@ export function useThreadActionMenu(input: {
       snoozePresets,
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+      ...totMenuState(threadRef, thread),
     });
     const run = async (action: ThreadActionMenuId) => {
       const api = readLocalApi();
@@ -273,6 +276,9 @@ export function useThreadActionMenu(input: {
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);
+          return;
+        case "tot":
+          openTotDialog({ kind: "thread", threadRef });
           return;
         case "turn-into-project": {
           const result = await turnThreadIntoProject(threadRef);

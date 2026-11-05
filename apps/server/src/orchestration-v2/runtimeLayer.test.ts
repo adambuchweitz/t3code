@@ -40,6 +40,7 @@ import {
   RunId,
   ScheduledTaskId,
   ThreadId,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -96,6 +97,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as TotService from "../tots/TotService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -457,6 +459,20 @@ const bootedSimulatorHost = DeviceHost.DeviceHost.of({
   stopAgent: Effect.void,
   stop: Effect.void,
 });
+const layerTotsTest = TotService.layer.pipe(
+  Layer.provide(
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: (threadId) =>
+        Effect.succeed({
+          id: threadId,
+          projectId: ProjectId.make("tot-project"),
+          deletedAt: null,
+          archivedAt: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        } as OrchestrationV2ThreadShell),
+    }),
+  ),
+);
 const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
   Layer.provideMerge(layerScheduledTasksTest),
   Layer.provideMerge(
@@ -465,6 +481,7 @@ const layerResourceCleanupTest = ResourceCleanupService.layer.pipe(
       DeviceService.makeWithHosts(new Map([[bootedSimulatorHost.id, bootedSimulatorHost]])),
     ),
   ),
+  Layer.provideMerge(layerTotsTest),
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void }),
@@ -576,6 +593,16 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         yield* save("moved", threadId);
         const { task: moved } = yield* save("moved", otherThreadId);
         const { task: other } = yield* save("other", otherThreadId);
+        const tots = yield* TotService.TotService;
+        for (const id of [threadId, otherThreadId]) {
+          yield* tots.adopt({
+            threadId: id,
+            name: "Brace",
+            nameEnabled: true,
+            character: "brace",
+            job: "manager",
+          });
+        }
         yield* tasks.triggerWebhook({
           hookId: webhook.id,
           token: webhook.webhook!.path.split("/").at(-1)!,
@@ -617,6 +644,9 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         assert.notInclude(remainingIds, bound.id);
         assert.notInclude(remainingIds, webhook.id);
         assert.includeMembers(remainingIds, [independent.id, detached.id, moved.id, other.id]);
+        const totThreadIds = (yield* tots.list()).tots.map((tot) => tot.threadId);
+        assert.notInclude(totThreadIds, threadId);
+        assert.include(totThreadIds, otherThreadId);
         assert.lengthOf((yield* tasks.listWebhookDeliveries({ id: webhook.id })).deliveries, 0);
         const rejected = yield* tasks.runNow({ id: bound.id }).pipe(Effect.flip);
         assert.equal(rejected.message, "Schedule task not found.");

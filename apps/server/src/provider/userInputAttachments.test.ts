@@ -21,6 +21,7 @@ import * as DeviceService from "../device/DeviceService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as TotService from "../tots/TotService.ts";
 import * as NodeZlib from "node:zlib";
 import { appendUserInputAttachmentPaths } from "./userInputAttachments.ts";
 
@@ -712,6 +713,7 @@ describe("question answer paths", () => {
                 Layer.mock(PreviewManager.PreviewManager)({}),
                 Layer.mock(DeviceService.DeviceService)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+                Layer.mock(TotService.TotService)({}),
               ),
             ),
           ),
