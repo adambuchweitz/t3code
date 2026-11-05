@@ -11,6 +11,7 @@ import {
   TotId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ProviderApprovalDecision } from "./providerPolicy.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /** Project managers delegate the work; hands-on Tots do it themselves. */
@@ -109,6 +110,7 @@ export const Tot = Schema.Struct({
   talkRequest: Schema.NullOr(TotTalkRequest).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  watchedThreadIds: Schema.Array(ThreadId).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -144,6 +146,7 @@ export const TotUpdateInput = Schema.Struct({
   wakeSettings: Schema.optionalKey(TotWakeSettings),
   crewModels: Schema.optionalKey(TotCrewModels),
   dismissTalkRequest: Schema.optionalKey(Schema.Literal(true)),
+  unwatchThreadIds: Schema.optionalKey(Schema.Array(ThreadId)),
 });
 export type TotUpdateInput = typeof TotUpdateInput.Type;
 
@@ -162,10 +165,26 @@ export const TotAskToTalkInput = Schema.Struct({
 });
 export type TotAskToTalkInput = typeof TotAskToTalkInput.Type;
 
+export const TotWatchInput = Schema.Struct({
+  action: Schema.Literals(["watch", "unwatch"]),
+  threadId: ThreadId,
+});
+export type TotWatchInput = typeof TotWatchInput.Type;
+
+export const TotCrewApprovalInput = Schema.Struct({
+  action: Schema.Literals(["list", "read", "respond"]),
+  threadId: ThreadId,
+  requestId: Schema.optional(TrimmedNonEmptyString),
+  decision: Schema.optional(ProviderApprovalDecision),
+});
+export type TotCrewApprovalInput = typeof TotCrewApprovalInput.Type;
+
 export const TotAnswerCharterProposalInput = Schema.Struct({
   id: TotId,
   proposalId: TrimmedNonEmptyString,
   approve: Schema.Boolean,
+  /** The user's edit of the proposal, to approve instead of what the Tot wrote. */
+  charter: Schema.optionalKey(TotCharter),
 });
 export type TotAnswerCharterProposalInput = typeof TotAnswerCharterProposalInput.Type;
 

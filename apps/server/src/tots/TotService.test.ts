@@ -170,6 +170,63 @@ it.layer(layerWith(shell()))("TotService", (it) => {
     }),
   );
 
+  it.effect("approving can use the user's edit instead of what the Tot wrote", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const { tot } = yield* tots.adopt({ ...brace, charter: "Old." });
+      const proposed = yield* tots.proposeCharter(threadId, { charter: "New.", reason: "Why." });
+      const { tot: approved } = yield* tots.answerCharterProposal({
+        id: tot.id,
+        proposalId: proposed.tot.charterProposal!.id,
+        approve: true,
+        charter: "New, edited.",
+      });
+      assert.strictEqual(approved.charter, "New, edited.");
+      assert.strictEqual(approved.charterProposal, null);
+      yield* tots.release({ id: tot.id });
+    }),
+  );
+
+  it.effect("only starting a thread grants authority over it, not watching it", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const { tot } = yield* tots.adopt(brace);
+      const watched = ThreadId.make("thread-watched");
+      const launched = ThreadId.make("thread-launched");
+
+      yield* tots.watchThread({ totThreadId: threadId, threadId: watched, reason: "requested" });
+      yield* tots.watchThread({ totThreadId: threadId, threadId: launched, reason: "launched" });
+      assert.isFalse(yield* tots.startedBy(threadId, watched));
+      assert.isTrue(yield* tots.startedBy(threadId, launched));
+
+      // Asking to watch a thread it started keeps its authority.
+      yield* tots.watchThread({ totThreadId: threadId, threadId: launched, reason: "requested" });
+      assert.isTrue(yield* tots.startedBy(threadId, launched));
+
+      assert.deepStrictEqual(yield* tots.watchersOf(watched), [
+        { totThreadId: threadId, via: "watch" },
+      ]);
+      const { tot: updated } = yield* tots.update({ id: tot.id, unwatchThreadIds: [watched] });
+      assert.deepStrictEqual(updated.watchedThreadIds, [launched]);
+      assert.deepStrictEqual(yield* tots.watchersOf(watched), []);
+
+      yield* tots.release({ id: tot.id });
+      assert.isFalse(yield* tots.startedBy(threadId, launched));
+      assert.deepStrictEqual(yield* tots.watchersOf(launched), []);
+    }),
+  );
+
+  it.effect("a thread that isn't a Tot can't watch or claim anything", () =>
+    Effect.gen(function* () {
+      const tots = yield* TotService.TotService;
+      const other = ThreadId.make("thread-other");
+      assert.isFalse(
+        yield* tots.watchThread({ totThreadId: threadId, threadId: other, reason: "launched" }),
+      );
+      assert.isFalse(yield* tots.startedBy(threadId, other));
+    }),
+  );
+
   it.effect("refuses a proposal from a thread that isn't a Tot", () =>
     Effect.gen(function* () {
       const tots = yield* TotService.TotService;

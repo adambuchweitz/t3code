@@ -10,6 +10,9 @@ import {
   type TotAnswerCharterProposalInput,
   type TotListResult,
   type TotMutationResult,
+  CommandId,
+  ProviderRequestKind,
+  type ProviderApprovalDecision,
   type TotAskToTalkInput,
   type TotProposeCharterInput,
   type TotReleaseInput,
@@ -51,6 +54,9 @@ interface TotRow {
   readonly updated_at: string;
 }
 
+const MAX_ANCESTORS = 32;
+const isApprovalKind = Schema.is(ProviderRequestKind);
+
 const decodeTot = Schema.decodeUnknownEffect(Tot);
 const WakeSettingsJson = Schema.fromJsonString(TotWakeSettings);
 const CrewModelsJson = Schema.fromJsonString(Schema.Array(TotCrewModel));
@@ -60,12 +66,18 @@ const decodeTotJson = Schema.decodeUnknownEffect(
 const encodeWakeSettings = Schema.encodeEffect(WakeSettingsJson);
 const encodeCrewModels = Schema.encodeEffect(CrewModelsJson);
 
-const totFromRow = (row: TotRow, projectId: ProjectId, wakesHeld: number) =>
+const totFromRow = (
+  row: TotRow,
+  projectId: ProjectId,
+  wakesHeld: number,
+  watchedThreadIds: ReadonlyArray<string>,
+) =>
   decodeTotJson({ wakeSettings: row.wake_settings, crewModels: row.crew_models }).pipe(
     Effect.flatMap((json) =>
       decodeTot({
         ...json,
         wakesHeld,
+        watchedThreadIds,
         id: row.tot_id,
         threadId: row.thread_id,
         projectId,
@@ -110,6 +122,53 @@ export class TotService extends Context.Service<
       threadId: ThreadId,
       input: TotProposeCharterInput,
     ) => Effect.Effect<TotMutationResult, TotError>;
+    /** Never downgrades: a thread the Tot started stays started if it also asks to watch it. */
+    readonly watchThread: (input: {
+      readonly totThreadId: ThreadId;
+      readonly threadId: ThreadId;
+      readonly reason: "launched" | "requested";
+    }) => Effect.Effect<boolean, TotError>;
+    readonly unwatchThread: (input: {
+      readonly totThreadId: ThreadId;
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<boolean, TotError>;
+    readonly listWatches: (
+      totThreadId: ThreadId,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly threadId: ThreadId; readonly reason: "launched" | "requested" }>,
+      TotError
+    >;
+    /** Tots to wake for a thread. `crew` means a subagent, whose results already reach its parent. */
+    readonly watchersOf: (
+      threadId: ThreadId,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly totThreadId: ThreadId; readonly via: "watch" | "crew" }>,
+      TotError
+    >;
+    /** Whether this Tot launched the thread, or the thread is a subagent somewhere below it. */
+    readonly startedBy: (
+      totThreadId: ThreadId,
+      threadId: ThreadId,
+    ) => Effect.Effect<boolean, TotError>;
+    readonly listCrewApprovals: (
+      threadId: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<string>, TotError>;
+    readonly readCrewApproval: (input: {
+      readonly threadId: ThreadId;
+      readonly requestId: string;
+    }) => Effect.Effect<
+      {
+        readonly requestKind: string;
+        readonly prompt: string | null;
+        readonly appName: string | null;
+      },
+      TotError
+    >;
+    readonly answerCrewApproval: (input: {
+      readonly threadId: ThreadId;
+      readonly requestId: string;
+      readonly decision: ProviderApprovalDecision;
+    }) => Effect.Effect<void, TotError>;
     readonly askToTalk: (
       threadId: ThreadId,
       input: TotAskToTalkInput,
@@ -142,6 +201,14 @@ const make = Effect.gen(function* () {
       Effect.mapError(storageError("Could not read a Tot's held wakes.")),
     );
 
+  const watchedIds = (threadId: string) =>
+    sql<{ readonly thread_id: string }>`
+      SELECT thread_id FROM tot_watches WHERE tot_thread_id = ${threadId} ORDER BY thread_id
+    `.pipe(
+      Effect.map((rows) => rows.map((row) => row.thread_id)),
+      Effect.mapError(storageError("Could not read a Tot's watches.")),
+    );
+
   const list: TotService["Service"]["list"] = Effect.fn("TotService.list")(function* () {
     const rows = yield* sql<TotRow>`SELECT * FROM tots ORDER BY created_at, tot_id`.pipe(
       Effect.mapError(storageError("Could not list Tots.")),
@@ -152,8 +219,10 @@ const make = Effect.gen(function* () {
         Effect.flatMap((shell) =>
           shell === null || shell.deletedAt !== null
             ? Effect.succeed(null)
-            : heldCount(row.thread_id).pipe(
-                Effect.flatMap((held) => totFromRow(row, shell.projectId, held)),
+            : Effect.all([heldCount(row.thread_id), watchedIds(row.thread_id)]).pipe(
+                Effect.flatMap(([held, watched]) =>
+                  totFromRow(row, shell.projectId, held, watched),
+                ),
               ),
         ),
       ),
@@ -207,7 +276,7 @@ const make = Effect.gen(function* () {
     if (row === undefined) {
       return yield* new TotError({ message: "That thread is already a Tot." });
     }
-    const tot = yield* totFromRow(row, shell.projectId, 0);
+    const tot = yield* totFromRow(row, shell.projectId, 0, []);
     yield* notifyChanged;
     return { tot };
   });
@@ -220,7 +289,12 @@ const make = Effect.gen(function* () {
     if (shell === null) {
       return yield* new TotError({ message: "That Tot's thread no longer exists." });
     }
-    const tot = yield* totFromRow(row, shell.projectId, yield* heldCount(row.thread_id));
+    const tot = yield* totFromRow(
+      row,
+      shell.projectId,
+      yield* heldCount(row.thread_id),
+      yield* watchedIds(row.thread_id),
+    );
     yield* notifyChanged;
     return { tot };
   });
@@ -240,6 +314,13 @@ const make = Effect.gen(function* () {
         : yield* encodeCrewModels(input.crewModels).pipe(
             Effect.mapError(storageError("Could not save the Tot's crew models.")),
           );
+    for (const threadId of input.unwatchThreadIds ?? []) {
+      yield* sql`
+        DELETE FROM tot_watches
+        WHERE thread_id = ${threadId}
+          AND tot_thread_id = (SELECT thread_id FROM tots WHERE tot_id = ${input.id})
+      `.pipe(Effect.mapError(storageError("Could not stop watching that thread.")));
+    }
     // Editing the charter settles a pending proposal, which was written against the old text.
     const keepsProposal = sql`(${charter} IS NULL OR ${charter} = charter)`;
     const rows = yield* sql<TotRow>`
@@ -270,7 +351,11 @@ const make = Effect.gen(function* () {
 
   const release: TotService["Service"]["release"] = Effect.fn("TotService.release")(
     function* (input) {
-      yield* sql`DELETE FROM tots WHERE tot_id = ${input.id}`.pipe(
+      yield* sql`
+        DELETE FROM tot_watches
+        WHERE tot_thread_id = (SELECT thread_id FROM tots WHERE tot_id = ${input.id})
+      `.pipe(
+        Effect.andThen(sql`DELETE FROM tots WHERE tot_id = ${input.id}`),
         Effect.mapError(storageError("Could not turn the Tot back into a thread.")),
       );
       yield* notifyChanged;
@@ -283,6 +368,9 @@ const make = Effect.gen(function* () {
   )(function* (threadId) {
     yield* sql`DELETE FROM tots WHERE thread_id = ${threadId}`.pipe(
       Effect.andThen(sql`DELETE FROM tot_held_wakes WHERE thread_id = ${threadId}`),
+      Effect.andThen(
+        sql`DELETE FROM tot_watches WHERE tot_thread_id = ${threadId} OR thread_id = ${threadId}`,
+      ),
       Effect.mapError(storageError("Could not remove the deleted thread's Tot.")),
     );
     yield* notifyChanged;
@@ -308,6 +396,165 @@ const make = Effect.gen(function* () {
     return yield* mutated(rows[0], "Only a Tot's own thread can propose a charter.");
   });
 
+  const isTot = (threadId: string) =>
+    sql`SELECT 1 FROM tots WHERE thread_id = ${threadId}`.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(storageError("Could not read that Tot.")),
+    );
+
+  /** Nearest first, and only through subagents: a user's fork of a Tot isn't the Tot's work. */
+  const crewAncestors = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const ancestors: Array<ThreadId> = [];
+    let current = threadId;
+    for (let hop = 0; hop < MAX_ANCESTORS; hop += 1) {
+      const shell = yield* threads
+        .getThreadShell(current)
+        .pipe(Effect.mapError(storageError("Could not read a thread.")));
+      const parent = shell?.lineage.parentThreadId;
+      if (parent == null || shell?.lineage.relationshipToParent !== "subagent") break;
+      ancestors.push(parent);
+      current = parent;
+    }
+    return ancestors;
+  });
+
+  const watchThread: TotService["Service"]["watchThread"] = Effect.fn("TotService.watchThread")(
+    function* (input) {
+      if (!(yield* isTot(input.totThreadId))) return false;
+      yield* sql`
+        INSERT INTO tot_watches (tot_thread_id, thread_id, reason)
+        VALUES (${input.totThreadId}, ${input.threadId}, ${input.reason})
+        ON CONFLICT (tot_thread_id, thread_id) DO UPDATE SET
+          reason = CASE WHEN reason = 'launched' THEN reason ELSE excluded.reason END
+      `.pipe(Effect.mapError(storageError("Could not watch that thread.")));
+      yield* notifyChanged;
+      return true;
+    },
+  );
+
+  const unwatchThread: TotService["Service"]["unwatchThread"] = Effect.fn(
+    "TotService.unwatchThread",
+  )(function* (input) {
+    if (!(yield* isTot(input.totThreadId))) return false;
+    yield* sql`
+      DELETE FROM tot_watches
+      WHERE tot_thread_id = ${input.totThreadId} AND thread_id = ${input.threadId}
+    `.pipe(Effect.mapError(storageError("Could not stop watching that thread.")));
+    yield* notifyChanged;
+    return true;
+  });
+
+  const listWatches: TotService["Service"]["listWatches"] = Effect.fn("TotService.listWatches")(
+    function* (totThreadId) {
+      const rows = yield* sql<{ readonly thread_id: ThreadId; readonly reason: string }>`
+        SELECT thread_id, reason FROM tot_watches WHERE tot_thread_id = ${totThreadId}
+        ORDER BY thread_id
+      `.pipe(Effect.mapError(storageError("Could not read a Tot's watches.")));
+      return rows.map((row) => ({
+        threadId: row.thread_id,
+        reason: row.reason === "launched" ? ("launched" as const) : ("requested" as const),
+      }));
+    },
+  );
+
+  const watchersOf: TotService["Service"]["watchersOf"] = Effect.fn("TotService.watchersOf")(
+    function* (threadId) {
+      const watching = yield* sql<{ readonly tot_thread_id: ThreadId }>`
+        SELECT w.tot_thread_id FROM tot_watches w
+        JOIN tots t ON t.thread_id = w.tot_thread_id
+        WHERE w.thread_id = ${threadId} AND w.tot_thread_id <> ${threadId}
+      `.pipe(Effect.mapError(storageError("Could not read who watches a thread.")));
+      const watchers = watching.map((row) => ({
+        totThreadId: row.tot_thread_id,
+        via: "watch" as const,
+      }));
+      const seen = new Set<string>(watchers.map((watcher) => watcher.totThreadId));
+      const crewOf = [];
+      for (const ancestor of yield* crewAncestors(threadId)) {
+        if (!seen.has(ancestor) && (yield* isTot(ancestor))) {
+          crewOf.push({ totThreadId: ancestor, via: "crew" as const });
+        }
+      }
+      return [...watchers, ...crewOf];
+    },
+  );
+
+  const startedBy: TotService["Service"]["startedBy"] = Effect.fn("TotService.startedBy")(
+    function* (totThreadId, threadId) {
+      if (!(yield* isTot(totThreadId))) return false;
+      const launched = yield* sql`
+        SELECT 1 FROM tot_watches
+        WHERE tot_thread_id = ${totThreadId} AND thread_id = ${threadId} AND reason = 'launched'
+      `.pipe(Effect.mapError(storageError("Could not read a Tot's watches.")));
+      return launched.length > 0 || (yield* crewAncestors(threadId)).includes(totThreadId);
+    },
+  );
+
+  const pendingApprovals = (threadId: ThreadId) =>
+    threads
+      .getThreadRecords(threadId, ["runtimeRequests", "turnItems"], {
+        turnItemTypes: ["approval_request"],
+      })
+      .pipe(
+        Effect.map(({ runtimeRequests, turnItems }) => ({
+          requests: runtimeRequests.filter(
+            (request) => request.status === "pending" && isApprovalKind(request.kind),
+          ),
+          turnItems,
+        })),
+        Effect.mapError(storageError("Could not read that thread's requests.")),
+      );
+
+  const listCrewApprovals: TotService["Service"]["listCrewApprovals"] = Effect.fn(
+    "TotService.listCrewApprovals",
+  )(function* (threadId) {
+    const { requests } = yield* pendingApprovals(threadId);
+    return requests.map((request) => request.id);
+  });
+
+  const readCrewApproval: TotService["Service"]["readCrewApproval"] = Effect.fn(
+    "TotService.readCrewApproval",
+  )(function* (input) {
+    const { requests, turnItems } = yield* pendingApprovals(input.threadId);
+    const item = turnItems.find(
+      (candidate) =>
+        candidate.type === "approval_request" && candidate.requestId === input.requestId,
+    );
+    if (
+      item?.type !== "approval_request" ||
+      !requests.some((request) => request.id === input.requestId)
+    ) {
+      return yield* new TotError({ message: "That approval isn't waiting any more." });
+    }
+    return {
+      requestKind: item.requestKind,
+      prompt: item.prompt ?? null,
+      appName: item.appName ?? null,
+    };
+  });
+
+  const answerCrewApproval: TotService["Service"]["answerCrewApproval"] = Effect.fn(
+    "TotService.answerCrewApproval",
+  )(function* (input) {
+    const { requests } = yield* pendingApprovals(input.threadId);
+    const request = requests.find((candidate) => candidate.id === input.requestId);
+    if (request === undefined) {
+      return yield* new TotError({ message: "That approval isn't waiting any more." });
+    }
+    const uuid = yield* random
+      .uuidV4()
+      .pipe(Effect.mapError(storageError("Could not answer the approval.")));
+    yield* threads
+      .dispatch({
+        type: "runtime-request.respond",
+        commandId: CommandId.make(`tot-approval:${uuid}`),
+        threadId: input.threadId,
+        requestId: request.id,
+        decision: input.decision,
+      })
+      .pipe(Effect.mapError(storageError("Could not answer the approval.")));
+  });
+
   const askToTalk: TotService["Service"]["askToTalk"] = Effect.fn("TotService.askToTalk")(
     function* (threadId, input) {
       const askedAt = yield* now;
@@ -329,7 +576,10 @@ const make = Effect.gen(function* () {
     const updatedAt = yield* now;
     const rows = yield* sql<TotRow>`
       UPDATE tots SET
-        charter = CASE WHEN ${input.approve ? 1 : 0} = 1 THEN proposed_charter ELSE charter END,
+        charter = CASE
+          WHEN ${input.approve ? 1 : 0} = 1 THEN COALESCE(${input.charter ?? null}, proposed_charter)
+          ELSE charter
+        END,
         proposal_id = NULL,
         proposed_charter = NULL,
         proposal_reason = NULL,
@@ -349,6 +599,14 @@ const make = Effect.gen(function* () {
     release,
     deleteForThread,
     proposeCharter,
+    watchThread,
+    unwatchThread,
+    listWatches,
+    watchersOf,
+    startedBy,
+    listCrewApprovals,
+    readCrewApproval,
+    answerCrewApproval,
     askToTalk,
     answerCharterProposal,
     notifyChanged,
