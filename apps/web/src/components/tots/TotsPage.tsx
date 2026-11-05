@@ -13,6 +13,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { TOT_CHARACTERS, TotCharacter } from "./TotCharacter";
 import { TotCharterProposalCard } from "./TotCharterProposalCard";
+import { TotTalkRequestCard } from "./TotTalkRequestCard";
 import { openTotDialog } from "./totDialogState";
 import {
   TOT_STATE_LABEL,
@@ -149,6 +150,15 @@ export function TotsPage() {
                   key={entry.tot.charterProposal.id}
                   entry={entry}
                   proposal={entry.tot.charterProposal}
+                />
+              ) : null,
+            )}
+            {entries.map((entry) =>
+              entry.talkRequest ? (
+                <TotTalkRequestCard
+                  key={`${entry.tot.id}:${entry.talkRequest.askedAt}`}
+                  entry={entry}
+                  request={entry.talkRequest}
                 />
               ) : null,
             )}

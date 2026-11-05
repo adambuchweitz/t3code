@@ -1071,9 +1071,8 @@ export const layer = Layer.effect(
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         const prompt = webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
-        // "Run now" is the user asking, so a Tot's quiet hours, limit and checks don't apply.
         const wake =
-          active.threadId === null || trigger === "manual"
+          active.threadId === null
             ? { _tag: "run" as const, prompt }
             : yield* totWakes.admit({
                 threadId: ThreadId.make(active.threadId),
@@ -1082,6 +1081,8 @@ export const layer = Layer.effect(
                 title: active.title,
                 prompt,
                 runCheck: trigger === "scheduled",
+                // "Run now" is the user asking, so a Tot's quiet hours, limit and checks don't apply.
+                manual: trigger === "manual",
               });
         const wakePrompt = wake._tag === "run" ? wake.prompt : prompt;
 

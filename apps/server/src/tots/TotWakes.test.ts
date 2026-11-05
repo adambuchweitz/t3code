@@ -18,6 +18,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as TotService from "./TotService.ts";
 import * as TotWakes from "./TotWakes.ts";
+import { totHeartbeatTaskId } from "./totHeartbeat.ts";
 
 const threadId = ThreadId.make("thread-lang");
 const taskId = ScheduledTaskId.make("task-checkin");
@@ -33,18 +34,42 @@ const shell = {
 
 const accepted = Ref.makeUnsafe<ReadonlySet<string>>(new Set());
 
+const crewShell: OrchestrationV2ThreadShell = {
+  ...shell,
+  id: ThreadId.make("thread-crew"),
+  title: "Crew work",
+  status: "completed",
+  activeRunId: null,
+  pendingRuntimeRequest: null,
+  settledAt: null,
+  updatedAt: DateTime.makeUnsafe("1970-01-01T00:00:00Z"),
+};
+
 const makeLayer = (input: {
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
   readonly checkCode?: number;
   /** "accepted": orchestration took it, then a crash. "unseen": it never got there. */
   readonly failSends?: Ref.Ref<"none" | "accepted" | "unseen">;
+  readonly activeRunId?: string | null;
 }) =>
   TotWakes.layer.pipe(
     Layer.provideMerge(TotService.layer),
     Layer.provideMerge(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadShell: () => Effect.succeed(shell),
+          getThreadShell: () =>
+            Effect.succeed({
+              ...shell,
+              activeRunId: (input.activeRunId ?? null) as OrchestrationV2ThreadShell["activeRunId"],
+            }),
+          listProjectThreads: () => Effect.succeed([crewShell]),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: [crewShell],
+              archivedThreads: [],
+            }),
           hasReceipt: (commandId) =>
             Ref.get(accepted).pipe(Effect.map((ids) => ids.has(commandId))),
           sendToThread: (send) =>
@@ -351,4 +376,68 @@ it.effect(
       assert.deepStrictEqual(yield* Ref.get(sent), ["Held", "Waits a day"]);
     }).pipe(Effect.provide(makeLayer({ sent, failSends })));
   },
+);
+
+const heartbeat = (totId: string, heldId: string, manual = false) => ({
+  threadId,
+  heldId,
+  scheduledTaskId: totHeartbeatTaskId(totId),
+  title: "Heartbeat",
+  prompt: "Beat",
+  runCheck: true,
+  manual,
+});
+
+it.effect("a heartbeat lists all open threads the first time, then only what changed", () =>
+  Effect.gen(function* () {
+    const wakes = yield* TotWakes.TotWakes;
+    const { tot } = yield* adopt;
+    const first = yield* wakes.admit(heartbeat(tot.id, "a"));
+    assert.strictEqual(first._tag, "run");
+    assert.include(first._tag === "run" ? first.prompt : "", "Crew work");
+
+    yield* TestClock.adjust("1 hour");
+    const second = yield* wakes.admit(heartbeat(tot.id, "b"));
+    assert.include(second._tag === "run" ? second.prompt : "", "No thread has changed.");
+  }).pipe(Effect.provide(makeLayer({ sent: noMessages() }))),
+);
+
+it.effect("other schedules on a Tot aren't given a briefing", () =>
+  Effect.gen(function* () {
+    const wakes = yield* TotWakes.TotWakes;
+    yield* adopt;
+    assert.deepStrictEqual(yield* wakes.admit(wake("a", "Check in")), {
+      _tag: "run",
+      prompt: "Check in",
+    });
+  }).pipe(Effect.provide(makeLayer({ sent: noMessages() }))),
+);
+
+it.effect("a heartbeat is skipped while the Tot is busy, unless the user runs it", () =>
+  Effect.gen(function* () {
+    const wakes = yield* TotWakes.TotWakes;
+    const { tot } = yield* adopt;
+    assert.deepStrictEqual(yield* wakes.admit(heartbeat(tot.id, "a")), { _tag: "skipped" });
+    const manual = yield* wakes.admit(heartbeat(tot.id, "b", true));
+    assert.include(manual._tag === "run" ? manual.prompt : "", "Crew work");
+  }).pipe(Effect.provide(makeLayer({ sent: noMessages(), activeRunId: "run-1" }))),
+);
+
+it.effect("a heartbeat in quiet hours is dropped rather than held", () =>
+  Effect.gen(function* () {
+    const wakes = yield* TotWakes.TotWakes;
+    const { tots, tot } = yield* adopt;
+    const minute = yield* localMinute;
+    yield* tots.update({
+      id: tot.id,
+      wakeSettings: {
+        quietHours: { start: clockTime(minute), end: clockTime(minute + 60) },
+        dailyWakeLimit: null,
+        wakeChecks: [],
+      },
+    });
+    assert.deepStrictEqual(yield* wakes.admit(heartbeat(tot.id, "a")), { _tag: "skipped" });
+    const { tots: listed } = yield* tots.list();
+    assert.strictEqual(listed[0]?.wakesHeld, 0);
+  }).pipe(Effect.provide(makeLayer({ sent: noMessages() }))),
 );
