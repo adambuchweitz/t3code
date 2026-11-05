@@ -101,6 +101,7 @@ import type {
 } from "../orchestration-v2/ProjectionStore.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as TotService from "../tots/TotService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
@@ -2964,6 +2965,20 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
+              const tots = yield* Effect.serviceOption(TotService.TotService);
+              if (Option.isSome(tots)) {
+                yield* tots.value
+                  .watchThread({
+                    totThreadId: scope.thread.threadId,
+                    threadId,
+                    reason: "launched",
+                  })
+                  .pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Could not watch a thread a Tot created", { cause }),
+                    ),
+                  );
+              }
               return {
                 threadId,
                 link: formatThreadLink({ environmentId: scope.environmentId, threadId }),

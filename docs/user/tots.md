@@ -31,11 +31,13 @@ When a Tot has nothing specific to do, it takes the first step that applies:
 
 It still asks before anything destructive, public or hard to undo, unless its charter already allows it. To give a Tot more freedom, say so in its charter.
 
+A Tot can also answer approval requests in threads it started, when you or its charter allow it. Anything else stays with you.
+
 ## Give a Tot a charter
 
 The charter is what the Tot looks after, the rules it must follow and what matters right now. It's sent on every turn, so it survives compaction, and a long charter uses up the Tot's context faster.
 
-A Tot can't change its own charter. It can propose a new one, and the change appears at the top of the Tots page for you to approve or dismiss. Saving your own edit dismisses anything it proposed. Crew threads don't receive the charter.
+A Tot can't change its own charter. It can propose a new one, and the change appears at the top of the Tots page, where you can edit it, compare it with the current charter, approve it or dismiss it. Saving your own edit dismisses anything it proposed. Crew threads don't receive the charter.
 
 ## Pick a voice
 
@@ -47,7 +49,8 @@ The **Wakes** tab on a Tot lists its schedules, watches and crew.
 
 - **Quiet hours** and a **Daily wake limit** make scheduled wakes wait. Waiting wakes merge into one turn when they can run, keeping only the latest prompt from each schedule. They use the clock on the machine the Tot lives on.
 - A schedule can have a **check**: a command run in the Tot's folder before it wakes. Exit 1 skips the wake. Any other failure still wakes the Tot and tells it the check failed.
-- Your messages, pull request watches, crew results and **Run now** always go straight through.
+- Threads it starts or watches wake it when they finish, fail, ask a question or need approval. The Tot can watch other threads on its machine, and you can stop any of them on this tab. Stopping a thread it started also stops it answering that thread's approvals.
+- Your messages, pull request watches, crew results, watched threads and **Run now** always go straight through.
 
 ## Choose which models do what
 

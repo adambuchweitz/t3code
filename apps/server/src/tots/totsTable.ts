@@ -55,6 +55,16 @@ export const ensureTotsTable = Effect.gen(function* () {
       released_at TEXT
     )
   `;
+  // "launched" also lets the Tot answer the thread's requests; "requested" only wakes it.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS tot_watches (
+      tot_thread_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      PRIMARY KEY (tot_thread_id, thread_id)
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS tot_watches_thread ON tot_watches (thread_id)`;
   const heldColumns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('tot_held_wakes')
   `;

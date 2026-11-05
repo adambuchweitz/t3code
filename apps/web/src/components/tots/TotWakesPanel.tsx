@@ -1,11 +1,14 @@
 import type { ScheduledTask, TotWakeSettings } from "@t3tools/contracts";
+import { XIcon } from "lucide-react";
 
 import { useThreadShells } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import type { TotEntry } from "~/state/tots";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 import { ScheduledRelativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings";
+import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
@@ -30,7 +33,17 @@ export function TotWakesPanel(props: {
     serverEnvironment.scheduledTasksLive({ environmentId: entry.environmentId, input: {} }),
   );
   const boundTasks = (tasks.data?.tasks ?? []).filter((task) => task.threadId === entry.threadId);
-  const crew = useThreadShells().filter(
+  const update = useAtomCommand(serverEnvironment.updateTot);
+  const shells = useThreadShells();
+  const watched = entry.tot.watchedThreadIds.flatMap((threadId) => {
+    const thread = shells.find(
+      (shell) => shell.environmentId === entry.environmentId && shell.id === threadId,
+    );
+    return thread === undefined || thread.archivedAt !== null || thread.settledAt !== null
+      ? []
+      : [thread];
+  });
+  const crew = shells.filter(
     (thread) =>
       thread.environmentId === entry.environmentId &&
       thread.lineage.parentThreadId === entry.threadId &&
@@ -170,7 +183,25 @@ export function TotWakesPanel(props: {
               Crew: {thread.title}
             </li>
           ))}
-          <li>Your messages, pull request watches, crew results and Run now.</li>
+          {watched.map((thread) => (
+            <li key={thread.id} className="flex min-w-0 items-center gap-1">
+              <span className="min-w-0 flex-1 truncate">Watching: {thread.title}</span>
+              <Button
+                variant="ghost-muted"
+                size="icon-xs"
+                aria-label={`Stop watching ${thread.title}`}
+                onClick={() =>
+                  void update({
+                    environmentId: entry.environmentId,
+                    input: { id: entry.tot.id, unwatchThreadIds: [thread.id] },
+                  })
+                }
+              >
+                <XIcon />
+              </Button>
+            </li>
+          ))}
+          <li>Your messages, pull request watches, watched threads, crew results and Run now.</li>
         </ul>
       </div>
     </div>

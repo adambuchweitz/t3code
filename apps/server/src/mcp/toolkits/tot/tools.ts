@@ -1,7 +1,10 @@
 import {
   OrchestratorMcpFailure,
+  ThreadId,
   TotAskToTalkInput,
+  TotCrewApprovalInput,
   TotProposeCharterInput,
+  TotWatchInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -9,6 +12,12 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as TotService from "../../../tots/TotService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  ThreadManagementService.ThreadManagementService,
+  TotService.TotService,
+];
 
 const ProposeCharterTool = Tool.make("t3_tot_propose_charter", {
   description:
@@ -44,4 +53,52 @@ const AskToTalkTool = Tool.make("t3_tot_ask_to_talk", {
   .annotate(Tool.Strict, true)
   .annotate(Tool.Destructive, false);
 
-export const TotToolkit = Toolkit.make(ProposeCharterTool, AskToTalkTool);
+const WatchTool = Tool.make("t3_tot_watch", {
+  description:
+    "Tots only. Wake when another thread on this machine finishes, fails, asks a question or needs approval, or stop. Threads you start are already watched. Returns everything you watch.",
+  parameters: TotWatchInput,
+  success: Schema.Struct({
+    watches: Schema.Array(
+      Schema.Struct({
+        threadId: ThreadId,
+        reason: Schema.Literals(["launched", "requested"]),
+      }),
+    ),
+  }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies,
+})
+  .annotate(Tool.Title, "Watch a thread")
+  .annotate(Tool.Strict, true)
+  .annotate(Tool.Destructive, false);
+
+const CrewApprovalTool = Tool.make("t3_tot_crew_approval", {
+  description:
+    "Tots only, for threads you started. list: pending approval ids. read: what one asks, by `requestId`. respond: answer it with `decision`, only when the user or your charter allows it.",
+  parameters: TotCrewApprovalInput,
+  success: Schema.Struct({
+    requestIds: Schema.optional(Schema.Array(Schema.String)),
+    request: Schema.optional(
+      Schema.Struct({
+        requestKind: Schema.String,
+        prompt: Schema.NullOr(Schema.String),
+        appName: Schema.NullOr(Schema.String),
+      }),
+    ),
+    answered: Schema.optional(Schema.Boolean),
+  }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies,
+})
+  .annotate(Tool.Title, "Answer a crew approval")
+  .annotate(Tool.Strict, true)
+  .annotate(Tool.Destructive, true);
+
+export const TotToolkit = Toolkit.make(
+  ProposeCharterTool,
+  AskToTalkTool,
+  WatchTool,
+  CrewApprovalTool,
+);
