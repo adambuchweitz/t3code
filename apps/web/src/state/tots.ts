@@ -94,6 +94,7 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
         state: resolveTotState({
           connected: presentation?.connection.phase === "connected",
           threadStatus: thread === null ? null : resolveSidebarThreadStatus(thread),
+          hasCharterProposal: tot.charterProposal !== null,
         }),
       });
     }

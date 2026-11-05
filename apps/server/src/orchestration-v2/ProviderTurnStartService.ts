@@ -64,6 +64,7 @@ import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDeliv
 import { isProviderCommand, outputInstructions } from "./runOutput.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { t3TotPrompt } from "@t3tools/provider-core/server/totPrompt";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -73,6 +74,7 @@ import {
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
+import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import {
@@ -272,6 +274,7 @@ export const layer: Layer.Layer<
   | RuntimePolicy.RuntimePolicyV2
   | TurnItemPositionStore.TurnItemPositionStoreV2
   | TaskFolders.TaskFolders
+  | TotInstructions.TotInstructions
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -289,6 +292,7 @@ export const layer: Layer.Layer<
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const totInstructions = yield* TotInstructions.TotInstructions;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -1008,6 +1012,8 @@ export const layer: Layer.Layer<
         run.outputSchema === undefined || goalCommand || isProviderCommand(providerMessage)
           ? messageText
           : `${messageText}\n\n${outputInstructions(run.outputSchema)}`;
+      const tot = yield* totInstructions.forThread(projection.thread.id);
+      const turnText = tot === null ? userText : t3TotPrompt({ ...tot, prompt: userText });
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -1177,7 +1183,7 @@ export const layer: Layer.Layer<
             return handoffBudget({
               tokenCap,
               modelContextWindow,
-              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+              userText: restartNote === "" ? turnText : `${restartNote}\n\n${turnText}`,
               attachments: providerMessage.attachments,
               providerThread: budgetProviderThread,
               nativeContextEstimate:
@@ -2069,8 +2075,8 @@ export const layer: Layer.Layer<
           const prompted = context !== "" || missedAttachments.length > 0;
           // A resume that must be prompted still needs a request, or the agent has nothing to do.
           const requestText =
-            turnInput.resume && prompted && userText === "" ? RESUME_PROMPT : userText;
-          const text = goalCommand ? userText : withInlineContext(context, requestText);
+            turnInput.resume && prompted && userText === "" ? RESUME_PROMPT : turnText;
+          const text = goalCommand ? turnText : withInlineContext(context, requestText);
           const operation =
             turnInput.resume && !prompted && session.resumeTurn !== undefined
               ? session.resumeTurn({ ...resumeInput, messageId: resumeMessage.messageId })
@@ -2083,9 +2089,9 @@ export const layer: Layer.Layer<
                       ? {}
                       : { attachments: [...missedAttachments, ...turnInput.message.attachments] }),
                   },
-                  ...(text === userText
+                  ...(text === turnText
                     ? {}
-                    : { inlineContextLength: text.length - userText.length }),
+                    : { inlineContextLength: text.length - turnText.length }),
                 });
           yield* operation.pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
@@ -2189,7 +2195,7 @@ export const layer: Layer.Layer<
         loadUnsettledWork: runControls.loadUnsettledWork,
         message: {
           messageId: message.id,
-          text: userText,
+          text: turnText,
           attachments: providerMessage.attachments,
           createdBy: message.createdBy,
           creationSource: message.creationSource,
