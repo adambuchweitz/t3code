@@ -5,8 +5,10 @@ import {
   TotId,
   type ProjectId,
   type TotAdoptInput,
+  type TotAnswerCharterProposalInput,
   type TotListResult,
   type TotMutationResult,
+  type TotProposeCharterInput,
   type TotReleaseInput,
   type TotReleaseResult,
   type TotUpdateInput,
@@ -23,6 +25,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { ensureTotsTable } from "./totsTable.ts";
 
 interface TotRow {
   readonly tot_id: string;
@@ -31,6 +34,11 @@ interface TotRow {
   readonly name_enabled: number;
   readonly character_id: string;
   readonly job: string;
+  readonly charter: string;
+  readonly voice: string;
+  readonly proposed_charter: string | null;
+  readonly proposal_reason: string | null;
+  readonly proposed_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -46,6 +54,16 @@ const totFromRow = (row: TotRow, projectId: ProjectId) =>
     nameEnabled: row.name_enabled !== 0,
     character: row.character_id,
     job: row.job,
+    charter: row.charter,
+    voice: row.voice,
+    charterProposal:
+      row.proposed_charter === null
+        ? null
+        : {
+            charter: row.proposed_charter,
+            reason: row.proposal_reason,
+            proposedAt: row.proposed_at,
+          },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }).pipe(
@@ -65,25 +83,19 @@ export class TotService extends Context.Service<
     readonly update: (input: TotUpdateInput) => Effect.Effect<TotMutationResult, TotError>;
     readonly release: (input: TotReleaseInput) => Effect.Effect<TotReleaseResult, TotError>;
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, TotError>;
+    readonly proposeCharter: (
+      threadId: ThreadId,
+      input: TotProposeCharterInput,
+    ) => Effect.Effect<TotMutationResult, TotError>;
+    readonly answerCharterProposal: (
+      input: TotAnswerCharterProposalInput,
+    ) => Effect.Effect<TotMutationResult, TotError>;
   }
 >()("t3/tots/TotService") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Not a numbered migration: this feature lives on a fork, and a database that recorded an id
-  // upstream later reuses refuses to start. Move this into a migration if Tots go upstream.
-  yield* sql`
-    CREATE TABLE IF NOT EXISTS tots (
-      tot_id TEXT PRIMARY KEY,
-      thread_id TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      name_enabled INTEGER NOT NULL,
-      character_id TEXT NOT NULL,
-      job TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `.pipe(Effect.orDie);
+  yield* ensureTotsTable;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const random = yield* SecureRandom.SecureRandom;
   // Each change re-emits the whole list, so slow subscribers need only the newest signal.
@@ -141,10 +153,12 @@ const make = Effect.gen(function* () {
     const createdAt = yield* now;
     const rows = yield* sql<TotRow>`
       INSERT INTO tots (
-        tot_id, thread_id, name, name_enabled, character_id, job, created_at, updated_at
+        tot_id, thread_id, name, name_enabled, character_id, job, charter, voice,
+        created_at, updated_at
       ) VALUES (
         ${id}, ${input.threadId}, ${input.name}, ${input.nameEnabled ? 1 : 0},
-        ${input.character}, ${input.job}, ${createdAt}, ${createdAt}
+        ${input.character}, ${input.job}, ${input.charter ?? ""}, ${input.voice ?? "toddler"},
+        ${createdAt}, ${createdAt}
       )
       ON CONFLICT (thread_id) DO NOTHING
       RETURNING *
@@ -158,25 +172,8 @@ const make = Effect.gen(function* () {
     return { tot };
   });
 
-  const update: TotService["Service"]["update"] = Effect.fn("TotService.update")(function* (input) {
-    const updatedAt = yield* now;
-    const rows = yield* sql<TotRow>`
-        UPDATE tots SET
-          name = COALESCE(${input.name ?? null}, name),
-          name_enabled = COALESCE(
-            ${input.nameEnabled === undefined ? null : input.nameEnabled ? 1 : 0},
-            name_enabled
-          ),
-          character_id = COALESCE(${input.character ?? null}, character_id),
-          job = COALESCE(${input.job ?? null}, job),
-          updated_at = ${updatedAt}
-        WHERE tot_id = ${input.id}
-        RETURNING *
-      `.pipe(Effect.mapError(storageError("Could not save the Tot.")));
-    const row = rows[0];
-    if (row === undefined) {
-      return yield* new TotError({ message: "That Tot no longer exists." });
-    }
+  const mutated = Effect.fnUntraced(function* (row: TotRow | undefined, missing: string) {
+    if (row === undefined) return yield* new TotError({ message: missing });
     const shell = yield* threads
       .getThreadShell(ThreadId.make(row.thread_id))
       .pipe(Effect.mapError(storageError("Could not read the Tot's thread.")));
@@ -186,6 +183,32 @@ const make = Effect.gen(function* () {
     const tot = yield* totFromRow(row, shell.projectId);
     yield* notifyChanged;
     return { tot };
+  });
+
+  const update: TotService["Service"]["update"] = Effect.fn("TotService.update")(function* (input) {
+    const updatedAt = yield* now;
+    const charter = input.charter ?? null;
+    // Editing the charter settles a pending proposal, which was written against the old text.
+    const keepsProposal = sql`(${charter} IS NULL OR ${charter} = charter)`;
+    const rows = yield* sql<TotRow>`
+        UPDATE tots SET
+          name = COALESCE(${input.name ?? null}, name),
+          name_enabled = COALESCE(
+            ${input.nameEnabled === undefined ? null : input.nameEnabled ? 1 : 0},
+            name_enabled
+          ),
+          character_id = COALESCE(${input.character ?? null}, character_id),
+          job = COALESCE(${input.job ?? null}, job),
+          voice = COALESCE(${input.voice ?? null}, voice),
+          charter = COALESCE(${charter}, charter),
+          proposed_charter = CASE WHEN ${keepsProposal} THEN proposed_charter END,
+          proposal_reason = CASE WHEN ${keepsProposal} THEN proposal_reason END,
+          proposed_at = CASE WHEN ${keepsProposal} THEN proposed_at END,
+          updated_at = ${updatedAt}
+        WHERE tot_id = ${input.id}
+        RETURNING *
+      `.pipe(Effect.mapError(storageError("Could not save the Tot.")));
+    return yield* mutated(rows[0], "That Tot no longer exists.");
   });
 
   const release: TotService["Service"]["release"] = Effect.fn("TotService.release")(
@@ -207,7 +230,49 @@ const make = Effect.gen(function* () {
     yield* notifyChanged;
   });
 
-  return TotService.of({ list, subscribeList, adopt, update, release, deleteForThread });
+  const proposeCharter: TotService["Service"]["proposeCharter"] = Effect.fn(
+    "TotService.proposeCharter",
+  )(function* (threadId, input) {
+    const proposedAt = yield* now;
+    const rows = yield* sql<TotRow>`
+      UPDATE tots SET
+        proposed_charter = ${input.charter},
+        proposal_reason = ${input.reason},
+        proposed_at = ${proposedAt},
+        updated_at = ${proposedAt}
+      WHERE thread_id = ${threadId}
+      RETURNING *
+    `.pipe(Effect.mapError(storageError("Could not save the proposal.")));
+    return yield* mutated(rows[0], "Only a Tot's own thread can propose a charter.");
+  });
+
+  const answerCharterProposal: TotService["Service"]["answerCharterProposal"] = Effect.fn(
+    "TotService.answerCharterProposal",
+  )(function* (input) {
+    const updatedAt = yield* now;
+    const rows = yield* sql<TotRow>`
+      UPDATE tots SET
+        charter = CASE WHEN ${input.approve ? 1 : 0} = 1 THEN proposed_charter ELSE charter END,
+        proposed_charter = NULL,
+        proposal_reason = NULL,
+        proposed_at = NULL,
+        updated_at = ${updatedAt}
+      WHERE tot_id = ${input.id} AND proposed_at = ${input.proposedAt}
+      RETURNING *
+    `.pipe(Effect.mapError(storageError("Could not save your answer.")));
+    return yield* mutated(rows[0], "That proposal has changed. Check the newest one.");
+  });
+
+  return TotService.of({
+    list,
+    subscribeList,
+    adopt,
+    update,
+    release,
+    deleteForThread,
+    proposeCharter,
+    answerCharterProposal,
+  });
 });
 
 export const layer = Layer.effect(TotService, make);

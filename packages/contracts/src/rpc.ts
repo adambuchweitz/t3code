@@ -380,6 +380,7 @@ import {
 } from "./scheduledTask.ts";
 import {
   TotAdoptInput,
+  TotAnswerCharterProposalInput,
   TotError,
   TotListInput,
   TotListResult,
@@ -555,6 +556,7 @@ export const WS_METHODS = {
   totsAdopt: "tots.adopt",
   totsUpdate: "tots.update",
   totsRelease: "tots.release",
+  totsAnswerCharterProposal: "tots.answerCharterProposal",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -1959,6 +1961,12 @@ const WsTotsReleaseRpc = Rpc.make(WS_METHODS.totsRelease, {
   error: Schema.Union([TotError, EnvironmentAuthorizationError]),
 });
 
+const WsTotsAnswerCharterProposalRpc = Rpc.make(WS_METHODS.totsAnswerCharterProposal, {
+  payload: TotAnswerCharterProposalInput,
+  success: TotMutationResult,
+  error: Schema.Union([TotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2109,6 +2117,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsTotsAdoptRpc,
   WsTotsUpdateRpc,
   WsTotsReleaseRpc,
+  WsTotsAnswerCharterProposalRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

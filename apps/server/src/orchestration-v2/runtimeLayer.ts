@@ -56,6 +56,7 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as TotService from "../tots/TotService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
@@ -174,6 +175,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerProviderAuthServiceProvided,
       layerRunExecutionServiceProvided,
       layerRuntimePolicyProvided,
+      TotInstructions.layer,
     ),
   ),
 );

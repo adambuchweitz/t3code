@@ -12,8 +12,15 @@ import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { TOT_CHARACTERS, TotCharacter } from "./TotCharacter";
+import { TotCharterProposalCard } from "./TotCharterProposalCard";
 import { openTotDialog } from "./totDialogState";
-import { TOT_STATE_LABEL, TOT_STATE_ORDER, TOT_STATE_POSE, type TotState } from "./tots.logic";
+import {
+  TOT_STATE_LABEL,
+  TOT_STATE_ORDER,
+  TOT_STATE_POSE,
+  totStateLabel,
+  type TotState,
+} from "./tots.logic";
 
 const STATE_TEXT_CLASS: Record<TotState, string> = {
   needs: "text-warning-foreground",
@@ -26,12 +33,13 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
   const navigate = useNavigate();
   const { tot, thread, state } = entry;
   const showsProject = tot.nameEnabled && entry.projectName !== null;
+  const stateLabel = totStateLabel(state, tot.voice);
   return (
     <li className="group relative">
       <button
         type="button"
         data-testid="tot-tile"
-        aria-label={`Open ${entry.displayName}, ${TOT_STATE_LABEL[state]}`}
+        aria-label={`Open ${entry.displayName}, ${stateLabel}`}
         className="flex w-full min-w-0 items-center gap-3 rounded-lg border bg-card p-3 pr-10 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
         onClick={() =>
           void navigate({
@@ -51,7 +59,7 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
             {entry.displayName}
           </span>
           <span className={cn("truncate text-xs font-medium", STATE_TEXT_CLASS[state])}>
-            {TOT_STATE_LABEL[state]}
+            {stateLabel}
           </span>
           <span className="truncate text-xs text-muted-foreground">
             {[showsProject ? entry.projectName : null, entry.machineLabel]
@@ -117,8 +125,8 @@ export function TotsPage() {
               </div>
               <EmptyTitle>No Tots yet</EmptyTitle>
               <EmptyDescription>
-                Give a long-running thread a name and a face. It keeps working just as it does now,
-                and you can turn it back at any time.
+                Give a long-running thread a name, a face and a charter. Its history and automations
+                carry on, and you can turn it back at any time.
               </EmptyDescription>
               <div className="mt-5 flex justify-center">
                 <Button size="sm" onClick={() => openTotDialog({ kind: "pick-thread" })}>
@@ -130,6 +138,15 @@ export function TotsPage() {
           </Empty>
         ) : (
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4 sm:p-6">
+            {entries.map((entry) =>
+              entry.tot.charterProposal ? (
+                <TotCharterProposalCard
+                  key={`${entry.tot.id}:${entry.tot.charterProposal.proposedAt}`}
+                  entry={entry}
+                  proposal={entry.tot.charterProposal}
+                />
+              ) : null,
+            )}
             {TOT_STATE_ORDER.map((state) => {
               const group = entries.filter((entry) => entry.state === state);
               if (group.length === 0) return null;
