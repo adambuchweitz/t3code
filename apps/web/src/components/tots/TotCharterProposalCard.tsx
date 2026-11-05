@@ -3,7 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { TotCharterProposal } from "@t3tools/contracts";
+import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal } from "@t3tools/contracts";
 import { useState } from "react";
 
 import { serverEnvironment } from "~/state/server";
@@ -14,6 +14,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { TotCharacter } from "./TotCharacter";
+import { TotCharterEditor } from "./TotCharterEditor";
 import { diffCharterLines } from "./tots.logic";
 
 const LINE_CLASS = {
@@ -29,6 +30,12 @@ export function TotCharterProposalCard(props: {
 }) {
   const { entry, proposal } = props;
   const [answering, setAnswering] = useState(false);
+  const [draft, setDraft] = useState(proposal.charter);
+  const [comparing, setComparing] = useState(false);
+  const edited = draft !== proposal.charter;
+  const tooLong = draft.length > TOT_CHARTER_MAX_LENGTH;
+  // With no charter yet, every line is new and a comparison would only be a wall of green.
+  const canCompare = entry.tot.charter.trim() !== "";
   const answer = useAtomCommand(serverEnvironment.answerTotCharterProposal, {
     reportFailure: false,
   });
@@ -39,7 +46,12 @@ export function TotCharterProposalCard(props: {
     setAnswering(true);
     const result = await answer({
       environmentId: entry.environmentId,
-      input: { id: entry.tot.id, proposalId: proposal.id, approve },
+      input: {
+        id: entry.tot.id,
+        proposalId: proposal.id,
+        approve,
+        ...(approve && edited ? { charter: draft } : {}),
+      },
     });
     setAnswering(false);
     if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
@@ -67,16 +79,43 @@ export function TotCharterProposalCard(props: {
           <p className="text-xs whitespace-pre-wrap text-muted-foreground">{proposal.reason}</p>
         </div>
       </div>
-      <div className="mt-3 max-h-64 overflow-auto rounded-md border bg-background p-2 font-mono text-xs">
-        {diffCharterLines(entry.tot.charter, proposal.charter).map((line, index) => (
-          // oxlint-disable-next-line react/no-array-index-key -- Lines repeat and never reorder.
-          <div key={index} className={cn("whitespace-pre-wrap", LINE_CLASS[line.kind])}>
-            {LINE_PREFIX[line.kind]}
-            {line.text}
+      <div className="mt-3">
+        {comparing ? (
+          <div className="max-h-96 overflow-auto rounded-md border bg-background p-2 font-mono text-xs">
+            {diffCharterLines(entry.tot.charter, draft).map((line, index) => (
+              // oxlint-disable-next-line react/no-array-index-key -- Lines repeat and never reorder.
+              <div key={index} className={cn("whitespace-pre-wrap", LINE_CLASS[line.kind])}>
+                {LINE_PREFIX[line.kind]}
+                {line.text}
+              </div>
+            ))}
           </div>
-        ))}
+        ) : (
+          <TotCharterEditor
+            value={draft}
+            ariaLabel={`Proposed charter for ${entry.displayName}`}
+            disabled={answering || !canOperate}
+            onChange={setDraft}
+          />
+        )}
       </div>
-      <div className="mt-3 flex justify-end gap-2">
+      {tooLong ? (
+        <p className="mt-2 text-xs text-destructive-foreground" role="alert">
+          {draft.length - TOT_CHARTER_MAX_LENGTH} characters over the limit.
+        </p>
+      ) : null}
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {canCompare ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="mr-auto"
+            aria-pressed={comparing}
+            onClick={() => setComparing((current) => !current)}
+          >
+            {comparing ? "Back to editing" : "Compare with current"}
+          </Button>
+        ) : null}
         <Button
           size="sm"
           variant="ghost"
@@ -85,8 +124,12 @@ export function TotCharterProposalCard(props: {
         >
           Dismiss
         </Button>
-        <Button size="sm" disabled={answering || !canOperate} onClick={() => void respond(true)}>
-          Approve
+        <Button
+          size="sm"
+          disabled={answering || !canOperate || tooLong}
+          onClick={() => void respond(true)}
+        >
+          {edited ? "Approve with my edits" : "Approve"}
         </Button>
       </div>
     </section>

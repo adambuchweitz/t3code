@@ -69,6 +69,7 @@ import * as TotHeartbeats from "../tots/TotHeartbeats.ts";
 import * as TotInstructions from "../tots/TotInstructions.ts";
 import * as TotService from "../tots/TotService.ts";
 import * as TotWakes from "../tots/TotWakes.ts";
+import * as TotWatches from "../tots/TotWatches.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as FeedbackStore from "../feedback/FeedbackStore.ts";
 import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
@@ -463,6 +464,9 @@ export const layerProduction = Layer.mergeAll(
     Layer.provide(
       Layer.mergeAll(layerScheduledTaskProvided, layerTotProvided, layerThreadManagementProvided),
     ),
+  ),
+  TotWatches.layer.pipe(
+    Layer.provide(Layer.mergeAll(layerTotProvided, layerThreadManagementProvided)),
   ),
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,

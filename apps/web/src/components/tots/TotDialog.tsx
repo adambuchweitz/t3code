@@ -19,7 +19,7 @@ import { useState } from "react";
 
 import { useThreadShells } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
-import { readTotForThread, useTotEntries, type TotEntry } from "~/state/tots";
+import { useTotEntries, type TotEntry } from "~/state/tots";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
 
@@ -37,10 +37,10 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { TOT_CHARACTERS, TotCharacter, totCharacter } from "./TotCharacter";
+import { TotCharterEditor } from "./TotCharterEditor";
 import { TotCrewPanel } from "./TotCrewPanel";
 import { TotWakesPanel } from "./TotWakesPanel";
 import { closeTotDialog, totDialogTargetAtom } from "./totDialogState";
@@ -50,11 +50,14 @@ const MAX_PICKABLE_THREADS = 40;
 
 export function TotDialogHost() {
   // Keeps the Tot subscriptions alive for the whole app, so menus and the header can read them.
-  useTotEntries();
+  const entries = useTotEntries();
   const target = useAtomValue(totDialogTargetAtom);
   if (target === null) return null;
   if (target.kind === "pick-thread") return <PickThreadTotDialog />;
-  const existing = readTotForThread(target.threadRef);
+  const { environmentId, threadId } = target.threadRef;
+  const existing =
+    entries.find((entry) => entry.environmentId === environmentId && entry.threadId === threadId) ??
+    null;
   return (
     <TotFormDialog
       key={`${target.threadRef.environmentId}:${target.threadRef.threadId}`}
@@ -364,17 +367,18 @@ function TotFormDialog(props: {
               </p>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="tot-charter">Charter</Label>
-              <Textarea
-                id="tot-charter"
+              <Label>Charter</Label>
+              <TotCharterEditor
                 value={charter}
-                rows={6}
-                maxLength={TOT_CHARTER_MAX_LENGTH}
-                placeholder={
-                  "What it looks after, the rules it must follow, and what matters right now.\nThe Tot can suggest changes for you to approve."
-                }
-                onChange={(event) => setCharter(event.currentTarget.value)}
+                ariaLabel="Charter"
+                placeholder="What it looks after, the rules it must follow, and what matters right now."
+                onChange={setCharter}
               />
+              {charter.length > TOT_CHARTER_MAX_LENGTH ? (
+                <p className="text-xs text-destructive-foreground" role="alert">
+                  {charter.length - TOT_CHARTER_MAX_LENGTH} characters over the limit.
+                </p>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 {tot?.charterProposal && charter !== opened.charter
                   ? "Saving this dismisses the change the Tot proposed."
@@ -399,6 +403,7 @@ function TotFormDialog(props: {
           </Button>
           <Button
             disabled={
+              charter.length > TOT_CHARTER_MAX_LENGTH ||
               saving ||
               !canOperate ||
               (nameEnabled && trimmedName.length === 0) ||

@@ -44,6 +44,7 @@ import {
   resolveRuntimeMode,
 } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as TotService from "../../../tots/TotService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
 import { firstLineTitle } from "../../firstLineTitle.ts";
@@ -428,6 +429,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 }),
             ),
           );
+        // Before launching, so the Tot can't miss anything the new thread does right away.
+        if (caller !== undefined) {
+          const tots = yield* Effect.serviceOption(TotService.TotService);
+          if (Option.isSome(tots)) {
+            yield* tots.value
+              .watchThread({ totThreadId: caller.id, threadId, reason: "launched" })
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Could not watch a thread a Tot launched", { cause }),
+                ),
+              );
+          }
+        }
         // A caller outside a thread has nothing to inherit, so it starts with the
         // project's effective defaults, as the composer does. Its mode stays
         // within the ceiling it was approved with.

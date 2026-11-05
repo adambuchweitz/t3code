@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -126,6 +127,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const runner = yield* ProcessRunner.ProcessRunner;
   const tots = yield* TotService.TotService;
+  const releaseLock = yield* Semaphore.make(1);
 
   const readTot = (threadId: string) =>
     sql<TotWakeRow>`
@@ -380,6 +382,8 @@ const make = Effect.gen(function* () {
     }
   }).pipe(
     Effect.catch((cause) => Effect.logWarning("Could not read held Tot wakes", { cause })),
+    // Overlapping passes could read a batch another pass had just emptied, and send it blank.
+    releaseLock.withPermits(1),
     Effect.withSpan("TotWakes.releaseDue"),
   );
 
