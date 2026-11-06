@@ -46,7 +46,7 @@ const REPORT_HINT: Record<TotWatchKind, string> = {
     "`t3_tot_crew_approval` reads it. Answer only if it's a thread you started, and the user or your charter allows it. Otherwise ask the user.",
 };
 
-export function formatTotWatchReport(input: {
+function formatTotWatchReport(input: {
   readonly kind: TotWatchKind;
   readonly title: string;
   readonly threadId: ThreadId;
