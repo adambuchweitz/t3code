@@ -156,16 +156,47 @@ it.layer(layerWith(shell()))("TotService", (it) => {
     }),
   );
 
-  it.effect("a Tot can ask to talk, and the user can dismiss it", () =>
+  it.effect("keeps several requests open, and doesn't ask the same one twice", () =>
     Effect.gen(function* () {
       const tots = yield* TotService.TotService;
       const { tot } = yield* tots.adopt(brace);
-      const asked = yield* tots.askToTalk(threadId, { topic: "What should I do next?" });
-      assert.strictEqual(asked.tot.talkRequest?.topic, "What should I do next?");
-      const kept = yield* tots.update({ id: tot.id, name: "Bracer" });
-      assert.strictEqual(kept.tot.talkRequest?.topic, "What should I do next?");
-      const dismissed = yield* tots.update({ id: tot.id, dismissTalkRequest: true });
-      assert.strictEqual(dismissed.tot.talkRequest, null);
+      const first = yield* tots.askUser(threadId, {
+        question: "Regions or arenas?",
+        options: ["Regions", "Arenas"],
+        recommendedOption: "Regions",
+      });
+      const second = yield* tots.askUser(threadId, { question: "Which license?" });
+      assert.notStrictEqual(first, second);
+
+      const same = yield* tots.askUser(threadId, {
+        question: "Regions or arenas?",
+        options: ["Regions"],
+        recommendedOption: "Not an option",
+      });
+      assert.strictEqual(same, first);
+      yield* tots.askUser(threadId, { requestId: second, question: "Which license, MIT or GPL?" });
+
+      const requests = (yield* tots.list()).tots[0]?.requests ?? [];
+      assert.deepStrictEqual(
+        requests.map((request) => [request.question, request.recommendedOption]),
+        [
+          ["Regions or arenas?", null],
+          ["Which license, MIT or GPL?", null],
+        ],
+      );
+
+      const gone = yield* Effect.flip(
+        tots.askUser(threadId, { requestId: "request-gone", question: "Hello?" }),
+      );
+      assert.include(gone.message, "isn't open");
+      for (const index of [3, 4, 5, 6, 7, 8]) {
+        yield* tots.askUser(threadId, { question: `Question ${index}?` });
+      }
+      const full = yield* Effect.flip(tots.askUser(threadId, { question: "One too many?" }));
+      assert.include(full.message, "8 open requests");
+
+      assert.isTrue(yield* tots.closeRequest(threadId, first));
+      assert.isFalse(yield* tots.closeRequest(threadId, first));
       yield* tots.release({ id: tot.id });
     }),
   );
@@ -301,6 +332,65 @@ it.effect.each([
   }).pipe(Effect.provide(layerWith(found))),
 );
 
+const layerSending = (
+  send: ThreadManagementService.ThreadManagementService["Service"]["sendToThread"],
+) =>
+  TotService.layer.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(shell()),
+          sendToThread: send,
+        }),
+        NodeCrypto.layer,
+      ),
+    ),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+  );
+
+it.effect.each([
+  { answer: "Regions", text: 'My answer to your request "Regions or arenas?":\n\nRegions' },
+  {
+    answer: null,
+    text: 'I dismissed your request "Regions or arenas?". Don\'t ask again unless something changes.',
+  },
+])("settling a request with $answer tells the Tot as the user", ({ answer, text }) => {
+  const sent: Array<{ readonly text: string; readonly createdBy: string | undefined }> = [];
+  return Effect.gen(function* () {
+    const tots = yield* TotService.TotService;
+    const { tot } = yield* tots.adopt(brace);
+    const requestId = yield* tots.askUser(threadId, { question: "Regions or arenas?" });
+    const settled = yield* tots.answerRequest({ id: tot.id, requestId, answer });
+    assert.deepStrictEqual(settled.tot.requests, []);
+    assert.deepStrictEqual(sent, [{ text, createdBy: "user" }]);
+    const again = yield* Effect.flip(tots.answerRequest({ id: tot.id, requestId, answer }));
+    assert.include(again.message, "already been settled");
+  }).pipe(
+    Effect.provide(
+      layerSending((input) => {
+        sent.push({ text: input.text, createdBy: input.createdBy });
+        return Effect.succeed({ threadId } as never);
+      }),
+    ),
+  );
+});
+
+it.effect("a request stays open when its answer can't be sent", () =>
+  Effect.gen(function* () {
+    const tots = yield* TotService.TotService;
+    const { tot } = yield* tots.adopt(brace);
+    const requestId = yield* tots.askUser(threadId, { question: "Regions or arenas?" });
+    yield* Effect.flip(tots.answerRequest({ id: tot.id, requestId, answer: "Regions" }));
+    assert.lengthOf((yield* tots.list()).tots[0]?.requests ?? [], 1);
+  }).pipe(
+    Effect.provide(
+      layerSending(() =>
+        Effect.fail(new ThreadManagementService.ThreadManagementThreadArchivedError({ threadId })),
+      ),
+    ),
+  ),
+);
+
 it.layer(SqlitePersistence.layerMemory)("Tots table", (it) => {
   it.effect("adds the charter columns to a table from the first slice", () =>
     Effect.gen(function* () {
@@ -328,6 +418,12 @@ it.layer(SqlitePersistence.layerMemory)("Tots table", (it) => {
         SELECT proposal_id FROM tots
       `;
       assert.isNotNull(proposals[0]?.proposal_id);
+
+      yield* sql`UPDATE tots SET talk_topic = 'Old topic', talk_asked_at = '2026-11-05T00:00:00.000Z'`;
+      yield* ensureTotsTable;
+      yield* ensureTotsTable;
+      const carried = yield* sql<{ readonly question: string }>`SELECT question FROM tot_requests`;
+      assert.deepStrictEqual(carried, [{ question: "Old topic" }]);
     }),
   );
 });

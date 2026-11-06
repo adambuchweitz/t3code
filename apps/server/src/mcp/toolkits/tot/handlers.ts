@@ -133,25 +133,34 @@ export const layer = McpToolAccess.toLayer(TotToolkit, {
       return { status: "awaiting_approval" as const };
     }),
   ),
-  t3_tot_ask_to_talk: McpToolAccess.writes((input) =>
+  t3_tot_ask_user: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const { caller } = yield* readCaller();
       if (caller === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "capability_denied",
-          message: "Only a Tot's own thread can ask to talk.",
+          message: "Only a Tot's own thread can ask the user.",
         });
       }
       const tots = yield* TotService.TotService;
-      yield* tots
-        .askToTalk(caller.id, input)
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
-          ),
-        );
-      return { status: "user_notified" as const };
+      const requestId = yield* tots.askUser(caller.id, input).pipe(Effect.mapError(invalid));
+      return { requestId };
+    }),
+  ),
+  t3_tot_close_request: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const { caller } = yield* readCaller();
+      if (caller === undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Only a Tot's own thread can close its requests.",
+        });
+      }
+      const tots = yield* TotService.TotService;
+      const closed = yield* tots
+        .closeRequest(caller.id, input.requestId)
+        .pipe(Effect.mapError(invalid));
+      return { status: closed ? ("closed" as const) : ("already_closed" as const) };
     }),
   ),
 });

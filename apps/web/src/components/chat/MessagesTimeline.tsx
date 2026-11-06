@@ -1,6 +1,8 @@
 import { T, useGT, useMessages, Var } from "gt-react";
 import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
 import { threadErrorText } from "@t3tools/client-runtime/state/threads";
+import { foldTotWakes } from "../tots/totTimeline.logic";
+import type { TotIdentity } from "../../state/tots";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
@@ -222,6 +224,8 @@ export interface MessagesTimelineHistoryControls {
 }
 
 interface MessagesTimelineProps {
+  /** Set in a Tot's thread, whose quiet wakes fold and whose replies carry its face. */
+  tot?: TotIdentity | null;
   pendingApprovals?: ReadonlyArray<PendingApproval>;
   heldApprovalRequestIds?: ReadonlySet<string> | undefined;
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
@@ -408,6 +412,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onFileOpen = NOOP_OPEN_ATTACHMENT,
   onFileDownload = NOOP_OPEN_ATTACHMENT,
   activeThreadEnvironmentId,
+  tot,
   markdownCwd,
   resolvedTheme,
   timestampFormat,
@@ -436,6 +441,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     ...timelineListStateFor(listIdentityKey),
     findOpenAtOpening: findOpen,
   }));
+  const [expandedTotWakeFoldIds, setExpandedTotWakeFoldIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [expandedRunIds, setExpandedRunIds] = useState<ReadonlySet<RunId>>(
     () => listState.rememberedPosition?.disclosures?.runs ?? new Set(),
   );
@@ -573,6 +581,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
       } else {
         next.add(runId);
       }
+      return next;
+    });
+  };
+  const onToggleTotWakeFold = (foldId: string) => {
+    preserveDisclosurePosition(foldId);
+    setExpandedTotWakeFoldIds((existing) => {
+      const next = new Set(existing);
+      if (!next.delete(foldId)) next.add(foldId);
       return next;
     });
   };
@@ -763,7 +779,17 @@ const ConversationTimeline = memo(function ConversationTimeline({
     toolCallVisibility,
     revealedMessageId,
   });
-  const rows = useStableRows(rawRows, listIdentityKey);
+  const rows = useStableRows(
+    tot
+      ? foldTotWakes(rawRows, {
+          voice: tot.voice,
+          becameTotAt: tot.createdAt,
+          expandedFoldIds: expandedTotWakeFoldIds,
+          expandAll: findActive || revealedMessageId !== null,
+        })
+      : rawRows,
+    listIdentityKey,
+  );
   const matchedApprovalRequestIds = new Set<string>();
   for (const row of pendingApprovalRequestIds.size > 0 ? rows : []) {
     const entries =
@@ -1141,6 +1167,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     workflowOpening,
     onForkFromRun,
     onToggleTurnFold,
+    onToggleTotWakeFold,
+    tot: tot ?? null,
     onToggleAttemptFold,
     onToggleWorkGroup,
     onToggleWorkEntry: (anchorKey, collapsed, entryId) =>
@@ -1695,6 +1723,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         </WorkLogBlock>
       ) : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow key={row.id} row={row} /> : null}
+      {row.kind === "tot-wake-fold" ? <TotWakeFoldTimelineRow row={row} /> : null}
       {row.kind === "attempt-fold" ? <AttemptFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserMessageRow row={row} /> : null}
@@ -1893,6 +1922,34 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         />
       </div>
       {loading ? <WorkHistorySkeleton /> : null}
+    </div>
+  );
+}
+
+function TotWakeFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "tot-wake-fold" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="flex items-center gap-1 border-b border-border/60 pb-2 pe-0.5 pt-1">
+      <button
+        type="button"
+        aria-expanded={row.expanded}
+        data-scroll-anchor-ignore
+        data-testid="tot-wake-fold"
+        onClick={() => ctx.onToggleTotWakeFold(row.id)}
+        className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <span>{row.label}</span>
+        {row.expanded ? (
+          <ChevronDownIcon className="size-3.5" />
+        ) : (
+          <ChevronRightIcon className="size-3.5" />
+        )}
+      </button>
+      <TimelineRowTimestamp
+        createdAt={row.createdAt}
+        timestampFormat={ctx.timestampFormat}
+        className="ms-auto"
+      />
     </div>
   );
 }

@@ -43,7 +43,7 @@ const REPORT_HINT: Record<TotWatchKind, string> = {
   failed: "`t3_thread_read` has what went wrong.",
   question: "`t3_pending_request` reads and answers it.",
   approval:
-    "`t3_tot_crew_approval` reads it. Answer only if it's a thread you started, and the user or your charter allows it. Otherwise ask to talk.",
+    "`t3_tot_crew_approval` reads it. Answer only if it's a thread you started, and the user or your charter allows it. Otherwise ask the user.",
 };
 
 export function formatTotWatchReport(input: {
@@ -84,7 +84,8 @@ export const layer = Layer.effectDiscard(
         }),
         attachments: [],
         mode: "queue",
-        createdBy: "system",
+        // As agent, so clients show a folded report instead of a message from the user.
+        createdBy: "agent",
         creationSource: "server",
       });
     });

@@ -3,7 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal } from "@t3tools/contracts";
+import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal, type TotVoice } from "@t3tools/contracts";
 import { useState } from "react";
 
 import { serverEnvironment } from "~/state/server";
@@ -13,7 +13,6 @@ import { cn } from "~/lib/utils";
 
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
-import { TotCharacter } from "./TotCharacter";
 import { TotCharterEditor } from "./TotCharterEditor";
 import { diffCharterLines } from "./tots.logic";
 
@@ -24,7 +23,14 @@ const LINE_CLASS = {
 };
 const LINE_PREFIX = { same: "  ", added: "+ ", removed: "- " };
 
-export function TotCharterProposalCard(props: {
+export function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
+  return voice === "toddler"
+    ? `${displayName} wants new house rules!`
+    : `${displayName} proposes a charter change`;
+}
+
+/** The editor and answers, without a heading: the dock and the queue each title it themselves. */
+export function TotCharterProposalBody(props: {
   readonly entry: TotEntry;
   readonly proposal: TotCharterProposal;
 }) {
@@ -63,23 +69,8 @@ export function TotCharterProposalCard(props: {
     });
   };
   return (
-    <section
-      aria-label={`Charter change from ${entry.displayName}`}
-      data-testid="tot-charter-proposal"
-      className="rounded-lg border bg-card p-3"
-    >
-      <div className="flex items-start gap-3">
-        <TotCharacter character={entry.tot.character} pose="needs" size={40} />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">
-            {entry.tot.voice === "toddler"
-              ? `${entry.displayName} wants new house rules!`
-              : `${entry.displayName} proposes a charter change`}
-          </h2>
-          <p className="text-xs whitespace-pre-wrap text-muted-foreground">{proposal.reason}</p>
-        </div>
-      </div>
-      <div className="mt-3">
+    <div data-testid="tot-charter-proposal">
+      <div>
         {comparing ? (
           <div className="max-h-96 overflow-auto rounded-md border bg-background p-2 font-mono text-xs">
             {diffCharterLines(entry.tot.charter, draft).map((line, index) => (
@@ -132,6 +123,6 @@ export function TotCharterProposalCard(props: {
           {edited ? "Approve with my edits" : "Approve"}
         </Button>
       </div>
-    </section>
+    </div>
   );
 }

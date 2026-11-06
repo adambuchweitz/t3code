@@ -1890,6 +1890,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:tot:answer-charter-proposal",
       tag: WS_METHODS.totsAnswerCharterProposal,
     }),
+    answerTotRequest: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:tot:answer-request",
+      tag: WS_METHODS.totsAnswerRequest,
+    }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",
       tag: WS_METHODS.scheduledTasksUpsert,

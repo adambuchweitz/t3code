@@ -4,7 +4,7 @@ import type {
   OrchestrationV2AppThreadLineage,
   ProjectId,
   ThreadId,
-  TotTalkRequest,
+  TotJob,
   TotVoice,
 } from "@t3tools/contracts";
 
@@ -56,6 +56,11 @@ export const TOT_VOICE_OPTIONS: ReadonlyArray<{
   { value: "grown_up", label: "Grown-up", sample: "Checks passed. Ready to merge." },
 ];
 
+export const TOT_JOB_LABEL: Record<TotJob, string> = {
+  manager: "Project manager",
+  hands_on: "Hands-on",
+};
+
 export const TOT_STATE_POSE: Record<TotState, TotPose> = {
   needs: "needs",
   working: "working",
@@ -63,27 +68,15 @@ export const TOT_STATE_POSE: Record<TotState, TotPose> = {
   offline: "asleep",
 };
 
-/** Writing in the thread answers it. Wakes and agent messages don't count as the user writing. */
-export function openTalkRequest(
-  request: TotTalkRequest | null,
-  latestUserAuthoredMessageAt: string | null | undefined,
-): TotTalkRequest | null {
-  if (request === null) return null;
-  return latestUserAuthoredMessageAt != null &&
-    Date.parse(latestUserAuthoredMessageAt) > Date.parse(request.askedAt)
-    ? null
-    : request;
-}
-
 /** Failures need the user too: nothing else will restart a Tot that stopped. */
 export function resolveTotState(input: {
   readonly connected: boolean;
   readonly threadStatus: SidebarThreadStatus | null;
   readonly hasCharterProposal: boolean;
-  readonly wantsToTalk: boolean;
+  readonly hasOpenRequests: boolean;
 }): TotState {
   if (!input.connected) return "offline";
-  if (input.hasCharterProposal || input.wantsToTalk) return "needs";
+  if (input.hasCharterProposal || input.hasOpenRequests) return "needs";
   switch (input.threadStatus) {
     case "approval":
     case "input":
@@ -214,4 +207,25 @@ export function diffCharterLines(before: string, after: string): ReadonlyArray<C
     }
   }
   return lines;
+}
+
+export function totRequestsHeading(displayName: string, voice: TotVoice): string {
+  return voice === "toddler" ? `${displayName} needs you!` : `${displayName} needs you`;
+}
+
+export function totWakeFoldLabel(input: {
+  readonly voice: TotVoice;
+  readonly checkIns: number;
+  readonly updates: number;
+}): string {
+  const total = input.checkIns + input.updates;
+  const parts = [
+    input.checkIns === 0 ? null : `${input.checkIns} check-in${input.checkIns === 1 ? "" : "s"}`,
+    input.updates === 0 ? null : `${input.updates} thread update${input.updates === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  const headline =
+    input.voice === "toddler"
+      ? `I woke up ${total === 1 ? "once" : `${total} times`}. Nothing for you!`
+      : `${total} wake${total === 1 ? "" : "s"} with nothing for you`;
+  return `${headline} · ${parts.join(", ")}`;
 }

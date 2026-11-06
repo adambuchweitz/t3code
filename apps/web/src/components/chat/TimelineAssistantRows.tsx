@@ -43,6 +43,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { vcsEnvironment } from "../../state/vcs";
 
 const NO_VCS_STATUS = Atom.make(AsyncResult.initial());
+import { TotCharacter } from "../tots/TotCharacter";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -59,7 +60,16 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <MessageAuthorHeading>{ctx.tot?.displayName ?? "T3 Code"}</MessageAuthorHeading>
+        {ctx.tot && row.startsTotTurn ? (
+          <div
+            aria-hidden
+            className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
+          >
+            <TotCharacter character={ctx.tot.character} pose="awake" size={20} />
+            {ctx.tot.displayName}
+          </div>
+        ) : null}
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
