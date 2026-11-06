@@ -3698,6 +3698,14 @@ effectIt.effect.each([
       job: "manager",
       voice: "toddler",
       charter: "Ship the HTTP fix.",
+      openRequests: [
+        {
+          id: "request-1",
+          question: "Regions or arenas?",
+          blocks: "the MCP spike",
+          askedAt: "2026-11-06T10:00:00.000Z",
+        },
+      ],
       crewModels: [
         { role: "Reviews", instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
       ],
@@ -3708,7 +3716,9 @@ effectIt.effect.each([
       "Ship the HTTP fix.",
       "excitable toddler",
       "Be proactive.",
-      "`t3_tot_ask_to_talk`",
+      "`t3_tot_ask_user`",
+      '- request-1, asked 2026-11-06T10:00:00.000Z: "Regions or arenas?" (blocks "the MCP spike")',
+      "A pull request on a private repository isn't public.",
       '- Reviews: providerInstanceId "codex", model "gpt-6.1-sol"',
     ],
     absent: [],
@@ -3716,7 +3726,14 @@ effectIt.effect.each([
   {
     name: "name off, no charter and the plain voice leave those out",
     text: "Check the backlog",
-    tot: { name: null, job: "hands_on", voice: "grown_up", charter: "", crewModels: [] },
+    tot: {
+      name: null,
+      job: "hands_on",
+      voice: "grown_up",
+      charter: "",
+      crewModels: [],
+      openRequests: [],
+    },
     expected: ["This thread is a Tot:", "hands-on", "You have no charter yet.", "no persona"],
     absent: ["toddler", "stay plain", "crew threads"],
   },
@@ -3748,7 +3765,14 @@ effectIt.effect("leaves a Tot's slash command for the provider to parse", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "/custom",
-      tot: { name: "Brace", job: "manager", voice: "toddler", charter: "Ship it.", crewModels: [] },
+      tot: {
+        name: "Brace",
+        job: "manager",
+        voice: "toddler",
+        charter: "Ship it.",
+        crewModels: [],
+        openRequests: [],
+      },
       previousTurn: { runStatus: "completed", turnStatus: "completed" },
     });
     harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
@@ -3761,7 +3785,14 @@ effectIt.effect("a Tot's attachment-only turn still carries its instructions", (
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "",
-      tot: { name: "Brace", job: "manager", voice: "polite", charter: "Ship it.", crewModels: [] },
+      tot: {
+        name: "Brace",
+        job: "manager",
+        voice: "polite",
+        charter: "Ship it.",
+        crewModels: [],
+        openRequests: [],
+      },
       previousTurn: { runStatus: "completed", turnStatus: "completed" },
     });
     harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));

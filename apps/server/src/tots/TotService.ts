@@ -3,6 +3,9 @@ import {
   Tot,
   TotCrewModel,
   TotError,
+  TotRequest,
+  TOT_MAX_OPEN_REQUESTS,
+  MessageId,
   TotWakeSettings,
   TotId,
   type ProjectId,
@@ -13,7 +16,8 @@ import {
   CommandId,
   ProviderRequestKind,
   type ProviderApprovalDecision,
-  type TotAskToTalkInput,
+  type TotAnswerRequestInput,
+  type TotAskUserInput,
   type TotProposeCharterInput,
   type TotReleaseInput,
   type TotReleaseResult,
@@ -48,8 +52,6 @@ interface TotRow {
   readonly proposed_at: string | null;
   readonly wake_settings: string;
   readonly crew_models: string;
-  readonly talk_topic: string | null;
-  readonly talk_asked_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -66,11 +68,51 @@ const decodeTotJson = Schema.decodeUnknownEffect(
 const encodeWakeSettings = Schema.encodeEffect(WakeSettingsJson);
 const encodeCrewModels = Schema.encodeEffect(CrewModelsJson);
 
+interface TotRequestRow {
+  readonly request_id: string;
+  readonly tot_thread_id: string;
+  readonly question: string;
+  readonly summary: string;
+  readonly details: string;
+  readonly options: string;
+  readonly recommended_option: string | null;
+  readonly blocks: string | null;
+  readonly asked_at: string;
+  readonly updated_at: string;
+}
+
+const encodeRequestOptions = Schema.encodeEffect(Schema.fromJsonString(TotRequest.fields.options));
+const decodeRequest = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    ...TotRequest.fields,
+    options: Schema.fromJsonString(TotRequest.fields.options),
+  }),
+);
+
+const requestFromRow = (row: TotRequestRow) =>
+  decodeRequest({
+    id: row.request_id,
+    question: row.question,
+    summary: row.summary,
+    details: row.details,
+    options: row.options,
+    recommendedOption: row.recommended_option,
+    blocks: row.blocks,
+    askedAt: row.asked_at,
+    updatedAt: row.updated_at,
+  });
+
+const formatRequestAnswer = (question: string, answer: string | null) =>
+  answer === null
+    ? `I dismissed your request ${JSON.stringify(question)}. Don't ask again unless something changes.`
+    : `My answer to your request ${JSON.stringify(question)}:\n\n${answer}`;
+
 const totFromRow = (
   row: TotRow,
   projectId: ProjectId,
   wakesHeld: number,
   watchedThreadIds: ReadonlyArray<string>,
+  requests: ReadonlyArray<TotRequest>,
 ) =>
   decodeTotJson({ wakeSettings: row.wake_settings, crewModels: row.crew_models }).pipe(
     Effect.flatMap((json) =>
@@ -78,6 +120,7 @@ const totFromRow = (
         ...json,
         wakesHeld,
         watchedThreadIds,
+        requests,
         id: row.tot_id,
         threadId: row.thread_id,
         projectId,
@@ -96,8 +139,6 @@ const totFromRow = (
                 reason: row.proposal_reason,
                 proposedAt: row.proposed_at,
               },
-        talkRequest:
-          row.talk_topic === null ? null : { topic: row.talk_topic, askedAt: row.talk_asked_at },
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       }),
@@ -169,9 +210,19 @@ export class TotService extends Context.Service<
       readonly requestId: string;
       readonly decision: ProviderApprovalDecision;
     }) => Effect.Effect<void, TotError>;
-    readonly askToTalk: (
+    /** Replaces the open request with the same id or question, rather than asking twice. */
+    readonly askUser: (
       threadId: ThreadId,
-      input: TotAskToTalkInput,
+      input: TotAskUserInput,
+    ) => Effect.Effect<string, TotError>;
+    /** False when the request was already settled, which is what the caller wanted anyway. */
+    readonly closeRequest: (
+      threadId: ThreadId,
+      requestId: string,
+    ) => Effect.Effect<boolean, TotError>;
+    /** Sends the answer as the user's message, which wakes the Tot. */
+    readonly answerRequest: (
+      input: TotAnswerRequestInput,
     ) => Effect.Effect<TotMutationResult, TotError>;
     readonly answerCharterProposal: (
       input: TotAnswerCharterProposalInput,
@@ -209,6 +260,15 @@ const make = Effect.gen(function* () {
       Effect.mapError(storageError("Could not read a Tot's watches.")),
     );
 
+  const openRequests = (threadId: string) =>
+    sql<TotRequestRow>`
+      SELECT * FROM tot_requests WHERE tot_thread_id = ${threadId}
+      ORDER BY asked_at, request_id
+    `.pipe(
+      Effect.flatMap((rows) => Effect.forEach(rows, requestFromRow)),
+      Effect.mapError(storageError("Could not read a Tot's requests.")),
+    );
+
   const list: TotService["Service"]["list"] = Effect.fn("TotService.list")(function* () {
     const rows = yield* sql<TotRow>`SELECT * FROM tots ORDER BY created_at, tot_id`.pipe(
       Effect.mapError(storageError("Could not list Tots.")),
@@ -219,9 +279,13 @@ const make = Effect.gen(function* () {
         Effect.flatMap((shell) =>
           shell === null || shell.deletedAt !== null
             ? Effect.succeed(null)
-            : Effect.all([heldCount(row.thread_id), watchedIds(row.thread_id)]).pipe(
-                Effect.flatMap(([held, watched]) =>
-                  totFromRow(row, shell.projectId, held, watched),
+            : Effect.all([
+                heldCount(row.thread_id),
+                watchedIds(row.thread_id),
+                openRequests(row.thread_id),
+              ]).pipe(
+                Effect.flatMap(([held, watched, requests]) =>
+                  totFromRow(row, shell.projectId, held, watched, requests),
                 ),
               ),
         ),
@@ -276,7 +340,7 @@ const make = Effect.gen(function* () {
     if (row === undefined) {
       return yield* new TotError({ message: "That thread is already a Tot." });
     }
-    const tot = yield* totFromRow(row, shell.projectId, 0, []);
+    const tot = yield* totFromRow(row, shell.projectId, 0, [], []);
     yield* notifyChanged;
     return { tot };
   });
@@ -294,6 +358,7 @@ const make = Effect.gen(function* () {
       shell.projectId,
       yield* heldCount(row.thread_id),
       yield* watchedIds(row.thread_id),
+      yield* openRequests(row.thread_id),
     );
     yield* notifyChanged;
     return { tot };
@@ -336,8 +401,6 @@ const make = Effect.gen(function* () {
           wake_settings = COALESCE(${wakeSettings}, wake_settings),
           crew_models = COALESCE(${crewModels}, crew_models),
           charter = COALESCE(${charter}, charter),
-          talk_topic = CASE WHEN ${input.dismissTalkRequest === true ? 1 : 0} = 1 THEN NULL ELSE talk_topic END,
-          talk_asked_at = CASE WHEN ${input.dismissTalkRequest === true ? 1 : 0} = 1 THEN NULL ELSE talk_asked_at END,
           proposal_id = CASE WHEN ${keepsProposal} THEN proposal_id END,
           proposed_charter = CASE WHEN ${keepsProposal} THEN proposed_charter END,
           proposal_reason = CASE WHEN ${keepsProposal} THEN proposal_reason END,
@@ -355,6 +418,10 @@ const make = Effect.gen(function* () {
         DELETE FROM tot_watches
         WHERE tot_thread_id = (SELECT thread_id FROM tots WHERE tot_id = ${input.id})
       `.pipe(
+        Effect.andThen(sql`
+          DELETE FROM tot_requests
+          WHERE tot_thread_id = (SELECT thread_id FROM tots WHERE tot_id = ${input.id})
+        `),
         Effect.andThen(sql`DELETE FROM tots WHERE tot_id = ${input.id}`),
         Effect.mapError(storageError("Could not turn the Tot back into a thread.")),
       );
@@ -371,6 +438,7 @@ const make = Effect.gen(function* () {
       Effect.andThen(
         sql`DELETE FROM tot_watches WHERE tot_thread_id = ${threadId} OR thread_id = ${threadId}`,
       ),
+      Effect.andThen(sql`DELETE FROM tot_requests WHERE tot_thread_id = ${threadId}`),
       Effect.mapError(storageError("Could not remove the deleted thread's Tot.")),
     );
     yield* notifyChanged;
@@ -555,20 +623,112 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(storageError("Could not answer the approval.")));
   });
 
-  const askToTalk: TotService["Service"]["askToTalk"] = Effect.fn("TotService.askToTalk")(
+  const askUser: TotService["Service"]["askUser"] = Effect.fn("TotService.askUser")(
     function* (threadId, input) {
+      if (!(yield* isTot(threadId))) {
+        return yield* new TotError({ message: "Only a Tot's own thread can ask the user." });
+      }
+      const saveFailed = storageError("Could not save the request.");
+      const open = yield* sql<{ readonly request_id: string; readonly question: string }>`
+        SELECT request_id, question FROM tot_requests WHERE tot_thread_id = ${threadId}
+      `.pipe(Effect.mapError(saveFailed));
+      const existing =
+        input.requestId === undefined
+          ? open.find((request) => request.question === input.question)
+          : open.find((request) => request.request_id === input.requestId);
+      if (input.requestId !== undefined && existing === undefined) {
+        return yield* new TotError({
+          message: "That request isn't open any more. Ask again without requestId if it's needed.",
+        });
+      }
+      if (existing === undefined && open.length >= TOT_MAX_OPEN_REQUESTS) {
+        return yield* new TotError({
+          message: `You already have ${TOT_MAX_OPEN_REQUESTS} open requests. Close or replace one first.`,
+        });
+      }
+      const options = input.options ?? [];
+      // A recommendation the card can't highlight is only noise, and the summary already says it.
+      const recommendedOption =
+        input.recommendedOption !== undefined && options.includes(input.recommendedOption)
+          ? input.recommendedOption
+          : null;
+      const encodedOptions = yield* encodeRequestOptions(options).pipe(Effect.mapError(saveFailed));
       const askedAt = yield* now;
-      const rows = yield* sql<TotRow>`
-        UPDATE tots SET
-          talk_topic = ${input.topic},
-          talk_asked_at = ${askedAt},
-          updated_at = ${askedAt}
-        WHERE thread_id = ${threadId}
-        RETURNING *
-      `.pipe(Effect.mapError(storageError("Could not save the request to talk.")));
-      return yield* mutated(rows[0], "Only a Tot's own thread can ask to talk.");
+      const requestId =
+        existing?.request_id ?? (yield* random.uuidV4().pipe(Effect.mapError(saveFailed)));
+      yield* sql`
+        INSERT INTO tot_requests (
+          request_id, tot_thread_id, question, summary, details, options, recommended_option,
+          blocks, asked_at, updated_at
+        ) VALUES (
+          ${requestId}, ${threadId}, ${input.question}, ${input.summary ?? ""},
+          ${input.details ?? ""}, ${encodedOptions}, ${recommendedOption},
+          ${input.blocks ?? null}, ${askedAt}, ${askedAt}
+        )
+        ON CONFLICT (request_id) DO UPDATE SET
+          question = excluded.question,
+          summary = excluded.summary,
+          details = excluded.details,
+          options = excluded.options,
+          recommended_option = excluded.recommended_option,
+          blocks = excluded.blocks,
+          updated_at = excluded.updated_at
+      `.pipe(Effect.mapError(saveFailed));
+      yield* notifyChanged;
+      return requestId;
     },
   );
+
+  const closeRequest: TotService["Service"]["closeRequest"] = Effect.fn("TotService.closeRequest")(
+    function* (threadId, requestId) {
+      const closed = yield* sql`
+        DELETE FROM tot_requests
+        WHERE request_id = ${requestId} AND tot_thread_id = ${threadId}
+        RETURNING request_id
+      `.pipe(Effect.mapError(storageError("Could not close the request.")));
+      if (closed.length > 0) yield* notifyChanged;
+      return closed.length > 0;
+    },
+  );
+
+  const answerRequest: TotService["Service"]["answerRequest"] = Effect.fn(
+    "TotService.answerRequest",
+  )(function* (input) {
+    const failed = storageError("Could not send your answer.");
+    const rows = yield* sql<{ readonly thread_id: ThreadId; readonly question: string }>`
+      SELECT t.thread_id, r.question FROM tot_requests r
+      JOIN tots t ON t.thread_id = r.tot_thread_id
+      WHERE r.request_id = ${input.requestId} AND t.tot_id = ${input.id}
+    `.pipe(Effect.mapError(failed));
+    const request = rows[0];
+    if (request === undefined) {
+      return yield* new TotError({ message: "That request has already been settled." });
+    }
+    const shell = yield* threads.getThreadShell(request.thread_id).pipe(Effect.mapError(failed));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new TotError({ message: "That Tot's thread no longer exists." });
+    }
+    // Sent first: a retry after a failure repeats the same command, but a request deleted before
+    // a failed send would be lost for good.
+    yield* threads
+      .sendToThread({
+        projectId: shell.projectId,
+        commandId: CommandId.make(`tot-answer:${input.requestId}`),
+        messageId: MessageId.make(`tot-answer-message:${input.requestId}`),
+        threadId: request.thread_id,
+        text: formatRequestAnswer(request.question, input.answer),
+        attachments: [],
+        mode: "queue",
+        createdBy: "user",
+        creationSource: "web",
+      })
+      .pipe(Effect.mapError(failed));
+    yield* closeRequest(request.thread_id, input.requestId);
+    const updated = yield* sql<TotRow>`
+      SELECT * FROM tots WHERE tot_id = ${input.id}
+    `.pipe(Effect.mapError(failed));
+    return yield* mutated(updated[0], "That Tot no longer exists.");
+  });
 
   const answerCharterProposal: TotService["Service"]["answerCharterProposal"] = Effect.fn(
     "TotService.answerCharterProposal",
@@ -607,7 +767,9 @@ const make = Effect.gen(function* () {
     listCrewApprovals,
     readCrewApproval,
     answerCrewApproval,
-    askToTalk,
+    askUser,
+    closeRequest,
+    answerRequest,
     answerCharterProposal,
     notifyChanged,
   });

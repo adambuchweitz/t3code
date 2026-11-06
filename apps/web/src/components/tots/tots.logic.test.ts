@@ -4,7 +4,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   diffCharterLines,
   resolveConnectedTot,
-  openTalkRequest,
   resolveTotState,
   type ConnectedThreadInput,
 } from "./tots.logic";
@@ -33,26 +32,14 @@ const brace = {
   projectId: project,
 };
 
-describe("openTalkRequest", () => {
-  const request = { topic: "What's next?", askedAt: "2026-11-05T10:00:00.000Z" };
-
-  it.each([
-    ["the user hasn't written yet", null, request],
-    ["the user last wrote before it asked", "2026-11-05T09:00:00.000Z", request],
-    ["the user wrote after it asked", "2026-11-05T11:00:00.000Z", null],
-  ])("when %s", (_name, latest, expected) => {
-    expect(openTalkRequest(request, latest)).toEqual(expected);
-  });
-});
-
 describe("resolveTotState", () => {
-  it("needs the user when it wants to talk", () => {
+  it("needs the user while a request is open", () => {
     expect(
       resolveTotState({
         connected: true,
         threadStatus: "ready",
         hasCharterProposal: false,
-        wantsToTalk: true,
+        hasOpenRequests: true,
       }),
     ).toBe("needs");
   });
@@ -74,7 +61,7 @@ describe("resolveTotState", () => {
         connected: true,
         threadStatus,
         hasCharterProposal: false,
-        wantsToTalk: false,
+        hasOpenRequests: false,
       }),
     ).toBe(expected);
   });
@@ -85,7 +72,7 @@ describe("resolveTotState", () => {
         connected: false,
         threadStatus: "working",
         hasCharterProposal: true,
-        wantsToTalk: false,
+        hasOpenRequests: false,
       }),
     ).toBe("offline");
   });
@@ -96,7 +83,7 @@ describe("resolveTotState", () => {
         connected: true,
         threadStatus: "working",
         hasCharterProposal: true,
-        wantsToTalk: false,
+        hasOpenRequests: false,
       }),
     ).toBe("needs");
   });

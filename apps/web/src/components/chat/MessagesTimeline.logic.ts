@@ -617,6 +617,13 @@ type MessagesTimelineRowContent =
       expanded: boolean;
     }
   | {
+      kind: "tot-wake-fold";
+      id: string;
+      createdAt: string;
+      label: string;
+      expanded: boolean;
+    }
+  | {
       kind: "attempt-fold";
       deferredWorkItemIds?: ReadonlyArray<string>;
       id: string;
@@ -658,6 +665,8 @@ type MessagesTimelineRowContent =
       groupedWithPrevious?: boolean;
       /** Set when the message above is a steer too, so the label shows once. */
       continuesSteer?: boolean;
+      /** The first reply of a turn in a Tot's thread, which carries the Tot's face and name. */
+      startsTotTurn?: boolean;
     }
   | {
       kind: "assistant-meta";
@@ -2820,6 +2829,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
 
+    case "tot-wake-fold": {
+      const bw = b as typeof a;
+      return a.createdAt === bw.createdAt && a.label === bw.label && a.expanded === bw.expanded;
+    }
+
     case "attempt-fold":
     case "turn-fold": {
       const bf = b as typeof a;
@@ -2937,7 +2951,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.revertTurnCount === bm.revertTurnCount &&
         a.groupedWithNext === bm.groupedWithNext &&
         a.groupedWithPrevious === bm.groupedWithPrevious &&
-        a.continuesSteer === bm.continuesSteer
+        a.continuesSteer === bm.continuesSteer &&
+        a.startsTotTurn === bm.startsTotTurn
       );
     }
   }

@@ -1,4 +1,10 @@
-import { TotCrewModel, TotJob, TotVoice, type ThreadId } from "@t3tools/contracts";
+import {
+  TOT_MAX_OPEN_REQUESTS,
+  TotCrewModel,
+  TotJob,
+  TotVoice,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,6 +30,12 @@ export interface TotInstructionsShape {
     readonly voice: TotVoice;
     readonly charter: string;
     readonly crewModels: ReadonlyArray<TotCrewModel>;
+    readonly openRequests: ReadonlyArray<{
+      readonly id: string;
+      readonly question: string;
+      readonly blocks: string | null;
+      readonly askedAt: string;
+    }>;
   } | null>;
 }
 
@@ -48,12 +60,29 @@ const make = Effect.gen(function* () {
       `;
         if (rows[0] === undefined) return null;
         const row = yield* decodeRow(rows[0]);
+        const openRequests = yield* sql<{
+          readonly request_id: string;
+          readonly question: string;
+          readonly blocks: string | null;
+          readonly asked_at: string;
+        }>`
+          SELECT request_id, question, blocks, asked_at FROM tot_requests
+          WHERE tot_thread_id = ${threadId}
+          ORDER BY asked_at, request_id
+          LIMIT ${TOT_MAX_OPEN_REQUESTS}
+        `;
         return {
           name: row.name_enabled === 0 ? null : row.name,
           job: row.job,
           voice: row.voice,
           charter: row.charter,
           crewModels: row.crew_models,
+          openRequests: openRequests.map((request) => ({
+            id: request.request_id,
+            question: request.question,
+            blocks: request.blocks,
+            askedAt: request.asked_at,
+          })),
         };
       },
       (effect) =>

@@ -27,6 +27,7 @@ import { startMainAppLocationTracking } from "./components/sidebar/mainAppLocati
 import { startDesktopUpdateLaunchNotice } from "./components/sidebar/updateEverythingRun";
 import { startSlowRpcRequestToasts } from "./components/SlowRpcRequestToastCoordinator";
 import { startThreadNotifications } from "./components/ThreadNotificationCoordinator";
+import { startTotRequestNotifications } from "./components/tots/totRequestNotifications";
 import { startGuideRunNotifications } from "./components/pullRequest/guide/PullRequestGuideRunCoordinator";
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "./branding";
 import { resolveServerBackedAppDisplayName, resolveWindowTitle } from "./branding.logic";
@@ -320,6 +321,7 @@ export function startAppServices(): AppRouter {
   startPermissionUpdateNotices(router);
   startThreadNotifications(appAtomRegistry, router);
   startGuideRunNotifications(appAtomRegistry, router);
+  startTotRequestNotifications(appAtomRegistry, router);
   if (isElectron) startDesktopUpdateLaunchNotice();
 
   return router;

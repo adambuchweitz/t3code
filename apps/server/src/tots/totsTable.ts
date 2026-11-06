@@ -15,6 +15,7 @@ const ADDED_COLUMNS = {
   wake_count: "INTEGER NOT NULL DEFAULT 0",
   heartbeat_created: "INTEGER NOT NULL DEFAULT 0",
   briefed_at: "TEXT",
+  // Only read once, to carry an old request to talk over into tot_requests.
   talk_topic: "TEXT",
   talk_asked_at: "TEXT",
 } as const;
@@ -65,6 +66,29 @@ export const ensureTotsTable = Effect.gen(function* () {
     )
   `;
   yield* sql`CREATE INDEX IF NOT EXISTS tot_watches_thread ON tot_watches (thread_id)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS tot_requests (
+      request_id TEXT PRIMARY KEY,
+      tot_thread_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details TEXT NOT NULL,
+      options TEXT NOT NULL,
+      recommended_option TEXT,
+      blocks TEXT,
+      asked_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS tot_requests_thread ON tot_requests (tot_thread_id)`;
+  yield* sql`
+    INSERT OR IGNORE INTO tot_requests (
+      request_id, tot_thread_id, question, summary, details, options, asked_at, updated_at
+    )
+    SELECT 'talk:' || tot_id, thread_id, talk_topic, '', '', '[]', talk_asked_at, talk_asked_at
+    FROM tots WHERE talk_topic IS NOT NULL AND talk_asked_at IS NOT NULL
+  `;
+  yield* sql`UPDATE tots SET talk_topic = NULL, talk_asked_at = NULL WHERE talk_topic IS NOT NULL`;
   const heldColumns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('tot_held_wakes')
   `;

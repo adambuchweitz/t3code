@@ -78,12 +78,22 @@ export type TotCrewModel = typeof TotCrewModel.Type;
 
 const TotCrewModels = Schema.Array(TotCrewModel).check(Schema.isMaxLength(12));
 
-/** A Tot asking for a discussion. It stands until the user next writes in its thread. */
-export const TotTalkRequest = Schema.Struct({
-  topic: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+export const TOT_MAX_OPEN_REQUESTS = 8;
+const TotRequestOptionLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+
+/** Something a Tot needs from the user. It stays open until answered, dismissed or closed. */
+export const TotRequest = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  question: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
+  summary: Schema.String.check(Schema.isMaxLength(1000)),
+  details: Schema.String.check(Schema.isMaxLength(TOT_CHARTER_MAX_LENGTH)),
+  options: Schema.Array(TotRequestOptionLabel).check(Schema.isMaxLength(6)),
+  recommendedOption: Schema.NullOr(TotRequestOptionLabel),
+  blocks: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   askedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
 });
-export type TotTalkRequest = typeof TotTalkRequest.Type;
+export type TotRequest = typeof TotRequest.Type;
 
 /** A lasting identity wrapped around one thread. */
 export const Tot = Schema.Struct({
@@ -107,9 +117,7 @@ export const Tot = Schema.Struct({
   ),
   crewModels: TotCrewModels.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   wakesHeld: NonNegativeInt.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
-  talkRequest: Schema.NullOr(TotTalkRequest).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed(null)),
-  ),
+  requests: Schema.Array(TotRequest).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   watchedThreadIds: Schema.Array(ThreadId).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -145,7 +153,6 @@ export const TotUpdateInput = Schema.Struct({
   voice: Schema.optionalKey(TotVoice),
   wakeSettings: Schema.optionalKey(TotWakeSettings),
   crewModels: Schema.optionalKey(TotCrewModels),
-  dismissTalkRequest: Schema.optionalKey(Schema.Literal(true)),
   unwatchThreadIds: Schema.optionalKey(Schema.Array(ThreadId)),
 });
 export type TotUpdateInput = typeof TotUpdateInput.Type;
@@ -158,12 +165,44 @@ export const TotProposeCharterInput = Schema.Struct({
 });
 export type TotProposeCharterInput = typeof TotProposeCharterInput.Type;
 
-export const TotAskToTalkInput = Schema.Struct({
-  topic: TotTalkRequest.fields.topic.annotate({
-    description: "What you need to discuss, in a sentence the user can read on its own.",
+export const TotAskUserInput = Schema.Struct({
+  requestId: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "One of your open requests, to replace it instead of asking something new.",
+  }),
+  question: TotRequest.fields.question.annotate({
+    description: "What you need from the user, in a sentence they can read on its own.",
+  }),
+  summary: Schema.optional(TotRequest.fields.summary).annotate({
+    description: "What you found and what you recommend, in two or three sentences.",
+  }),
+  details: Schema.optional(TotRequest.fields.details).annotate({
+    description: "Your research, as Markdown. Hidden until the user asks for it.",
+  }),
+  options: Schema.optional(TotRequest.fields.options).annotate({
+    description:
+      "Short answers the user can pick with one click. They can always write their own. Mark your pick with `recommendedOption`, not in the label.",
+  }),
+  recommendedOption: Schema.optional(TotRequestOptionLabel).annotate({
+    description: "The option you recommend, spelled exactly as in `options`.",
+  }),
+  blocks: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
+    description: "What can't move until this is answered.",
   }),
 });
-export type TotAskToTalkInput = typeof TotAskToTalkInput.Type;
+export type TotAskUserInput = typeof TotAskUserInput.Type;
+
+export const TotCloseRequestInput = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+});
+export type TotCloseRequestInput = typeof TotCloseRequestInput.Type;
+
+export const TotAnswerRequestInput = Schema.Struct({
+  id: TotId,
+  requestId: TrimmedNonEmptyString,
+  /** Null when the user dismisses the request without answering it. */
+  answer: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(TOT_CHARTER_MAX_LENGTH))),
+});
+export type TotAnswerRequestInput = typeof TotAnswerRequestInput.Type;
 
 export const TotWatchInput = Schema.Struct({
   action: Schema.Literals(["watch", "unwatch"]),
