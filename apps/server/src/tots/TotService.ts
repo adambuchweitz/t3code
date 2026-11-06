@@ -263,7 +263,7 @@ const make = Effect.gen(function* () {
   const openRequests = (threadId: string) =>
     sql<TotRequestRow>`
       SELECT * FROM tot_requests WHERE tot_thread_id = ${threadId}
-      ORDER BY asked_at, request_id
+      ORDER BY asked_at, rowid
     `.pipe(
       Effect.flatMap((rows) => Effect.forEach(rows, requestFromRow)),
       Effect.mapError(storageError("Could not read a Tot's requests.")),
