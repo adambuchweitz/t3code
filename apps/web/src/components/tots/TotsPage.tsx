@@ -12,8 +12,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { TOT_CHARACTERS, TotCharacter } from "./TotCharacter";
-import { TotCharterProposalCard } from "./TotCharterProposalCard";
-import { TotTalkRequestCard } from "./TotTalkRequestCard";
+import { TotNeedsYouQueue } from "./TotNeedsYouQueue";
 import { openTotDialog } from "./totDialogState";
 import {
   TOT_STATE_LABEL,
@@ -144,24 +143,7 @@ export function TotsPage() {
           </Empty>
         ) : (
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4 sm:p-6">
-            {entries.map((entry) =>
-              entry.tot.charterProposal ? (
-                <TotCharterProposalCard
-                  key={entry.tot.charterProposal.id}
-                  entry={entry}
-                  proposal={entry.tot.charterProposal}
-                />
-              ) : null,
-            )}
-            {entries.map((entry) =>
-              entry.talkRequest ? (
-                <TotTalkRequestCard
-                  key={`${entry.tot.id}:${entry.talkRequest.askedAt}`}
-                  entry={entry}
-                  request={entry.talkRequest}
-                />
-              ) : null,
-            )}
+            <TotNeedsYouQueue entries={entries} />
             {TOT_STATE_ORDER.map((state) => {
               const group = entries.filter((entry) => entry.state === state);
               if (group.length === 0) return null;

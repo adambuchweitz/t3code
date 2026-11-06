@@ -95,6 +95,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.totsUpdate]: "tots",
   [WS_METHODS.totsRelease]: "tots",
   [WS_METHODS.totsAnswerCharterProposal]: "tots",
+  [WS_METHODS.totsAnswerRequest]: "tots",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",
   [WS_METHODS.scheduledTasksUpsert]: "scheduledTasks",
   [WS_METHODS.scheduledTasksSetEnabled]: "scheduledTasks",

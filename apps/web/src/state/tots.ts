@@ -10,13 +10,14 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type Tot,
-  type TotTalkRequest,
+  type TotJob,
+  type TotVoice,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { resolveSidebarThreadStatus } from "../components/Sidebar.logic";
-import { openTalkRequest, resolveTotState, type TotState } from "../components/tots/tots.logic";
+import { resolveTotState, type TotState } from "../components/tots/tots.logic";
 import { environmentCatalog } from "../connection/catalog";
 import { getLocalStorageItem, setLocalStorageItem } from "../hooks/useLocalStorage";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -36,7 +37,6 @@ export interface TotEntry {
   readonly projectName: string | null;
   readonly machineLabel: string | null;
   readonly state: TotState;
-  readonly talkRequest: TotTalkRequest | null;
 }
 
 const EMPTY_TOTS: ReadonlyArray<Tot> = Object.freeze([]);
@@ -70,7 +70,7 @@ const environmentTotsAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 /** Only depends on the Tots' own threads, so busy threads elsewhere don't recompute it. */
-const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
+export const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
   const catalog = get(environmentCatalog.catalogValueAtom);
   const presentations = get(environmentPresentations.presentationsAtom);
   const entries: Array<TotEntry> = [];
@@ -83,7 +83,6 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
         environmentProjects.projectAtom(scopeProjectRef(environmentId, tot.projectId)),
       );
       const projectName = project?.title ?? null;
-      const talkRequest = openTalkRequest(tot.talkRequest, thread?.latestUserAuthoredMessageAt);
       entries.push({
         environmentId,
         threadId: tot.threadId,
@@ -94,12 +93,11 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
         displayName: tot.nameEnabled ? tot.name : (projectName ?? tot.name),
         projectName,
         machineLabel: presentation?.entry.target.label ?? null,
-        talkRequest,
         state: resolveTotState({
           connected: presentation?.connection.phase === "connected",
           threadStatus: thread === null ? null : resolveSidebarThreadStatus(thread),
           hasCharterProposal: tot.charterProposal !== null,
-          wantsToTalk: talkRequest !== null,
+          hasOpenRequests: tot.requests.length > 0,
         }),
       });
     }
@@ -109,6 +107,62 @@ const totEntriesAtom = Atom.make((get): ReadonlyArray<TotEntry> => {
 
 export function useTotEntries(): ReadonlyArray<TotEntry> {
   return useAtomValue(totEntriesAtom);
+}
+
+const EMPTY_TOT_ATOM = Atom.make<TotEntry | null>(null);
+
+const totForThreadAtom = Atom.family((key: string) =>
+  Atom.make(
+    (get) =>
+      get(totEntriesAtom).find((entry) => `${entry.environmentId}:${entry.threadId}` === key) ??
+      null,
+  ).pipe(Atom.withLabel(`web-tot-for-thread:${key}`)),
+);
+
+export function useTotForThread(threadRef: ScopedThreadRef | null): TotEntry | null {
+  return useAtomValue(
+    threadRef === null
+      ? EMPTY_TOT_ATOM
+      : totForThreadAtom(`${threadRef.environmentId}:${threadRef.threadId}`),
+  );
+}
+
+/** What a thread needs to look like its Tot, without changing every time the Tot's thread does. */
+export interface TotIdentity {
+  readonly character: string;
+  readonly displayName: string;
+  readonly job: TotJob;
+  readonly voice: TotVoice;
+  readonly state: TotState;
+  readonly createdAt: string;
+}
+
+// A string, because atoms compare by value and a rebuilt object would re-render every sidebar row.
+const totIdentityJsonAtom = Atom.family((key: string) =>
+  Atom.make((get) => {
+    const entry = get(totForThreadAtom(key));
+    return entry === null
+      ? null
+      : JSON.stringify({
+          character: entry.tot.character,
+          displayName: entry.displayName,
+          job: entry.tot.job,
+          voice: entry.tot.voice,
+          state: entry.state,
+          createdAt: entry.tot.createdAt,
+        } satisfies TotIdentity);
+  }).pipe(Atom.withLabel(`web-tot-identity:${key}`)),
+);
+
+const EMPTY_IDENTITY_ATOM = Atom.make<string | null>(null);
+
+export function useTotIdentity(threadRef: ScopedThreadRef | null): TotIdentity | null {
+  const json = useAtomValue(
+    threadRef === null
+      ? EMPTY_IDENTITY_ATOM
+      : totIdentityJsonAtom(`${threadRef.environmentId}:${threadRef.threadId}`),
+  );
+  return json === null ? null : (JSON.parse(json) as TotIdentity);
 }
 
 /** Spread into a thread menu's state: a Tot edits, a listed thread can adopt, others show nothing. */

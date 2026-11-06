@@ -12,12 +12,14 @@ Subagents, side chats and archived threads can't become Tots.
 
 Open **Tots** from the bottom of the sidebar. Each Tot shows one of four states:
 
-- **Needs you:** its thread is waiting on an approval, an answer or a guest message, it stopped with an error, or it proposed a charter change.
+- **Needs you:** it has an open request, its thread is waiting on an approval, an answer or a guest message, it stopped with an error, or it proposed a charter change.
 - **Busy:** its thread is running.
 - **Idle:** its thread has nothing running.
 - **Offline:** T3 Code can't reach the machine it lives on.
 
 A thread's header also shows the Tot connected to it: the thread's own Tot, the Tot that started the work, or the Tot for its project. A Tot and its project have to be on the same machine for the project link to appear.
+
+A Tot's own thread opens as its desk: the details card shows what it's waiting on, its crew, its charter and its wakes, with the usual thread details folded underneath. Wakes where it had nothing to show you fold into one line in the conversation. Open that line to read them.
 
 ## How a Tot acts on its own
 
@@ -27,7 +29,7 @@ When a Tot has nothing specific to do, it takes the first step that applies:
 
 1. Do what you've approved or its charter allows.
 2. Explore the project to find out what's next.
-3. Ask you. It explains what it needs in its thread and asks to talk. The request shows at the top of the Tots page until you write in the thread or dismiss it.
+3. Ask you. A Tot's request carries its question, what it found, your options and what's blocked. It stays pinned above the composer in the Tot's thread and under **Needs you** on the Tots page until you answer it or the Tot closes it, however many times the Tot wakes in between. A Tot can have several open, and it carries on with whatever they don't block.
 
 It still asks before anything destructive, public or hard to undo, unless its charter already allows it. To give a Tot more freedom, say so in its charter.
 
@@ -37,7 +39,7 @@ A Tot can also answer approval requests in threads it started, when you or its c
 
 The charter is what the Tot looks after, the rules it must follow and what matters right now. It's sent on every turn, so it survives compaction, and a long charter uses up the Tot's context faster.
 
-A Tot can't change its own charter. It can propose a new one, and the change appears at the top of the Tots page, where you can edit it, compare it with the current charter, approve it or dismiss it. Saving your own edit dismisses anything it proposed. Crew threads don't receive the charter.
+A Tot can't change its own charter. It can propose a new one, and the change appears above the composer in its thread and under **Needs you** on the Tots page, where you can edit it, compare it with the current charter, approve it or dismiss it. Saving your own edit dismisses anything it proposed. Crew threads don't receive the charter.
 
 ## Pick a voice
 

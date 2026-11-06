@@ -104,6 +104,9 @@ import {
 } from "../ThreadStatusIndicators";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { useThreadShell } from "../../state/entities";
+import { useTotIdentity } from "../../state/tots";
+import { TotCharacter } from "../tots/TotCharacter";
+import { TOT_STATE_POSE } from "../tots/tots.logic";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "../chat/workspaceFileDrop";
@@ -707,6 +710,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
+  const tot = useTotIdentity({ environmentId: thread.environmentId, threadId: thread.id });
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -1008,6 +1012,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
   });
 
+  const totFace = tot ? (
+    <TotCharacter character={tot.character} pose={TOT_STATE_POSE[tot.state]} size={18} />
+  ) : null;
   const title = isRenaming ? (
     <ThreadRenameInput
       title={renamingTitle}
@@ -1044,10 +1051,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       )}
       dir={textDirection(thread.title)}
     >
-      {thread.title}
+      {tot?.displayName ?? thread.title}
     </span>
   );
-  const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  const accessibleTitle = isRenaming ? null : (
+    <span className="sr-only">{tot?.displayName ?? thread.title}</span>
+  );
 
   const prBadgeShape = supportsMultiplePullRequests
     ? resolveThreadPullRequestBadge(thread.pullRequests)
@@ -1252,6 +1261,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </span>
               )}
               {draftIndicator}
+              {tot ? (
+                <TotCharacter
+                  character={tot.character}
+                  pose={TOT_STATE_POSE[tot.state]}
+                  size={18}
+                />
+              ) : null}
               {title}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
@@ -1577,6 +1593,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.sweepAction !== null ? dragDestination : null}
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
+              {totFace}
               {title}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">

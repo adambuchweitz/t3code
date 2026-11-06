@@ -1,7 +1,8 @@
 import {
   OrchestratorMcpFailure,
   ThreadId,
-  TotAskToTalkInput,
+  TotAskUserInput,
+  TotCloseRequestInput,
   TotCrewApprovalInput,
   TotProposeCharterInput,
   TotWatchInput,
@@ -36,11 +37,11 @@ const ProposeCharterTool = Tool.make("t3_tot_propose_charter", {
   .annotate(Tool.Strict, true)
   .annotate(Tool.Destructive, false);
 
-const AskToTalkTool = Tool.make("t3_tot_ask_to_talk", {
+const AskUserTool = Tool.make("t3_tot_ask_user", {
   description:
-    "Tots only. Tell the user you need a discussion to decide what's next. They see the topic on the Tots page until they next write in this thread. Put the details and your recommendation in your message. This doesn't pause you.",
-  parameters: TotAskToTalkInput,
-  success: Schema.Struct({ status: Schema.Literal("user_notified") }),
+    "Tots only. Put something in front of the user: a decision, research they need to weigh in on, or a discussion you need. It stays pinned in this thread and on the Tots page until they answer it or you close it, and their answer wakes you. Several can be open at once. This doesn't pause you.",
+  parameters: TotAskUserInput,
+  success: Schema.Struct({ requestId: Schema.String }),
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [
@@ -49,7 +50,20 @@ const AskToTalkTool = Tool.make("t3_tot_ask_to_talk", {
     TotService.TotService,
   ],
 })
-  .annotate(Tool.Title, "Ask the user to talk")
+  .annotate(Tool.Title, "Ask the user")
+  .annotate(Tool.Strict, true)
+  .annotate(Tool.Destructive, false);
+
+const CloseRequestTool = Tool.make("t3_tot_close_request", {
+  description:
+    "Tots only. Close one of your open requests because it was settled in conversation or no longer matters.",
+  parameters: TotCloseRequestInput,
+  success: Schema.Struct({ status: Schema.Literals(["closed", "already_closed"]) }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies,
+})
+  .annotate(Tool.Title, "Close a request to the user")
   .annotate(Tool.Strict, true)
   .annotate(Tool.Destructive, false);
 
@@ -98,7 +112,8 @@ const CrewApprovalTool = Tool.make("t3_tot_crew_approval", {
 
 export const TotToolkit = Toolkit.make(
   ProposeCharterTool,
-  AskToTalkTool,
+  AskUserTool,
+  CloseRequestTool,
   WatchTool,
   CrewApprovalTool,
 );

@@ -39,6 +39,8 @@ import {
   THREAD_DETAILS_PANEL_LABEL_CLASS,
 } from "./threadDetailsPanelStyles";
 import { Menu, MenuPopup } from "../ui/menu";
+import { TotDesk } from "../tots/TotDesk";
+import { useTotForThread } from "../../state/tots";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -94,6 +96,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
   );
   const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
+  const tot = useTotForThread(props.isServerThread ? activeThreadRef : null);
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
     environmentId: props.environmentId,
@@ -147,7 +150,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         setMenuPosition({ x: event.clientX, y: event.clientY });
       }}
     >
-      {(density) => {
+      {(cardDensity) => {
+        // The Desk fills the card, so its folded thread details always get the whole list.
+        const density = tot ? "full" : cardDensity;
         // Section flags follow the rows that will render, so no empty section steals the divider rule.
         const show = {
           environment: density === "full" && visible.environment,
@@ -159,7 +164,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             props.activeProjectName !== undefined &&
             (visible.gitActions || (visible.changes && props.isGitRepo)),
         };
-        return (
+        const details = (
           <>
             <div className="group/details-items">
               {show.environment || show.openIn || show.scripts ? (
@@ -305,6 +310,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </Menu>
           </>
         );
+        return tot ? <TotDesk entry={tot} workspace={details} /> : details;
       }}
     </ThreadDetailsCard>
   );

@@ -11,6 +11,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { TotCharacter } from "./TotCharacter";
 import {
   resolveConnectedTot,
+  TOT_JOB_LABEL,
   TOT_STATE_POSE,
   totStateLabel,
   type TotConnection,
@@ -46,6 +47,8 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
   const { tot: entry, connection } = connected;
   const text = CONNECTION_TEXT[connection](entry.displayName);
   const stateLabel = totStateLabel(entry.state, entry.tot.voice);
+  // In its own thread, the header already shows the Tot's face and name.
+  const isSelf = connection === "self";
   return (
     <Tooltip>
       <TooltipTrigger
@@ -69,12 +72,16 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
           />
         }
       >
-        <TotCharacter
-          character={entry.tot.character}
-          pose={TOT_STATE_POSE[entry.state]}
-          size={20}
-        />
-        <span className="hidden max-w-28 truncate sm:inline">{entry.displayName}</span>
+        {isSelf ? null : (
+          <TotCharacter
+            character={entry.tot.character}
+            pose={TOT_STATE_POSE[entry.state]}
+            size={20}
+          />
+        )}
+        <span className="hidden max-w-64 truncate sm:inline">
+          {isSelf ? `${TOT_JOB_LABEL[entry.tot.job]} · ${stateLabel}` : entry.displayName}
+        </span>
       </TooltipTrigger>
       <TooltipPopup side="bottom">
         {text} · {stateLabel}

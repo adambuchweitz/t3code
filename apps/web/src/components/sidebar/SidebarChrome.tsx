@@ -221,11 +221,32 @@ function SidebarUtilityItem({
 }
 
 const SidebarTotsItem = memo(function SidebarTotsItem(props: { onClick: () => void }) {
-  const needsYou = useTotEntries().some((entry) => entry.state === "needs");
+  const entries = useTotEntries();
+  const needsYou = entries.some((entry) => entry.state === "needs");
+  const waiting = entries.reduce(
+    (total, entry) =>
+      total + entry.tot.requests.length + (entry.tot.charterProposal === null ? 0 : 1),
+    0,
+  );
   return (
     <SidebarUtilityItem
-      icon={<TotCharacter character="brace" pose={needsYou ? "needs" : "awake"} size={20} />}
-      label={needsYou ? "Tots: one needs you" : "Tots"}
+      icon={
+        // Not a span: the menu button truncates its last span, which would clip the badge.
+        <div className="relative inline-flex">
+          <TotCharacter character="brace" pose={needsYou ? "needs" : "awake"} size={20} />
+          {waiting === 0 ? null : (
+            <span
+              aria-hidden
+              className="absolute -top-1 -right-1.5 min-w-3.5 rounded-full bg-warning px-0.5 text-center text-3xs leading-3.5 font-semibold text-background tabular-nums"
+            >
+              {waiting}
+            </span>
+          )}
+        </div>
+      }
+      label={
+        waiting > 0 ? `Tots: ${waiting} waiting on you` : needsYou ? "Tots: one needs you" : "Tots"
+      }
       onClick={props.onClick}
     />
   );

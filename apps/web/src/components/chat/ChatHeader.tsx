@@ -42,7 +42,10 @@ import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
+import { TotCharacter } from "../tots/TotCharacter";
 import { TotThreadChip } from "../tots/TotThreadChip";
+import { TOT_STATE_POSE } from "../tots/tots.logic";
+import { useTotIdentity } from "../../state/tots";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -86,6 +89,9 @@ export const ChatHeader = memo(function ChatHeader({
   onFindInThread,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
+  const tot = useTotIdentity(
+    isServerThread ? scopeThreadRef(activeThreadEnvironmentId, activeThreadId) : null,
+  );
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
@@ -392,8 +398,20 @@ export const ChatHeader = memo(function ChatHeader({
                   />
                 }
               >
-                <h2 className="min-w-0" dir={textDirection(activeThreadTitle)}>
-                  <WorkspaceBreadcrumbText>{activeThreadTitle}</WorkspaceBreadcrumbText>
+                <h2
+                  className={cn("min-w-0", tot && "flex items-center gap-1.5")}
+                  dir={textDirection(activeThreadTitle)}
+                >
+                  {tot ? (
+                    <TotCharacter
+                      character={tot.character}
+                      pose={TOT_STATE_POSE[tot.state]}
+                      size={22}
+                    />
+                  ) : null}
+                  <WorkspaceBreadcrumbText>
+                    {tot ? tot.displayName : activeThreadTitle}
+                  </WorkspaceBreadcrumbText>
                 </h2>
                 <ChevronDownIcon
                   aria-hidden

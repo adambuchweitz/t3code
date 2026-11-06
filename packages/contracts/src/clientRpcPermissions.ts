@@ -62,6 +62,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.totsUpdate]: AuthOrchestrationOperateScope,
   [WS_METHODS.totsRelease]: AuthOrchestrationOperateScope,
   [WS_METHODS.totsAnswerCharterProposal]: AuthOrchestrationOperateScope,
+  [WS_METHODS.totsAnswerRequest]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
