@@ -68,7 +68,7 @@ const make = Effect.gen(function* () {
         }>`
           SELECT request_id, question, blocks, asked_at FROM tot_requests
           WHERE tot_thread_id = ${threadId}
-          ORDER BY asked_at, request_id
+          ORDER BY asked_at, rowid
           LIMIT ${TOT_MAX_OPEN_REQUESTS}
         `;
         return {
