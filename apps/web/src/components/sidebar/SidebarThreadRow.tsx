@@ -117,7 +117,7 @@ import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Si
 import { useThreadShell } from "../../state/entities";
 import { useTotIdentity } from "../../state/tots";
 import { TotCharacter } from "../tots/TotCharacter";
-import { TOT_STATE_POSE } from "../tots/tots.logic";
+import { TOT_STATE_POSE } from "@t3tools/client-runtime/tots/logic";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "../chat/workspaceFileDrop";

@@ -11,7 +11,7 @@ import {
   playNotificationSound,
 } from "../../threadNotifications";
 import { toastManager } from "../ui/toast";
-import { totRequestsHeading } from "./tots.logic";
+import { totRequestsHeading } from "@t3tools/client-runtime/tots/logic";
 
 /**
  * Says so when a Tot asks for something new, wherever the user is in the app. An open request
