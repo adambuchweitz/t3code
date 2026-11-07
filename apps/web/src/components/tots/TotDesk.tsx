@@ -10,28 +10,28 @@ import type { TotEntry } from "~/state/tots";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 
-import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "../Sidebar.logic";
+import { resolveSidebarThreadStatus } from "../Sidebar.logic";
 import { ScheduledRelativeLabel } from "../settings/ScheduledTasksSettings";
 import { Button } from "../ui/button";
 import { TotCharacter } from "./TotCharacter";
-import { totDockItems, totDockItemTitle } from "./TotDock";
 import { openTotDialog } from "./totDialogState";
 import { openTotDockItem } from "./totDockState";
-import { TOT_JOB_LABEL, TOT_STATE_POSE, totStateLabel } from "./tots.logic";
+import {
+  isTotCrewThread,
+  TOT_CREW_STATUS,
+  TOT_JOB_LABEL,
+  type TotCrewTone,
+  TOT_STATE_POSE,
+  totStateLabel,
+  totWaitingItems,
+  totWaitingItemTitle,
+} from "@t3tools/client-runtime/tots/logic";
 
-const CREW_STATUS: Record<
-  SidebarThreadStatus,
-  { readonly label: string; readonly rank: number; readonly className: string }
-> = {
-  approval: { label: "Approval", rank: 0, className: "text-warning-foreground" },
-  input: { label: "Question", rank: 0, className: "text-warning-foreground" },
-  request: { label: "Request", rank: 0, className: "text-warning-foreground" },
-  failed: { label: "Failed", rank: 0, className: "text-destructive-foreground" },
-  limited: { label: "Limited", rank: 0, className: "text-warning-foreground" },
-  preparing: { label: "Preparing", rank: 1, className: "text-info" },
-  working: { label: "Working", rank: 1, className: "text-info" },
-  waiting: { label: "Waiting", rank: 1, className: "text-info" },
-  ready: { label: "Ready", rank: 2, className: "text-muted-foreground" },
+const CREW_TONE_CLASS: Record<TotCrewTone, string> = {
+  attention: "text-warning-foreground",
+  failed: "text-destructive-foreground",
+  active: "text-info",
+  quiet: "text-muted-foreground",
 };
 
 function DeskSection(props: {
@@ -53,15 +53,8 @@ function DeskSection(props: {
 function useTotCrew(entry: TotEntry) {
   const shells = useQuietThreadShells();
   return shells
-    .filter(
-      (thread) =>
-        thread.environmentId === entry.environmentId &&
-        (thread.lineage.parentThreadId === entry.threadId ||
-          entry.tot.watchedThreadIds.includes(thread.id)) &&
-        thread.archivedAt === null &&
-        thread.settledAt === null,
-    )
-    .map((thread) => ({ thread, status: CREW_STATUS[resolveSidebarThreadStatus(thread)] }))
+    .filter((thread) => isTotCrewThread(entry.tot, entry.environmentId, thread))
+    .map((thread) => ({ thread, status: TOT_CREW_STATUS[resolveSidebarThreadStatus(thread)] }))
     .toSorted(
       (left, right) =>
         left.status.rank - right.status.rank || left.thread.title.localeCompare(right.thread.title),
@@ -78,7 +71,7 @@ export function TotDesk(props: { readonly entry: TotEntry; readonly workspace: R
   const navigate = useNavigate();
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const crew = useTotCrew(entry);
-  const items = totDockItems(entry);
+  const items = totWaitingItems(entry.tot);
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId: entry.environmentId, input: {} }),
   );
@@ -126,7 +119,7 @@ export function TotDesk(props: { readonly entry: TotEntry; readonly workspace: R
                   className="w-full rounded-sm text-left text-sm text-warning-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
                   onClick={() => openTotDockItem(entry.threadRef, item.id)}
                 >
-                  {totDockItemTitle(item, entry)}
+                  {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
                 </button>
               </li>
             ))}
@@ -154,7 +147,9 @@ export function TotDesk(props: { readonly entry: TotEntry; readonly workspace: R
                   }
                 >
                   <span className="min-w-0 truncate text-foreground">{thread.title}</span>
-                  <span className={cn("shrink-0 text-xs", status.className)}>{status.label}</span>
+                  <span className={cn("shrink-0 text-xs", CREW_TONE_CLASS[status.tone])}>
+                    {status.label}
+                  </span>
                 </button>
               </li>
             ))}

@@ -1,3 +1,5 @@
+import { totPlaceLabel, totWaitingQueue } from "@t3tools/client-runtime/tots/entries";
+import { totWaitingItemTitle } from "@t3tools/client-runtime/tots/logic";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
@@ -13,51 +15,17 @@ import { resolveSidebarThreadStatus } from "../Sidebar.logic";
 import { Button } from "../ui/button";
 import { TotCharacter } from "./TotCharacter";
 import { TotCharterProposalBody } from "./TotCharterProposalCard";
-import { totDockItems, totDockItemTitle } from "./TotDock";
 import { TotRequestCard } from "./TotRequestCard";
 
-const CREW_NEEDS_LABEL = {
-  approval: "needs approval",
-  input: "has a question",
-  request: "needs an answer",
-} as const;
-
-const isCrewNeed = (status: string): status is keyof typeof CREW_NEEDS_LABEL =>
-  status in CREW_NEEDS_LABEL;
-
-function placeLabel(entry: TotEntry) {
-  return [entry.displayName, entry.tot.nameEnabled ? entry.projectName : null, entry.machineLabel]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-/** Everything every connected machine's Tots are waiting on, oldest first. */
 export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEntry> }) {
   const navigate = useNavigate();
   const shells = useQuietThreadShells();
   const [openId, setOpenId] = useState<string | null>(null);
-  const items = props.entries
-    .flatMap((entry) =>
-      totDockItems(entry).map((item) => ({
-        entry,
-        item,
-        at: item.kind === "request" ? item.request.askedAt : item.proposal.proposedAt,
-      })),
-    )
-    .toSorted((left, right) => left.at.localeCompare(right.at));
-  const crewNeeds = shells.flatMap((thread) => {
-    const status = resolveSidebarThreadStatus(thread);
-    if (!isCrewNeed(status) || thread.archivedAt !== null) return [];
-    const entry = props.entries.find(
-      (candidate) =>
-        candidate.environmentId === thread.environmentId &&
-        candidate.threadId !== thread.id &&
-        (thread.lineage.parentThreadId === candidate.threadId ||
-          candidate.tot.watchedThreadIds.includes(thread.id)),
-    );
-    return entry === undefined ? [] : [{ entry, thread, status }];
+  const { items, crewNeeds, total } = totWaitingQueue({
+    entries: props.entries,
+    threads: shells,
+    threadStatus: resolveSidebarThreadStatus,
   });
-  const total = items.length + crewNeeds.length;
   if (total === 0) return null;
   return (
     <section aria-label="Waiting on you" data-testid="tot-needs-you">
@@ -79,10 +47,10 @@ export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEnt
                 <TotCharacter character={entry.tot.character} pose="needs" size={36} />
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium text-balance text-foreground">
-                    {totDockItemTitle(item, entry)}
+                    {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
                   </span>
                   <span className="block text-xs text-muted-foreground">
-                    {placeLabel(entry)} · {formatRelativeTimeLabel(at)}
+                    {totPlaceLabel(entry)} · {formatRelativeTimeLabel(at)}
                     {item.kind === "request" && item.request.blocks !== null
                       ? ` · blocks ${item.request.blocks}`
                       : ""}
@@ -108,15 +76,13 @@ export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEnt
             </li>
           );
         })}
-        {crewNeeds.map(({ entry, thread, status }) => (
+        {crewNeeds.map(({ entry, thread, label }) => (
           <li key={thread.id} className="flex min-w-0 items-center gap-3 p-3">
             <TotCharacter character={entry.tot.character} pose="working" size={36} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-foreground">
-                {thread.title} {CREW_NEEDS_LABEL[status]}
-              </span>
+              <span className="block truncate text-sm font-medium text-foreground">{label}</span>
               <span className="block truncate text-xs text-muted-foreground">
-                {placeLabel(entry)}
+                {totPlaceLabel(entry)}
               </span>
             </span>
             <Button

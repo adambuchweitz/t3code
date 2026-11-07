@@ -1,7 +1,7 @@
 import type { TotVoice } from "@t3tools/contracts";
 
 import type { MessagesTimelineRow } from "../chat/MessagesTimeline.logic";
-import { totWakeFoldLabel } from "./tots.logic";
+import { totWakeFoldLabel } from "@t3tools/client-runtime/tots/logic";
 
 type MessageRow = Extract<MessagesTimelineRow, { kind: "message" }>;
 

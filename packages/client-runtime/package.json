@@ -143,6 +143,18 @@
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
     },
+    "./tots/logic": {
+      "types": "./src/tots/totLogic.ts",
+      "default": "./src/tots/totLogic.ts"
+    },
+    "./tots/entries": {
+      "types": "./src/tots/totEntries.ts",
+      "default": "./src/tots/totEntries.ts"
+    },
+    "./tots/character": {
+      "types": "./src/tots/totCharacter.ts",
+      "default": "./src/tots/totCharacter.ts"
+    },
     "./state/auth": {
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"

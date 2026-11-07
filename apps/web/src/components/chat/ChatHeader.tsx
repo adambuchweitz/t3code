@@ -44,7 +44,7 @@ import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
 import { TotCharacter } from "../tots/TotCharacter";
 import { TotThreadChip } from "../tots/TotThreadChip";
-import { TOT_STATE_POSE } from "../tots/tots.logic";
+import { TOT_STATE_POSE } from "@t3tools/client-runtime/tots/logic";
 import { useTotIdentity } from "../../state/tots";
 
 interface ChatHeaderProps {

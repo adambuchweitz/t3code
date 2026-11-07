@@ -3,7 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal, type TotVoice } from "@t3tools/contracts";
+import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal } from "@t3tools/contracts";
 import { useState } from "react";
 
 import { serverEnvironment } from "~/state/server";
@@ -14,7 +14,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { TotCharterEditor } from "./TotCharterEditor";
-import { diffCharterLines } from "./tots.logic";
+import { diffCharterLines } from "@t3tools/client-runtime/tots/logic";
 
 const LINE_CLASS = {
   same: "text-muted-foreground",
@@ -22,12 +22,6 @@ const LINE_CLASS = {
   removed: "bg-destructive/10 text-muted-foreground line-through",
 };
 const LINE_PREFIX = { same: "  ", added: "+ ", removed: "- " };
-
-export function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
-  return voice === "toddler"
-    ? `${displayName} wants new house rules!`
-    : `${displayName} proposes a charter change`;
-}
 
 /** The editor and answers, without a heading: the dock and the queue each title it themselves. */
 export function TotCharterProposalBody(props: {

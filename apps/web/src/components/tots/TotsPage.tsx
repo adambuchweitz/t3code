@@ -11,7 +11,8 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { TOT_CHARACTERS, TotCharacter } from "./TotCharacter";
+import { TOT_CHARACTERS } from "@t3tools/client-runtime/tots/character";
+import { TotCharacter } from "./TotCharacter";
 import { TotNeedsYouQueue } from "./TotNeedsYouQueue";
 import { openTotDialog } from "./totDialogState";
 import {
@@ -20,7 +21,7 @@ import {
   TOT_STATE_POSE,
   totStateLabel,
   type TotState,
-} from "./tots.logic";
+} from "@t3tools/client-runtime/tots/logic";
 
 const STATE_TEXT_CLASS: Record<TotState, string> = {
   needs: "text-warning-foreground",

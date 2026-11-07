@@ -39,12 +39,13 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
-import { TOT_CHARACTERS, TotCharacter, totCharacter } from "./TotCharacter";
+import { TOT_CHARACTERS, totCharacter } from "@t3tools/client-runtime/tots/character";
+import { TotCharacter } from "./TotCharacter";
 import { TotCharterEditor } from "./TotCharterEditor";
 import { TotCrewPanel } from "./TotCrewPanel";
 import { TotWakesPanel } from "./TotWakesPanel";
 import { closeTotDialog, totDialogTargetAtom } from "./totDialogState";
-import { suggestTotCharacterIndex, TOT_VOICE_OPTIONS } from "./tots.logic";
+import { suggestTotCharacterIndex, TOT_VOICE_OPTIONS } from "@t3tools/client-runtime/tots/logic";
 
 const MAX_PICKABLE_THREADS = 40;
 

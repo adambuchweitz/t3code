@@ -15,7 +15,7 @@ import {
   TOT_STATE_POSE,
   totStateLabel,
   type TotConnection,
-} from "./tots.logic";
+} from "@t3tools/client-runtime/tots/logic";
 
 const CONNECTION_TEXT: Record<TotConnection, (name: string) => string> = {
   self: (name) => `This thread is ${name}. Open Tots`,
