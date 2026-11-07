@@ -23,6 +23,7 @@ export function ThreadHeader(props: {
   readonly hasThreadCwd: boolean;
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onOpenFilesInspector: () => void;
+  readonly onOpenTotDesk?: (() => void) | undefined;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -32,7 +33,10 @@ export function ThreadHeader(props: {
   const gitMenu = useThreadGitMenuDefinition(props.gitControls);
   const terminalMenu = threadTerminalMenu(props.gitControls, m);
   const filesVisible = props.inspectorMode === "files" && panes.auxiliaryPaneVisible;
-  const actions: AppBarAction[] = props.hasThreadCwd
+  const deskActions: AppBarAction[] = props.onOpenTotDesk
+    ? [{ accessibilityLabel: "Open desk", icon: "face.smiling", onPress: props.onOpenTotDesk }]
+    : [];
+  const fileActions: AppBarAction[] = props.hasThreadCwd
     ? [
         {
           accessibilityLabel: filesVisible ? gt("Close files") : gt("Open files"),
@@ -44,6 +48,7 @@ export function ThreadHeader(props: {
         },
       ]
     : [];
+  const actions = [...deskActions, ...fileActions];
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
 
   return (

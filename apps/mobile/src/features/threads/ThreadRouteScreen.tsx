@@ -121,6 +121,9 @@ import {
   threadRouteOpensDraft,
 } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
+import { TOT_JOB_LABEL, totStateLabel } from "@t3tools/client-runtime/tots/logic";
+import { updateTotDock } from "../tots/totDockState";
+import { useTotIdentity } from "../../state/tots";
 import { resumeThread } from "./resume-thread";
 import {
   useAndroidWorkspaceBack,
@@ -377,6 +380,7 @@ function ThreadRouteContent(
     selectedEnvironmentConnection,
   } = useThreadSelection();
   useRememberThreadProject(selectedThreadProject);
+  const totIdentity = useTotIdentity(selectedThreadDetailRef);
   const canOperateThread = useEnvironmentScope(
     selectedThread?.environmentId ?? null,
     AuthOrchestrationOperateScope,
@@ -558,6 +562,10 @@ function ThreadRouteContent(
   ]
     .filter(Boolean)
     .join(" · ");
+  const totSubtitle =
+    totIdentity === null
+      ? null
+      : `${TOT_JOB_LABEL[totIdentity.job]} · ${totStateLabel(totIdentity.state, totIdentity.voice)}`;
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null
       ? vcsEnvironment.status({
@@ -1042,8 +1050,13 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
-                title={selectedThread.title}
-                subtitle={threadStatusLabel ?? headerSubtitle}
+                title={totIdentity?.displayName ?? selectedThread.title}
+                subtitle={totSubtitle ?? threadStatusLabel ?? headerSubtitle}
+                onOpenTotDesk={
+                  totIdentity === null || selectedThreadDetailRef === null
+                    ? undefined
+                    : () => updateTotDock(selectedThreadDetailRef, { deskOpen: true })
+                }
                 gitControls={threadGitControlProps}
                 hasThreadCwd={selectedThreadCwd !== null}
                 inspectorMode={inspectorMode}

@@ -21,6 +21,8 @@ A thread's header also shows the Tot connected to it: the thread's own Tot, the 
 
 A Tot's own thread opens as its desk: the details card shows what it's waiting on, its crew, its charter and its wakes, with the usual thread details folded underneath. Wakes where it had nothing to show you fold into one line in the conversation. Open that line to read them.
 
+On your phone, the Threads screen lists everything your Tots are waiting on at the top. Tap one to open the Tot's thread with that request ready to answer. Tap the face button in a Tot's header, or the face above its requests, to see its desk.
+
 ## How a Tot acts on its own
 
 Each Tot gets a **Heartbeat**, a schedule that wakes it every hour with a summary of what changed in its project's threads: anything waiting on a request, anything working, and anything new since its last heartbeat. Change or pause it in **Settings → Scheduled tasks**. If you delete it, it comes back paused. A heartbeat is skipped while the Tot is busy, during quiet hours and over the daily limit.

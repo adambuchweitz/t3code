@@ -1,5 +1,6 @@
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
+import { TotDock } from "../tots/TotDock";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
@@ -1727,6 +1728,10 @@ function ThreadDetailBody(
                       key={props.selectedThread.latestRun?.runId}
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
+                    />
+                    <TotDock
+                      threadRef={props.selectedThreadDetailRef}
+                      maxHeight={pendingUserInputMaxHeight}
                     />
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
