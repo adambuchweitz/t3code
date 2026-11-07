@@ -1,52 +1,26 @@
-import type { ScopedThreadRef, TotCharterProposal, TotRequest } from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import {
+  totRequestsHeading,
+  totWaitingItems,
+  totWaitingItemTitle,
+} from "@t3tools/client-runtime/tots/logic";
 import { ChevronDownIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 
-import { useTotForThread, type TotEntry } from "~/state/tots";
+import { useTotForThread } from "~/state/tots";
 import { cn } from "~/lib/utils";
 
 import { Button } from "../ui/button";
 import { TotCharacter } from "./TotCharacter";
-import { TotCharterProposalBody, totCharterProposalTitle } from "./TotCharterProposalCard";
+import { TotCharterProposalBody } from "./TotCharterProposalCard";
 import { TotRequestCard, TotRequestMeta } from "./TotRequestCard";
 import { openTotDockItem, setTotDockMinimized, useTotDock } from "./totDockState";
-import { totRequestsHeading } from "./tots.logic";
-
-type DockItem =
-  | { readonly kind: "charter"; readonly id: string; readonly proposal: TotCharterProposal }
-  | { readonly kind: "request"; readonly id: string; readonly request: TotRequest };
-
-/** What's waiting on the user, oldest first. A charter change sorts by when it was proposed. */
-export function totDockItems(entry: TotEntry): ReadonlyArray<DockItem> {
-  const { charterProposal, requests } = entry.tot;
-  const items: Array<DockItem & { readonly at: string }> = requests.map((request) => ({
-    kind: "request",
-    id: request.id,
-    request,
-    at: request.askedAt,
-  }));
-  if (charterProposal !== null) {
-    items.push({
-      kind: "charter",
-      id: charterProposal.id,
-      proposal: charterProposal,
-      at: charterProposal.proposedAt,
-    });
-  }
-  return items.toSorted((left, right) => left.at.localeCompare(right.at));
-}
-
-export function totDockItemTitle(item: DockItem, entry: TotEntry): string {
-  return item.kind === "request"
-    ? item.request.question
-    : totCharterProposalTitle(entry.displayName, entry.tot.voice);
-}
 
 /** Pinned above the composer, so a dozen wakes can't scroll what the Tot needs out of sight. */
 export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
   const entry = useTotForThread(props.threadRef);
   const dock = useTotDock(props.threadRef);
   if (entry === null) return null;
-  const items = totDockItems(entry);
+  const items = totWaitingItems(entry.tot);
   const first = items[0];
   if (first === undefined) return null;
   const open = items.find((item) => item.id === dock.openItemId) ?? first;
@@ -60,7 +34,9 @@ export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
       <header className="flex shrink-0 items-center gap-2 px-3 py-2">
         <TotCharacter character={entry.tot.character} pose="needs" size={24} />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
-          {dock.minimized ? totDockItemTitle(first, entry) : heading}
+          {dock.minimized
+            ? totWaitingItemTitle(first, entry.displayName, entry.tot.voice)
+            : heading}
         </h2>
         {items.length > 1 ? (
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -101,7 +77,7 @@ export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-balance text-foreground">
-                      {totDockItemTitle(item, entry)}
+                      {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
                     </span>
                     <span className="block text-xs text-muted-foreground">
                       {item.kind === "request" ? (

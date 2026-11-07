@@ -47,7 +47,7 @@ import { GuestShareIndicator } from "./GuestShareControls";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { TotCharacter } from "../tots/TotCharacter";
 import { TotThreadChip } from "../tots/TotThreadChip";
-import { TOT_STATE_POSE } from "../tots/tots.logic";
+import { TOT_STATE_POSE } from "@t3tools/client-runtime/tots/logic";
 import { useTotIdentity } from "../../state/tots";
 
 interface ChatHeaderProps {

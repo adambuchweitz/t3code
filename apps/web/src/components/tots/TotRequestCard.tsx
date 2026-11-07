@@ -3,6 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { orderTotRequestOptions } from "@t3tools/client-runtime/tots/logic";
 import type { TotRequest } from "@t3tools/contracts";
 import { useState } from "react";
 
@@ -53,11 +54,7 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
     });
   };
   const disabled = sending || !canOperate;
-  // The recommendation leads, so the quickest answer is also the one the Tot thinks is right.
-  const options = request.options.toSorted(
-    (left, right) =>
-      Number(right === request.recommendedOption) - Number(left === request.recommendedOption),
-  );
+  const options = orderTotRequestOptions(request);
   return (
     <div className="grid gap-2" data-testid="tot-request">
       {request.summary === "" ? null : (

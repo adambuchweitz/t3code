@@ -6,7 +6,7 @@ import {
   resolveConnectedTot,
   resolveTotState,
   type ConnectedThreadInput,
-} from "./tots.logic";
+} from "./totLogic.ts";
 
 const envA = EnvironmentId.make("env-a");
 const envB = EnvironmentId.make("env-b");

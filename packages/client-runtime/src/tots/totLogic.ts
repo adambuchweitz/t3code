@@ -4,12 +4,26 @@ import type {
   OrchestrationV2AppThreadLineage,
   ProjectId,
   ThreadId,
+  Tot,
+  TotCharterProposal,
   TotJob,
+  TotRequest,
   TotVoice,
 } from "@t3tools/contracts";
 
-import type { SidebarThreadStatus } from "../Sidebar.logic";
-import type { TotPose } from "./TotCharacter";
+import type { TotPose } from "./totCharacter.ts";
+
+/** Every client's thread status, as its thread list shows it. */
+export type TotThreadStatus =
+  | "approval"
+  | "input"
+  | "request"
+  | "preparing"
+  | "working"
+  | "waiting"
+  | "failed"
+  | "limited"
+  | "ready";
 
 export type TotState = "needs" | "working" | "idle" | "offline";
 
@@ -61,6 +75,24 @@ export const TOT_JOB_LABEL: Record<TotJob, string> = {
   hands_on: "Hands-on",
 };
 
+export type TotCrewTone = "attention" | "failed" | "active" | "quiet";
+
+/** How a crew thread reads on a Tot's Desk: what needs the user sorts first. */
+export const TOT_CREW_STATUS: Record<
+  TotThreadStatus,
+  { readonly label: string; readonly rank: number; readonly tone: TotCrewTone }
+> = {
+  approval: { label: "Approval", rank: 0, tone: "attention" },
+  input: { label: "Question", rank: 0, tone: "attention" },
+  request: { label: "Request", rank: 0, tone: "attention" },
+  failed: { label: "Failed", rank: 0, tone: "failed" },
+  limited: { label: "Limited", rank: 0, tone: "attention" },
+  preparing: { label: "Preparing", rank: 1, tone: "active" },
+  working: { label: "Working", rank: 1, tone: "active" },
+  waiting: { label: "Waiting", rank: 1, tone: "active" },
+  ready: { label: "Ready", rank: 2, tone: "quiet" },
+};
+
 export const TOT_STATE_POSE: Record<TotState, TotPose> = {
   needs: "needs",
   working: "working",
@@ -71,7 +103,7 @@ export const TOT_STATE_POSE: Record<TotState, TotPose> = {
 /** Failures need the user too: nothing else will restart a Tot that stopped. */
 export function resolveTotState(input: {
   readonly connected: boolean;
-  readonly threadStatus: SidebarThreadStatus | null;
+  readonly threadStatus: TotThreadStatus | null;
   readonly hasCharterProposal: boolean;
   readonly hasOpenRequests: boolean;
 }): TotState {
@@ -228,4 +260,73 @@ export function totWakeFoldLabel(input: {
       ? `I woke up ${total === 1 ? "once" : `${total} times`}. Nothing for you!`
       : `${total} wake${total === 1 ? "" : "s"} with nothing for you`;
   return `${headline} · ${parts.join(", ")}`;
+}
+
+export function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
+  return voice === "toddler"
+    ? `${displayName} wants new house rules!`
+    : `${displayName} proposes a charter change`;
+}
+
+export type TotWaitingItem =
+  | { readonly kind: "charter"; readonly id: string; readonly proposal: TotCharterProposal }
+  | { readonly kind: "request"; readonly id: string; readonly request: TotRequest };
+
+/** What's waiting on the user, oldest first. A charter change sorts by when it was proposed. */
+export function totWaitingItems(
+  tot: Pick<Tot, "charterProposal" | "requests">,
+): ReadonlyArray<TotWaitingItem> {
+  const items: Array<TotWaitingItem & { readonly at: string }> = tot.requests.map((request) => ({
+    kind: "request",
+    id: request.id,
+    request,
+    at: request.askedAt,
+  }));
+  if (tot.charterProposal !== null) {
+    items.push({
+      kind: "charter",
+      id: tot.charterProposal.id,
+      proposal: tot.charterProposal,
+      at: tot.charterProposal.proposedAt,
+    });
+  }
+  return [...items].sort((left, right) => left.at.localeCompare(right.at));
+}
+
+export function totWaitingItemTitle(
+  item: TotWaitingItem,
+  displayName: string,
+  voice: TotVoice,
+): string {
+  return item.kind === "request"
+    ? item.request.question
+    : totCharterProposalTitle(displayName, voice);
+}
+
+/** The recommendation leads, so the quickest answer is also the one the Tot thinks is right. */
+export function orderTotRequestOptions(request: TotRequest): ReadonlyArray<string> {
+  return [...request.options].sort(
+    (left, right) =>
+      Number(right === request.recommendedOption) - Number(left === request.recommendedOption),
+  );
+}
+
+/** Threads a Tot started or watches, while they're still open. */
+export function isTotCrewThread(
+  tot: Pick<Tot, "threadId" | "watchedThreadIds">,
+  totEnvironmentId: EnvironmentId,
+  thread: {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly lineage: { readonly parentThreadId: ThreadId | null };
+    readonly archivedAt: string | null;
+    readonly settledAt: string | null;
+  },
+): boolean {
+  return (
+    thread.environmentId === totEnvironmentId &&
+    (thread.lineage.parentThreadId === tot.threadId || tot.watchedThreadIds.includes(thread.id)) &&
+    thread.archivedAt === null &&
+    thread.settledAt === null
+  );
 }
