@@ -19,7 +19,7 @@ Open **Tots** from the bottom of the sidebar. Each Tot shows one of four states:
 
 A thread's header also shows the Tot connected to it: the thread's own Tot, the Tot that started the work, or the Tot for its project. A Tot and its project have to be on the same machine for the project link to appear.
 
-A Tot's own thread opens as its desk: the details card shows what it's waiting on, its crew, its charter and its wakes, with the usual thread details folded underneath. Wakes where it had nothing to show you fold into one line in the conversation. Open that line to read them.
+A Tot's own thread opens as its desk: the details card shows what it's waiting on, its crew, its charter and its wakes, with the usual thread details folded underneath. Crew that finished folds into a count, with **Settle all** to clear it, and a Tot settles the crew it started once it has checked their results. Wakes where it had nothing to show you fold into one line in the conversation. Open that line to read them.
 
 On your phone, the Threads screen lists everything your Tots are waiting on at the top. Tap one to open the Tot's thread with that request ready to answer. Tap the face button in a Tot's header, or the face above its requests, to see its desk.
 
