@@ -5,7 +5,9 @@ import {
   diffCharterLines,
   resolveConnectedTot,
   resolveTotState,
+  totCrew,
   type ConnectedThreadInput,
+  type TotThreadStatus,
 } from "./totLogic.ts";
 
 const envA = EnvironmentId.make("env-a");
@@ -216,5 +218,45 @@ describe("diffCharterLines", () => {
   it("treats an empty charter as having no lines", () => {
     expect(diffCharterLines("", "first")).toEqual([{ kind: "added", text: "first" }]);
     expect(diffCharterLines("gone", "")).toEqual([{ kind: "removed", text: "gone" }]);
+  });
+});
+
+describe("totCrew", () => {
+  it("keeps finished runs apart from crew that's working or needs the user", () => {
+    const totThreadId = ThreadId.make("tot-thread");
+    const crewThread = (
+      id: string,
+      status: TotThreadStatus,
+      overrides: {
+        parent?: string | null;
+        settledAt?: string | null;
+        environmentId?: EnvironmentId;
+      } = {},
+    ) => ({
+      environmentId: overrides.environmentId ?? envA,
+      id: ThreadId.make(id),
+      title: id,
+      lineage: { parentThreadId: ThreadId.make(overrides.parent ?? "tot-thread") },
+      archivedAt: null,
+      settledAt: overrides.settledAt ?? null,
+      status,
+    });
+    const crew = totCrew({
+      tot: { threadId: totThreadId, watchedThreadIds: [ThreadId.make("watched")] },
+      environmentId: envA,
+      threads: [
+        crewThread("b-done", "ready"),
+        crewThread("a-done", "ready"),
+        crewThread("working", "working"),
+        crewThread("asks", "approval"),
+        crewThread("watched", "ready", { parent: "someone-else" }),
+        crewThread("settled", "ready", { settledAt: "2026-11-01T00:00:00.000Z" }),
+        crewThread("stranger", "working", { parent: "someone-else" }),
+        crewThread("other-machine", "working", { environmentId: envB }),
+      ],
+      threadStatus: (thread) => thread.status,
+    });
+    expect(crew.active.map(({ thread }) => thread.id)).toEqual(["asks", "working"]);
+    expect(crew.finished.map((thread) => thread.id)).toEqual(["a-done", "b-done", "watched"]);
   });
 });

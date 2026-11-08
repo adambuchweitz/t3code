@@ -1,8 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { TotEntry } from "@t3tools/client-runtime/tots/entries";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
-  isTotCrewThread,
-  TOT_CREW_STATUS,
+  totCrew,
   TOT_JOB_LABEL,
   TOT_STATE_POSE,
   totStateLabel,
@@ -10,18 +10,22 @@ import {
   totWaitingItemTitle,
   type TotCrewTone,
 } from "@t3tools/client-runtime/tots/logic";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { Sheet } from "../../components/ui/Sheet";
 import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
-import { environmentThreadShells } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { resolveThreadListV2Status } from "../threads/threadListV2";
 import { updateTotDock } from "./totDockState";
@@ -45,6 +49,91 @@ function DeskSection(props: { readonly title: string; readonly children: ReactNo
   );
 }
 
+function CrewRow(props: {
+  readonly title: string;
+  readonly label: string;
+  readonly tone: TotCrewTone;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      className="min-h-9 flex-row items-center justify-between gap-3 active:opacity-70"
+      onPress={props.onPress}
+    >
+      <Text numberOfLines={1} className="min-w-0 flex-1 font-sans text-sm text-foreground">
+        {props.title}
+      </Text>
+      <Text className={cn("font-sans text-xs", CREW_TONE_CLASS[props.tone])}>{props.label}</Text>
+    </Pressable>
+  );
+}
+
+/** Finished runs stay out of the way until the user wants them or wants them gone. */
+function FinishedCrew(props: {
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly onOpen: (thread: EnvironmentThreadShell) => void;
+}) {
+  const settle = useAtomCommand(threadEnvironment.settle, { reportFailure: false });
+  const [open, setOpen] = useState(false);
+  const [settling, setSettling] = useState(false);
+  const settleAll = async () => {
+    setSettling(true);
+    const results = await Promise.all(
+      props.threads.map((thread) =>
+        settle({ environmentId: thread.environmentId, input: { threadId: thread.id } }),
+      ),
+    );
+    setSettling(false);
+    const failed = results.filter((result) => result._tag === "Failure").length;
+    if (failed > 0) {
+      Dialog.alert(
+        "Couldn't settle every thread",
+        `${failed} of ${results.length} finished threads are still open. Try again.`,
+      );
+    }
+  };
+  return (
+    <View className="gap-1.5 pt-1">
+      <View className="flex-row items-center justify-between gap-3">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          className="min-h-9 flex-row items-center gap-1.5 active:opacity-70"
+          onPress={() => setOpen((value) => !value)}
+        >
+          <SymbolView
+            name={open ? "chevron.down" : "chevron.right"}
+            size={11}
+            tintColorClassName="accent-foreground-muted"
+          />
+          <Text className="font-sans text-sm text-foreground-muted">
+            {props.threads.length} finished
+          </Text>
+        </Pressable>
+        <Button
+          label="Settle all"
+          tone="text"
+          size="compact"
+          loading={settling}
+          onPress={() => void settleAll()}
+        />
+      </View>
+      {open
+        ? props.threads.map((thread) => (
+            <CrewRow
+              key={thread.id}
+              title={thread.title}
+              label="Done"
+              tone="quiet"
+              onPress={() => props.onOpen(thread)}
+            />
+          ))
+        : null}
+    </View>
+  );
+}
+
 /** A phone has no room for the side panel, so the Desk is a sheet with the same sections. */
 export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose: () => void }) {
   const { entry } = props;
@@ -52,14 +141,19 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
   const insets = useSafeAreaInsets();
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
-  const shells = useAtomValue(environmentThreadShells.quietThreadShellsAtom);
-  const crew = shells
-    .filter((thread) => isTotCrewThread(tot, entry.environmentId, thread))
-    .map((thread) => ({ thread, status: TOT_CREW_STATUS[resolveThreadListV2Status(thread)] }))
-    .sort(
-      (left, right) =>
-        left.status.rank - right.status.rank || left.thread.title.localeCompare(right.thread.title),
-    );
+  const crew = totCrew({
+    tot,
+    environmentId: entry.environmentId,
+    threads: useAtomValue(environmentThreadShells.quietThreadShellsAtom),
+    threadStatus: resolveThreadListV2Status,
+  });
+  const openThread = (thread: EnvironmentThreadShell) => {
+    props.onClose();
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: String(thread.environmentId), threadId: String(thread.id) },
+    });
+  };
   const items = totWaitingItems(tot);
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId: entry.environmentId, input: {} }),
@@ -135,36 +229,21 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
         )}
 
         <DeskSection title="Crew">
-          {crew.length === 0 ? (
+          {crew.active.length === 0 ? (
             <Text className="font-sans text-sm text-foreground-muted">Nobody's out on a job.</Text>
           ) : (
-            crew.map(({ thread, status }) => (
-              <Pressable
+            crew.active.map(({ thread, status }) => (
+              <CrewRow
                 key={thread.id}
-                accessibilityRole="button"
-                className="min-h-9 flex-row items-center justify-between gap-3 active:opacity-70"
-                onPress={() => {
-                  props.onClose();
-                  selectDetail({
-                    name: "Thread",
-                    params: {
-                      environmentId: String(thread.environmentId),
-                      threadId: String(thread.id),
-                    },
-                  });
-                }}
-              >
-                <Text
-                  numberOfLines={1}
-                  className="min-w-0 flex-1 font-sans text-sm text-foreground"
-                >
-                  {thread.title}
-                </Text>
-                <Text className={cn("font-sans text-xs", CREW_TONE_CLASS[status.tone])}>
-                  {status.label}
-                </Text>
-              </Pressable>
+                title={thread.title}
+                label={status.label}
+                tone={status.tone}
+                onPress={() => openThread(thread)}
+              />
             ))
+          )}
+          {crew.finished.length === 0 ? null : (
+            <FinishedCrew threads={crew.finished} onOpen={openThread} />
           )}
         </DeskSection>
 
