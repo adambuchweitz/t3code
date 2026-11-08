@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, PencilIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { useThreadActions } from "~/hooks/useThreadActions";
 import { cn } from "~/lib/utils";
 import { useQuietThreadShells } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
@@ -9,16 +10,17 @@ import { serverEnvironment } from "~/state/server";
 import type { TotEntry } from "~/state/tots";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 
 import { resolveSidebarThreadStatus } from "../Sidebar.logic";
 import { ScheduledRelativeLabel } from "../settings/ScheduledTasksSettings";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { TotCharacter } from "./TotCharacter";
 import { openTotDialog } from "./totDialogState";
 import { openTotDockItem } from "./totDockState";
 import {
-  isTotCrewThread,
-  TOT_CREW_STATUS,
+  totCrew,
   TOT_JOB_LABEL,
   type TotCrewTone,
   TOT_STATE_POSE,
@@ -51,14 +53,104 @@ function DeskSection(props: {
 }
 
 function useTotCrew(entry: TotEntry) {
-  const shells = useQuietThreadShells();
-  return shells
-    .filter((thread) => isTotCrewThread(entry.tot, entry.environmentId, thread))
-    .map((thread) => ({ thread, status: TOT_CREW_STATUS[resolveSidebarThreadStatus(thread)] }))
-    .toSorted(
-      (left, right) =>
-        left.status.rank - right.status.rank || left.thread.title.localeCompare(right.thread.title),
+  return totCrew({
+    tot: entry.tot,
+    environmentId: entry.environmentId,
+    threads: useQuietThreadShells(),
+    threadStatus: resolveSidebarThreadStatus,
+  });
+}
+
+function CrewRow(props: {
+  readonly entry: TotEntry;
+  readonly title: string;
+  readonly threadId: TotEntry["threadId"];
+  readonly label: string;
+  readonly tone: TotCrewTone;
+}) {
+  const navigate = useNavigate();
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-baseline justify-between gap-2 rounded-sm text-left text-sm hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+        onClick={() =>
+          void navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(
+              scopeThreadRef(props.entry.environmentId, props.threadId),
+            ),
+          })
+        }
+      >
+        <span className="min-w-0 truncate text-foreground">{props.title}</span>
+        <span className={cn("shrink-0 text-xs", CREW_TONE_CLASS[props.tone])}>{props.label}</span>
+      </button>
+    </li>
+  );
+}
+
+/** Finished runs stay out of the way until the user wants them or wants them gone. */
+function FinishedCrew(props: {
+  readonly entry: TotEntry;
+  readonly threads: ReturnType<typeof useTotCrew>["finished"];
+}) {
+  const { settleThread } = useThreadActions();
+  const [open, setOpen] = useState(false);
+  const [settling, setSettling] = useState(false);
+  const settleAll = async () => {
+    setSettling(true);
+    const results = await Promise.all(
+      props.threads.map((thread) => settleThread(scopeThreadRef(thread.environmentId, thread.id))),
     );
+    setSettling(false);
+    const failed = results.filter(
+      (result) => result._tag === "Failure" && !isAtomCommandInterrupted(result),
+    ).length;
+    if (failed > 0) {
+      toastManager.add({
+        type: "error",
+        title: `Couldn't settle ${failed} of ${results.length} finished threads`,
+      });
+    }
+  };
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          className="flex items-center gap-1 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => setOpen((value) => !value)}
+        >
+          <ChevronRightIcon className={cn("size-3.5", open && "rotate-90")} />
+          {props.threads.length} finished
+        </button>
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          disabled={settling}
+          onClick={() => void settleAll()}
+        >
+          Settle all
+        </Button>
+      </div>
+      {open ? (
+        <ul className="mt-1 grid list-none gap-0.5">
+          {props.threads.map((thread) => (
+            <CrewRow
+              key={thread.id}
+              entry={props.entry}
+              title={thread.title}
+              threadId={thread.id}
+              label="Done"
+              tone="quiet"
+            />
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -68,7 +160,6 @@ function useTotCrew(entry: TotEntry) {
 export function TotDesk(props: { readonly entry: TotEntry; readonly workspace: ReactNode }) {
   const { entry } = props;
   const { tot, state } = entry;
-  const navigate = useNavigate();
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const crew = useTotCrew(entry);
   const items = totWaitingItems(entry.tot);
@@ -128,33 +219,23 @@ export function TotDesk(props: { readonly entry: TotEntry; readonly workspace: R
       )}
 
       <DeskSection title="Crew">
-        {crew.length === 0 ? (
+        {crew.active.length === 0 ? (
           <p className="text-xs text-muted-foreground">Nobody's out on a job.</p>
         ) : (
           <ul className="grid list-none gap-0.5">
-            {crew.map(({ thread, status }) => (
-              <li key={thread.id}>
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-baseline justify-between gap-2 rounded-sm text-left text-sm hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-                  onClick={() =>
-                    void navigate({
-                      to: "/$environmentId/$threadId",
-                      params: buildThreadRouteParams(
-                        scopeThreadRef(entry.environmentId, thread.id),
-                      ),
-                    })
-                  }
-                >
-                  <span className="min-w-0 truncate text-foreground">{thread.title}</span>
-                  <span className={cn("shrink-0 text-xs", CREW_TONE_CLASS[status.tone])}>
-                    {status.label}
-                  </span>
-                </button>
-              </li>
+            {crew.active.map(({ thread, status }) => (
+              <CrewRow
+                key={thread.id}
+                entry={entry}
+                title={thread.title}
+                threadId={thread.id}
+                label={status.label}
+                tone={status.tone}
+              />
             ))}
           </ul>
         )}
+        {crew.finished.length === 0 ? null : <FinishedCrew entry={entry} threads={crew.finished} />}
       </DeskSection>
 
       <DeskSection title="Charter">

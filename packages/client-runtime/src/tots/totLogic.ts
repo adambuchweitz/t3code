@@ -78,10 +78,13 @@ export const TOT_JOB_LABEL: Record<TotJob, string> = {
 export type TotCrewTone = "attention" | "failed" | "active" | "quiet";
 
 /** How a crew thread reads on a Tot's Desk: what needs the user sorts first. */
-export const TOT_CREW_STATUS: Record<
-  TotThreadStatus,
-  { readonly label: string; readonly rank: number; readonly tone: TotCrewTone }
-> = {
+export interface TotCrewStatus {
+  readonly label: string;
+  readonly rank: number;
+  readonly tone: TotCrewTone;
+}
+
+const TOT_CREW_STATUS: Record<TotThreadStatus, TotCrewStatus> = {
   approval: { label: "Approval", rank: 0, tone: "attention" },
   input: { label: "Question", rank: 0, tone: "attention" },
   request: { label: "Request", rank: 0, tone: "attention" },
@@ -262,7 +265,7 @@ export function totWakeFoldLabel(input: {
   return `${headline} · ${parts.join(", ")}`;
 }
 
-export function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
+function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
   return voice === "toddler"
     ? `${displayName} wants new house rules!`
     : `${displayName} proposes a charter change`;
@@ -312,16 +315,19 @@ export function orderTotRequestOptions(request: TotRequest): ReadonlyArray<strin
 }
 
 /** Threads a Tot started or watches, while they're still open. */
-export function isTotCrewThread(
+export interface TotCrewThread {
+  readonly environmentId: EnvironmentId;
+  readonly id: ThreadId;
+  readonly title: string;
+  readonly lineage: { readonly parentThreadId: ThreadId | null };
+  readonly archivedAt: string | null;
+  readonly settledAt: string | null;
+}
+
+function isTotCrewThread(
   tot: Pick<Tot, "threadId" | "watchedThreadIds">,
   totEnvironmentId: EnvironmentId,
-  thread: {
-    readonly environmentId: EnvironmentId;
-    readonly id: ThreadId;
-    readonly lineage: { readonly parentThreadId: ThreadId | null };
-    readonly archivedAt: string | null;
-    readonly settledAt: string | null;
-  },
+  thread: TotCrewThread,
 ): boolean {
   return (
     thread.environmentId === totEnvironmentId &&
@@ -329,4 +335,27 @@ export function isTotCrewThread(
     thread.archivedAt === null &&
     thread.settledAt === null
   );
+}
+
+/** A Tot's open crew: who's working or needs the user, and the finished runs nobody settled yet. */
+export function totCrew<T extends TotCrewThread>(input: {
+  readonly tot: Pick<Tot, "threadId" | "watchedThreadIds">;
+  readonly environmentId: EnvironmentId;
+  readonly threads: ReadonlyArray<T>;
+  readonly threadStatus: (thread: T) => TotThreadStatus;
+}) {
+  const active: Array<{ readonly thread: T; readonly status: TotCrewStatus }> = [];
+  const finished: Array<T> = [];
+  for (const thread of input.threads) {
+    if (!isTotCrewThread(input.tot, input.environmentId, thread)) continue;
+    const status = input.threadStatus(thread);
+    if (status === "ready") finished.push(thread);
+    else active.push({ thread, status: TOT_CREW_STATUS[status] });
+  }
+  active.sort(
+    (left, right) =>
+      left.status.rank - right.status.rank || left.thread.title.localeCompare(right.thread.title),
+  );
+  finished.sort((left, right) => left.title.localeCompare(right.title));
+  return { active, finished };
 }
