@@ -121,10 +121,12 @@ it.live.each(
           if (account === "primary") {
             assert.equal(effective.config.homePath, sharedHome);
             assert.equal(runtime.homeLayout.mode, "direct");
+            assert.isUndefined(effective.environment.CODEX_SQLITE_HOME);
           } else {
             assert.include(effective.config.homePath, instanceId);
             assert.include(effective.config.homePath, "userdata/providers/codex");
             assert.equal(runtime.homeLayout.mode, "authOverlay");
+            assert.equal(effective.environment.CODEX_SQLITE_HOME, sharedHome);
             assert.equal(
               yield* fs.readLink(path.join(effective.config.homePath, "sessions")),
               path.join(sharedHome, "sessions"),

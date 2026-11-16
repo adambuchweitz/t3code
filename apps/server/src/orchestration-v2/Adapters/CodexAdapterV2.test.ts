@@ -6,6 +6,7 @@ import {
 } from "./ProviderTextDeltaCoalescer.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type * as Redacted from "effect/Redacted";
 import {
   CommandId,
   CheckpointId,
@@ -45,6 +46,7 @@ import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -79,6 +81,7 @@ import * as ModelManifest from "../../provider/ModelManifest.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import * as ServerConfig from "../../config.ts";
 import { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -350,6 +353,93 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
     }),
+  );
+});
+
+describe("CodexAdapterV2 process spawning", () => {
+  it.effect.each([
+    { name: "shared default", override: undefined, inherited: undefined },
+    { name: "provider override", override: "~/custom-sqlite", inherited: "/inherited/sqlite" },
+    { name: "inherited override", override: undefined, inherited: "/inherited/sqlite" },
+    { name: "blank provider default", override: "", inherited: "/inherited/sqlite" },
+    { name: "whitespace provider default", override: "  ", inherited: "/inherited/sqlite" },
+  ])("launches shadow app-servers with the $name SQLite home", ({ override, inherited }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* HostProcess.HomeDirectory;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-sqlite-env-" });
+      const sharedHome = path.join(root, "shared");
+      const shadowHome = path.join(root, "shadow");
+      const spawned: Array<
+        Record<string, string | Redacted.Redacted<string> | undefined> | undefined
+      > = [];
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (ChildProcess.isStandardCommand(command)) spawned.push(command.options.env);
+        return Effect.fail(
+          PlatformError.systemError({
+            _tag: "NotFound",
+            module: "ChildProcess",
+            method: "spawn",
+          }),
+        );
+      });
+      const adapter = yield* CodexAdapterV2.createCodexAdapterV2({
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        displayName: undefined,
+        environment:
+          override === undefined
+            ? []
+            : [{ name: "CODEX_SQLITE_HOME", value: override, sensitive: false }],
+        enabled: true,
+        config: { ...DEFAULT_CODEX_SETTINGS, homePath: sharedHome, shadowHomePath: shadowHome },
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            CodexAdapterV2.layerAppServerClientFactory,
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-sqlite-server-" }),
+          ),
+        ),
+        Effect.provideService(
+          HostProcess.Environment,
+          inherited === undefined ? {} : { CODEX_SQLITE_HOME: inherited },
+        ),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      );
+      yield* adapter
+        .openSession({
+          threadId: ThreadId.make("thread-sqlite-home"),
+          providerSessionId: ProviderSessionId.make("provider-session-sqlite-home"),
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        })
+        .pipe(Effect.scoped, Effect.exit);
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0]?.CODEX_HOME, shadowHome);
+      assert.equal(
+        spawned[0]?.CODEX_SQLITE_HOME,
+        override === undefined
+          ? (inherited ?? sharedHome)
+          : override === "~/custom-sqlite"
+            ? path.join(home, "custom-sqlite")
+            : sharedHome,
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => {} }),
+        ),
+      ),
+      Effect.provideService(HostProcess.Platform, "linux"),
+    ),
   );
 });
 

@@ -77,7 +77,10 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
-import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import {
+  applyCodexSqliteHomeEnvironment,
+  resolveCodexHomeLayout,
+} from "../provider/Drivers/CodexHomeLayout.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import type { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1834,6 +1837,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   readonly path: Path.Path;
   readonly rawProviderInstanceId: string;
   readonly env: Record<string, string> | undefined;
+  readonly inheritedEnv?: NodeJS.ProcessEnv | undefined;
 }) {
   const providerInstanceId = ProviderInstanceId.make(input.rawProviderInstanceId);
   const settings = yield* input.serverSettings.getSettings.pipe(
@@ -1853,6 +1857,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
       );
       if (layout.effectiveHomePath)
         resolved = { ...resolved, CODEX_HOME: layout.effectiveHomePath };
+      resolved = yield* applyCodexSqliteHomeEnvironment(layout, resolved, input.inheritedEnv);
     }
   } else if (instance.driver === "claudeAgent") {
     const config = decodeClaudeSettings(instance.config ?? {});
@@ -1878,6 +1883,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
+  const inheritedEnv = yield* HostProcess.Environment;
   const resolveProviderInstanceEnvironment = Effect.fn(
     "terminal.resolveProviderInstanceEnvironment",
   )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
@@ -1887,6 +1893,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
       path,
       rawProviderInstanceId,
       env,
+      inheritedEnv,
     }),
   );
   return yield* makeWithOptions({

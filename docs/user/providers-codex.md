@@ -32,6 +32,7 @@ CODEX_HOME=~/.codex_personal codex login
 | Codex Personal | `~/.codex`      | `~/.codex_personal` |
 
 - Both instances must share the same **CODEX_HOME path**. Keep the shadow directory fresh—don't copy your full Codex home into it.
+- Shadow providers and their terminals use the shared home's SQLite state. Set `CODEX_SQLITE_HOME` in the provider's environment (or the server's) to use another directory; existing SQLite files in a shadow home stay put and aren't merged.
 - The shadow account needs file-based credential storage (`auth.json`); see [OpenAI's credential storage guide](https://learn.chatgpt.com/docs/auth#credential-storage).
 - Use a separate **CODEX_HOME path** (no shadow home) if you want completely isolated sessions.
 
