@@ -5,6 +5,7 @@ import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   preventRepeatedTerminalCloseShortcut,
   preventTerminalCloseShortcut,
+  routeTerminalShortcut,
   type TerminalCloseShortcutEvent,
 } from "./terminalCloseShortcut";
 
@@ -82,5 +83,44 @@ describe("terminal close shortcut guards", () => {
       false,
     );
     expect(unrelatedRepeat.defaultPrevented).toBe(false);
+  });
+});
+
+describe("routeTerminalShortcut", () => {
+  const withToggle = [
+    ...keybindings,
+    {
+      command: "terminal.toggle",
+      shortcut: { ...keybindings[0]!.shortcut, key: "j" },
+      whenAst: { type: "identifier", name: "terminalFocus" },
+    },
+  ] satisfies ResolvedKeybindingsConfig;
+  const platform = "Linux x86_64";
+
+  it("hands app shortcuts back to a thread terminal", () => {
+    const toggle = keyboardEvent({ key: "j", code: "KeyJ" });
+    expect(routeTerminalShortcut(toggle, withToggle, { exclusive: false, platform })).toBe("app");
+    expect(
+      routeTerminalShortcut(keyboardEvent({ key: "a", code: "KeyA" }), withToggle, {
+        exclusive: false,
+        platform,
+      }),
+    ).toBe("terminal");
+  });
+
+  it("keeps app shortcuts as input in an exclusive terminal", () => {
+    const toggle = keyboardEvent({ key: "j", code: "KeyJ" });
+    expect(routeTerminalShortcut(toggle, withToggle, { exclusive: true, platform })).toBe(
+      "terminal",
+    );
+    expect(toggle.defaultPrevented).toBe(false);
+  });
+
+  it("still guards the window close in both kinds of terminal", () => {
+    for (const exclusive of [false, true]) {
+      const close = keyboardEvent();
+      expect(routeTerminalShortcut(close, withToggle, { exclusive, platform })).toBe("close");
+      expect(close.defaultPrevented).toBe(true);
+    }
   });
 });

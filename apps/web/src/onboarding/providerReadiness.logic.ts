@@ -12,7 +12,7 @@ const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 const SAFE_SHELL_BINARY_PATTERN = /^[A-Za-z0-9_./:\\-]+$/;
 
-function quoteProviderBinary(
+export function quoteProviderBinary(
   binaryPath: string,
   fallback: string,
   platform: ExecutionEnvironmentPlatformOs,

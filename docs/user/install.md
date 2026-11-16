@@ -94,6 +94,7 @@ Open **Settings → Providers** (web or desktop), select the environment, and en
 | **fx**           | Install [fx](https://fx.sh) and run `fx login`.                                                                          | [fx](./providers-fx.md)                   |
 | **ACP Registry** | Add GitHub Copilot and other agents in **Settings → Providers → Add provider → Show more**.                              | [ACP](./providers-acp.md)                 |
 
+- **Setup terminal**: When Codex, Claude, Grok Build, or OpenCode is missing or signed out, its provider settings offer a terminal on that environment with the install or sign-in command typed in. Review it and press Enter; sign-in opens in your current browser and the terminal closes once the provider reports you're signed in. Install commands appear only where the provider publishes a one-line installer for that system.
 - **Binary path**: If a CLI isn't on the server's `PATH` (common with version managers), set **Binary path** in the provider's settings.
 - **Updates**: Click **Update now** on outdated provider cards (supports Homebrew, mise `latest`, npm/pnpm/Yarn/Bun/Volta/Vite+, or the CLI's own updater; update Nix, Chocolatey, or pinned mise installs manually).
 - **Multiple instances**: Add extra provider instances for separate accounts, API keys, or custom endpoints (mark secret env vars as sensitive).
