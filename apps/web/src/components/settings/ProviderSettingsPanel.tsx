@@ -4,6 +4,7 @@ import {
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
 } from "@t3tools/contracts";
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { useAtomValue } from "@effect/atom-react";
@@ -106,6 +107,8 @@ import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
+import { ProviderSetupTerminalRow } from "./ProviderSetupTerminal";
+import { resolveProviderSetupTerminalAction } from "./providerSetupTerminal.logic";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
@@ -1351,6 +1354,16 @@ function ProviderInstanceRow({
     favorite.provider === instanceId ? Result.succeed(favorite.model) : Result.failVoid,
   );
   const resetLabel = driverOption?.label ?? String(driver);
+  const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+  // A primitive keeps provider status churn in the full config from re-rendering every row.
+  const platformOs = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.platform.os ?? null,
+  );
+  const setupTerminalAction =
+    mode === "editor" && !readOnly && canOperateTerminal && platformOs !== null
+      ? resolveProviderSetupTerminalAction(liveProvider, instance.config, platformOs)
+      : null;
   const projectOverride = showProjectOverride
     ? {
         value: projectOverrideValue,
@@ -1452,6 +1465,15 @@ function ProviderInstanceRow({
             description={gt(
               "Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in.",
             )}
+          />
+        ) : setupTerminalAction ? (
+          <ProviderSetupTerminalRow
+            key={`${environmentId}:${instanceId}:${setupTerminalAction.kind}`}
+            environmentId={environmentId}
+            environmentLabel={environmentLabel}
+            instanceId={instanceId}
+            providerLabel={liveProvider?.displayName ?? resetLabel}
+            action={setupTerminalAction}
           />
         ) : null
       }

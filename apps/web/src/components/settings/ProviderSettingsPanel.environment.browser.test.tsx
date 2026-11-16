@@ -5,6 +5,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderAuthState,
+  DEFAULT_SERVER_SETTINGS,
+  type ExecutionEnvironmentDescriptor,
+  type ServerConfig,
   type ServerProvider,
   type UnifiedSettings,
 } from "@t3tools/contracts";
@@ -22,6 +25,10 @@ const state = vi.hoisted(() => ({
   providers: null as unknown as Atom.Writable<ReadonlyArray<ServerProvider>>,
   providerAuthQuery: null as unknown,
   providerAuth: null as ProviderAuthState | null,
+  config: null as unknown as Atom.Writable<ServerConfig | null>,
+  canOperateTerminal: true,
+  openTerminal: vi.fn(),
+  closeTerminal: vi.fn(),
   settings: null as unknown as UnifiedSettings,
   canManageProviders: true,
   canWriteSettings: true,
@@ -45,7 +52,8 @@ vi.mock(import("../../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const providers = Atom.make<ReadonlyArray<ServerProvider>>([]).pipe(Atom.keepAlive);
   state.providers = providers;
-  const config = Atom.make(null);
+  const config = Atom.make<ServerConfig | null>(null).pipe(Atom.keepAlive);
+  state.config = config;
   const providerAuth = Atom.make(null);
   state.providerAuthQuery = providerAuth;
   const commandLabels = {
@@ -80,6 +88,8 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       update: state.updateProvider,
       uninstall: state.uninstall,
       "accept-url-auth": state.acceptUrlAuth,
+      "environment-data:terminal:open": state.openTerminal,
+      "environment-data:terminal:close": state.closeTerminal,
     })[command.label ?? ""] ?? vi.fn()) as never,
 }));
 vi.mock(import("~/localApi"), async (original) => {
@@ -123,7 +133,9 @@ vi.mock(import("../../state/session"), async (original) => {
       ? state.canManageProviders
       : requested === "settings:write"
         ? state.canWriteSettings
-        : requested === "orchestration:read");
+        : requested === "terminal:operate"
+          ? state.canOperateTerminal
+          : requested === "orchestration:read");
   return {
     ...(await original()),
     useEnvironmentScope: scope as never,
@@ -205,6 +217,8 @@ function provider(): ServerProvider {
 const setProviders = (providers: ReadonlyArray<ServerProvider>) =>
   act(async () => appAtomRegistry.set(state.providers, providers));
 
+const button = (name: string) => page.getByRole("button", { name, exact: true });
+
 function panel(options?: {
   readonly readOnly?: boolean;
   readonly targetInstanceId?: ProviderInstanceId;
@@ -232,8 +246,11 @@ async function setup() {
   state.settings = DEFAULT_UNIFIED_SETTINGS;
   state.canManageProviders = true;
   state.canWriteSettings = true;
+  state.canOperateTerminal = true;
   state.searchTargetId = null;
   state.providerAuth = null;
+  state.openTerminal.mockReset().mockResolvedValue(AsyncResult.failure(Cause.fail("offline")));
+  state.closeTerminal.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.readEnvironmentIds = [];
   state.updateEnvironmentIds = [];
   state.mutationEnvironmentIds = [];
@@ -247,6 +264,42 @@ async function setup() {
   state.uninstall.mockReset().mockResolvedValue(AsyncResult.success({}));
   state.acceptUrlAuth.mockReset().mockResolvedValue(AsyncResult.success({ accepted: true }));
   await setProviders([]);
+  await act(async () => appAtomRegistry.set(state.config, null));
+}
+
+const claudeId = ProviderInstanceId.make("claudeAgent");
+
+function serverConfig(): ServerConfig {
+  const environment = {
+    environmentId,
+    label: "Remote device",
+    platform: { os: "linux", arch: "x64" },
+    serverVersion: "1.0.0",
+    capabilities: { repositoryIdentity: true },
+  } satisfies ExecutionEnvironmentDescriptor;
+  // The panel reads only these fields; the rest of ServerConfig is irrelevant here.
+  return {
+    environment,
+    cwd: "/srv/remote",
+    keybindings: [],
+    settings: DEFAULT_SERVER_SETTINGS,
+  } as unknown as ServerConfig;
+}
+
+async function setupSignedOutProvider(driver: string, providerSetup: ServerProvider["setup"]) {
+  await setup();
+  const instanceId = driver === "claudeAgent" ? claudeId : ProviderInstanceId.make(driver);
+  await act(async () => appAtomRegistry.set(state.config, serverConfig()));
+  await setProviders([
+    {
+      ...provider(),
+      instanceId,
+      driver: ProviderDriverKind.make(driver),
+      auth: { status: "unauthenticated" },
+      ...(providerSetup ? { setup: providerSetup } : {}),
+    },
+  ]);
+  return instanceId;
 }
 
 describe("EnvironmentProviderSettings routing", () => {
@@ -647,5 +700,65 @@ describe("EnvironmentProviderSettings health check interval", () => {
 
     await expect.element(input).toHaveValue("300");
     expect(state.updateSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("EnvironmentProviderSettings setup terminal", () => {
+  it("opens CLI sign-in on the provider's environment and closes it on the way out", async () => {
+    const instanceId = await setupSignedOutProvider("claudeAgent", {
+      canAuthenticate: false,
+      canInstall: false,
+    });
+    await using _screen = await render(panel({ targetInstanceId: instanceId }));
+
+    await userEvent.click(button("Sign in with terminal"));
+    await expect
+      .element(page.getByText("Could not open a terminal on this environment."))
+      .toBeVisible();
+    const [open] = state.openTerminal.mock.calls[0]!;
+    expect(open).toMatchObject({
+      environmentId,
+      input: { cwd: "/srv/remote", providerInstanceId: instanceId },
+    });
+
+    await userEvent.click(button("Close"));
+    await expect.element(button("Sign in with terminal")).toBeVisible();
+    await vi.waitFor(() =>
+      expect(state.closeTerminal).toHaveBeenCalledWith({
+        environmentId,
+        input: {
+          threadId: open.input.threadId,
+          terminalId: open.input.terminalId,
+          deleteHistory: true,
+        },
+      }),
+    );
+    expect(state.refresh).toHaveBeenCalledWith({ environmentId, input: { instanceId } });
+  });
+
+  it("offers no terminal without terminal access or provider write access", async () => {
+    const instanceId = await setupSignedOutProvider("claudeAgent", {
+      canAuthenticate: false,
+      canInstall: false,
+    });
+    state.canOperateTerminal = false;
+    await using screen = await render(panel({ targetInstanceId: instanceId }));
+    await expect.element(page.getByRole("heading", { name: "Models" }).first()).toBeVisible();
+    await expect.element(button("Sign in with terminal")).not.toBeInTheDocument();
+
+    state.canOperateTerminal = true;
+    await screen.rerender(panel({ targetInstanceId: instanceId, readOnly: true }));
+    await expect.element(button("Sign in with terminal")).not.toBeInTheDocument();
+  });
+
+  it("keeps in-app sign-in for a CLI provider that advertises it", async () => {
+    const instanceId = await setupSignedOutProvider("claudeAgent", {
+      canAuthenticate: true,
+      canInstall: false,
+    });
+    await using _screen = await render(panel({ targetInstanceId: instanceId }));
+    await expect.element(page.getByText("Sign in on Remote device.")).toBeVisible();
+    await expect.element(button("Sign in")).toBeVisible();
+    await expect.element(button("Sign in with terminal")).not.toBeInTheDocument();
   });
 });

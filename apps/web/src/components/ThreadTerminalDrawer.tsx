@@ -62,13 +62,7 @@ import { type GhosttyColor, type GhosttyTheme } from "~/terminal/ghostty/core";
 import { useOpenInPreferredEditor } from "../editorPreferences";
 import { isTerminalUrl, resolveTerminalLinkTarget } from "../terminal-links";
 import {
-  isDiffToggleShortcut,
   isTerminalClearShortcut,
-  isTerminalNewShortcut,
-  isTerminalSplitShortcut,
-  isTerminalSplitVerticalShortcut,
-  isTerminalToggleShortcut,
-  isThreadNavigationShortcut,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
 } from "../keybindings";
@@ -93,7 +87,7 @@ import { useEnvironmentScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { terminalInputWriter } from "./terminal/terminalInputWriter";
 import { useAtomCommand } from "../state/use-atom-command";
-import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
+import { routeTerminalShortcut } from "../lib/terminalCloseShortcut";
 import { observeResize } from "../lib/observeResize";
 import { threadShortcutContext } from "./Sidebar.logic";
 import {
@@ -467,8 +461,15 @@ export function shouldHandleTerminalExit(
   );
 }
 
+export type TerminalSessionActivity = Pick<TerminalSessionState, "output" | "hasRunningSubprocess">;
+
 interface TerminalViewportProps {
   advancedTypography: boolean;
+  /**
+   * Keeps every key in the terminal, for surfaces outside a thread where app shortcuts do not
+   * apply. Nothing else handles terminal.close there, so the owner closes on that shortcut.
+   */
+  exclusiveInput?: { readonly onCloseShortcut: () => void };
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
   terminalId: string;
@@ -478,6 +479,8 @@ interface TerminalViewportProps {
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
   onSessionExited: () => void;
+  /** Observes what the session prints and whether a command is running in it. */
+  onSessionChange?: (session: TerminalSessionActivity) => void;
   onAddTerminalContext?: (selection: TerminalContextSelection) => void;
   /** Focuses the viewport when it mounts; otherwise focus arrives through `focusTerminal`. */
   autoFocus?: boolean;
@@ -505,6 +508,7 @@ export function TerminalViewport(props: TerminalViewportProps) {
 
 function TerminalSessionViewport({
   advancedTypography,
+  exclusiveInput,
   threadRef,
   threadId,
   terminalId,
@@ -514,6 +518,7 @@ function TerminalSessionViewport({
   runtimeEnv,
   providerInstanceId,
   onSessionExited,
+  onSessionChange,
   onAddTerminalContext,
   autoFocus = false,
   visible,
@@ -592,6 +597,8 @@ function TerminalSessionViewport({
   const selectionActionRequestIdRef = useRef(0);
   const readKeybindings = useEffectEvent(() => keybindings);
   const readThreadShortcutContext = useEffectEvent(() => threadShortcutContext(threadRef));
+  const readExclusiveInput = useEffectEvent(() => exclusiveInput !== undefined);
+  const requestClose = useEffectEvent(() => exclusiveInput?.onCloseShortcut());
   const handleSessionExited = useEffectEvent(() => {
     if (hasTerminalWriteAccess()) onSessionExited();
   });
@@ -649,6 +656,15 @@ function TerminalSessionViewport({
       terminalRef.current?.resendSize();
     }
   });
+  const observesSession = onSessionChange !== undefined;
+  const reportSessionChange = useEffectEvent((session: TerminalSessionActivity) =>
+    onSessionChange?.(session),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Setup observes session activity before the terminal surface finishes loading.
+  useEffect(() => {
+    if (!observesSession) return;
+    return appAtomRegistry.subscribe(terminalSessionAtom, reportSessionChange, { immediate: true });
+  }, [terminalSessionAtom, observesSession]);
   const outputCursorRef = useRef<TerminalOutputCursor>(INITIAL_TERMINAL_OUTPUT_CURSOR);
   const synchronizedStatusRef = useRef<TerminalSessionState["status"]>("closed");
   const synchronizeTerminalStatus = useEffectEvent(
@@ -1021,24 +1037,14 @@ function TerminalSessionViewport({
       };
 
       function handleBeforeKey(event: KeyboardEvent): boolean {
-        const currentKeybindings = readKeybindings();
-        const options = { context: { terminalFocus: true, terminalOpen: true } };
-        if (preventTerminalCloseShortcut(event, currentKeybindings)) {
-          return false;
-        }
-        if (
-          isTerminalToggleShortcut(event, currentKeybindings, options) ||
-          isTerminalSplitShortcut(event, currentKeybindings, options) ||
-          isTerminalSplitVerticalShortcut(event, currentKeybindings, options) ||
-          isTerminalNewShortcut(event, currentKeybindings, options) ||
-          isDiffToggleShortcut(event, currentKeybindings, options) ||
-          // Match Sidebar's context, or a key it will reject skips the shell.
-          isThreadNavigationShortcut(event, currentKeybindings, {
-            context: { ...readThreadShortcutContext(), terminalFocus: true },
-          })
-        ) {
-          return false;
-        }
+        const exclusive = readExclusiveInput();
+        if (exclusive) event.stopPropagation();
+        const route = routeTerminalShortcut(event, readKeybindings(), {
+          exclusive,
+          threadContext: readThreadShortcutContext(),
+        });
+        if (route === "close" && exclusive) requestClose();
+        if (route !== "terminal") return false;
 
         const navigationData = terminalNavigationShortcutData(event);
         if (navigationData !== null) {

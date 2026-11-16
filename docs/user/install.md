@@ -208,6 +208,14 @@ computer.
 | Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
 | fx          | Install [fx](https://fx.sh) with `curl -fsSL https://fx.sh/setup.sh \| bash`, then run `fx login`.                                                        |
 
+When Codex, Claude, Grok Build, or OpenCode is missing or signed out, its
+provider settings offer a terminal on that environment with the install or
+sign-in command already typed. Review the command, then press Enter to run it.
+The sign-in page opens in the browser you are using T3 Code from, and the
+terminal closes once the provider reports you are signed in. Install commands
+are offered only where the provider publishes a one-line installer for that
+system.
+
 Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set its
 **Binary path** in provider settings, especially when using a version manager.
 Cursor's executable is `cursor-agent`, although its login command is
