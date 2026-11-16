@@ -80,6 +80,11 @@ vp run dist:desktop:win
 
 Run `vp run dist:desktop:artifact --help` for `--arch`, `--signed`, and `--keep-stage`.
 
+`vp run deploy:linux` builds the current branch as a Nightly AppImage, then atomically installs it at
+`~/.local/opt/t3code/T3-Code-local.AppImage` with a `T3 Code (local build)` launcher. That folder is
+outside `~/Applications`, so AppImageLauncher does not add a second entry. It uses the normal
+production T3 home, so it is for a developer's day-to-day local fork, not an isolated test instance.
+
 ### Linux AppImage prerequisites
 
 Build on Linux (the browser-secret helper links against `libsecret`). Install Rust stable (`rustup`), C/C++ build tools, `libsecret` dev headers, `pkg-config`, ImageMagick, and Electron runtime libs (`gtk3`, `nss`, `alsa`, `gbm`):

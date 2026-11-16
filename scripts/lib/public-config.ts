@@ -101,6 +101,35 @@ export function loadRepoEnv({
   };
 }
 
+export function loadFleetBuildEnv({
+  baseEnv = process.env,
+  repoRoot = REPO_ROOT,
+}: {
+  readonly baseEnv?: Environment;
+  readonly repoRoot?: string;
+} = {}): Record<string, string | undefined> {
+  const configured = loadRepoEnv({ baseEnv, repoRoot });
+  const defaults = readEnvFile(NodePath.join(repoRoot, ".env.example"));
+  const publicKeys = [
+    "T3CODE_CLERK_PUBLISHABLE_KEY",
+    "T3CODE_CLERK_JWT_TEMPLATE",
+    "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID",
+    "T3CODE_RELAY_URL",
+  ] as const;
+  for (const key of publicKeys) {
+    if (!configured[key]?.trim() && defaults[key]?.trim()) configured[key] = defaults[key];
+  }
+  for (const key of [
+    "T3CODE_CLERK_PUBLISHABLE_KEY",
+    "T3CODE_CLERK_JWT_TEMPLATE",
+    "T3CODE_RELAY_URL",
+  ] as const) {
+    if (!configured[key]?.trim())
+      throw new Error(`Fleet build is missing public configuration: ${key}`);
+  }
+  return loadRepoEnv({ baseEnv: configured, repoRoot });
+}
+
 function resolvePublicConfig(...sources: readonly Environment[]): T3CodePublicConfig {
   return {
     clerkPublishableKey: firstNonEmpty(
