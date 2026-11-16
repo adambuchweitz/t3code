@@ -557,6 +557,11 @@ any other thread on web and desktop, and a shorter read-only list on mobile.
   Linked environments must be on there. Both machines need a version of T3 Code
   that has this view.
 
+## Follow thread focus from a script
+
+Programs can follow which thread you have open. On a server that is reachable from other
+machines, they need a token. See [thread focus hooks](./hooks.md).
+
 ## Manage or revoke access
 
 On the host, **Settings → Sharing & access** lets authorized administrators create
@@ -615,7 +620,9 @@ link to change a client's permissions.
 
 `filesystem:read` allows browsing host files, opening workspace files, and viewing
 local changes. Add `filesystem:write` to allow editing files or saving plans to
-the workspace. These scopes control direct file access from the client.
+the workspace. These scopes control direct file access from the client. Thread history under
+`orchestration:read` is separate and includes turn diffs, which compare saved checkpoints and can
+contain other work from that checkout.
 
 Some permissions also give a client indirect access. With `terminal:operate`,
 a client can run commands that read or change any files the server’s OS account

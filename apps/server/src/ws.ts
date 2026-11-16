@@ -204,6 +204,7 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import * as HookEvents from "./hooks/HookEvents.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
   attachmentRelativePath,
@@ -1546,6 +1547,7 @@ export const layerWsRpc = (
         threadManagement.getThreadShell,
       );
       const previewManager = yield* PreviewManager.PreviewManager;
+      const hookEvents = yield* HookEvents.HookEvents;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -3364,6 +3366,13 @@ export const layerWsRpc = (
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
+        [WS_METHODS.hooksReportThreadFocused]: (payload) =>
+          hookEvents
+            .publishThreadFocused({
+              source: { sessionId: currentSessionId, sessionMethod: currentSession.method },
+              payload,
+            })
+            .pipe(Effect.asVoid),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
         [WS_METHODS.previewReportProfiles]: (input) => reportProfiles(input),

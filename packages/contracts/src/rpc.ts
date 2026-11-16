@@ -464,9 +464,11 @@ import {
   SourceControlSignInResult,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import { ThreadFocusedHookPayload } from "./hooks.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  hooksReportThreadFocused: "hooks.reportThreadFocused",
   projectsListEntries: "projects.listEntries",
   projectsListIgnoredFiles: "projects.listIgnoredFiles",
   projectsReadFile: "projects.readFile",
@@ -710,6 +712,11 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
 } as const;
+
+const WsHooksReportThreadFocusedRpc = Rpc.make(WS_METHODS.hooksReportThreadFocused, {
+  payload: ThreadFocusedHookPayload,
+  error: EnvironmentAuthorizationError,
+});
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
   payload: ServerUpsertKeybindingInput,
@@ -2386,6 +2393,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsIssueTrackersConnectRpc,
   WsIssueTrackersBindProjectRpc,
   WsGuestShareCreateRpc,
+  WsHooksReportThreadFocusedRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
