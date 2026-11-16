@@ -15,6 +15,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { SidebarInset } from "./ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
+import { useThreadFocusReporter } from "../hooks/useThreadFocusReporter";
 import {
   useEnvironmentThreadRefs,
   useAnyEnvironmentHiding,
@@ -146,6 +147,9 @@ export function ThreadRouteView({
     draftThreadExists: draftThread !== null,
     environmentUnreachable,
   });
+  useThreadFocusReporter(
+    target.kind === "server" && renderState === "ready" ? serverThreadShell : null,
+  );
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears pending file drops and navigates the router home once a server thread is confirmed missing

@@ -256,6 +256,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.previewClearProfile]: "preview",
   [WS_METHODS.previewReportProfiles]: "preview",
   [WS_METHODS.previewReportStatus]: "preview",
+  [WS_METHODS.hooksReportThreadFocused]: "hooks",
   [WS_METHODS.subscribePreviewEvents]: "preview",
   [WS_METHODS.subscribeDiscoveredLocalServers]: "preview",
   [WS_METHODS.previewStopLocalServer]: "preview",

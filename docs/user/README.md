@@ -97,6 +97,7 @@ T3 Code is an open-source control plane for coding agents. It gives the coding a
 - [Mobile notifications](./mobile-notifications.md) — Push alerts, iOS Live Activities/widgets, and Android Live Updates.
 - [Guest links](./guest-links.md) — Sharing a live thread with a teammate in their browser (no account needed).
 - [Outside agents](./outside-agents.md) — Connecting Claude Code, Codex, ChatGPT, or bots to T3 Code over MCP, plus `t3 thread` host scripting.
+- [Thread focus hooks](./hooks.md) — Stream which thread you are looking at to your own scripts.
 - [Secrets](./secrets.md) — 1Password CLI references and private in-thread agent secret cards.
 - [1Password service account](./secrets-1password-service-account.md) — Headless 1Password setup with a service account token.
 - [1Password Connect](./secrets-1password-connect.md) — Headless 1Password setup with a Connect server.

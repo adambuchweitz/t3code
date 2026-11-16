@@ -84,11 +84,16 @@ Link two T3 Code machines (beta) so agents on one can launch, message, delegate 
 
 Open a delegated task or thread link on a linked machine to follow it live (read-only) in the right panel without pairing your client directly. Click **Connect to interact** to pair and take action (one-click if the link has Full access and you can manage access). Files, images, and HTML renders stay on the remote machine until you connect directly.
 
+## Follow thread focus from a script
+
+Programs can follow which thread you have open. On a server that is reachable from other
+machines, they need a token. See [thread focus hooks](./hooks.md).
+
 ## Manage or revoke access
 
 Manage pairing links and active client sessions in **Settings → Sharing & access** or via `t3 auth --help`.
 
-- **Scoped tokens**: Pass `--scope <scope>` (repeatable) to `t3 pair`, `t3 auth pairing create`, or `t3 auth session issue` to restrict permissions (e.g. `orchestration:read`, `source-control:write`, `filesystem:read`, `filesystem:write`, `terminal:operate`, `relay:configure`). Re-pair with a fresh link to change an existing client's scopes.
+- **Scoped tokens**: Pass `--scope <scope>` (repeatable) to `t3 pair`, `t3 auth pairing create`, or `t3 auth session issue` to restrict permissions (e.g. `orchestration:read`, `source-control:write`, `filesystem:read`, `filesystem:write`, `terminal:operate`, `relay:configure`). Re-pair with a fresh link to change an existing client's scopes. Thread history under `orchestration:read` includes turn diffs, which compare saved checkpoints and can contain other work from that checkout.
 - **Deregister from T3 Connect**: Open your account menu → **T3 Connect → Deregister** (or `t3 connect unlink` / `t3 connect logout` on CLI hosts). Idle tunnels are automatically cleaned up after 5–10 minutes offline and recreated on reconnect (hosts on older versions offline for 7+ days need an update first).
 - Treat pairing URLs and codes as passwords—never paste them into logs or screenshots.
 
