@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { loadRepoEnv } from "./public-config.ts";
+import { loadFleetBuildEnv, loadRepoEnv } from "./public-config.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -15,6 +15,34 @@ afterEach(() => {
 });
 
 describe("loadRepoEnv", () => {
+  it("loads public fleet defaults without overriding configured values", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_public\nT3CODE_CLERK_JWT_TEMPLATE=t3-relay\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_public\nT3CODE_RELAY_URL=https://relay.example.test\nVITE_HTTP_URL=http://bad.example.test\n",
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.local"),
+      "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_custom\n",
+    );
+    const env = loadFleetBuildEnv({
+      repoRoot,
+      baseEnv: { T3CODE_RELAY_URL: "https://custom.test" },
+    });
+    expect(env).toMatchObject({
+      VITE_CLERK_PUBLISHABLE_KEY: "pk_public",
+      VITE_CLERK_JWT_TEMPLATE: "t3-relay",
+      VITE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_custom",
+      VITE_T3CODE_RELAY_URL: "https://custom.test",
+    });
+    expect(env.VITE_HTTP_URL).toBeUndefined();
+  });
+
+  it("refuses a fleet build when public sign-in configuration is missing", () => {
+    expect(() => loadFleetBuildEnv({ repoRoot: makeTemporaryDirectory(), baseEnv: {} })).toThrow(
+      "Fleet build is missing public configuration",
+    );
+  });
   it("applies process, root local, and root precedence in that order", () => {
     const repoRoot = makeTemporaryDirectory();
     NodeFS.writeFileSync(

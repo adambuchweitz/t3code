@@ -320,6 +320,12 @@ Missing or rejected entries compile from the shipped JavaScript. Prepared backen
 explicit startup flush; Node can persist missing entries on normal exit. The writable fallback
 keeps the explicit flush needed when Windows force-kills the backend.
 
+`pnpm run deploy:linux` builds the current branch as a Nightly AppImage, then atomically installs
+it at `~/.local/opt/t3code/T3-Code-local.AppImage` with a `T3 Code (local build)` launcher. That
+folder is outside `~/Applications`, so AppImageLauncher does not add a second entry. It uses the
+normal production T3 home, so it is intended for a developer's day-to-day local fork rather than
+an isolated test instance.
+
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install

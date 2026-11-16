@@ -865,6 +865,14 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 });
 
 const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
+  const configured = yield* Config.String("T3CODE_BUILD_COMMIT").pipe(Config.option);
+  const supplied = Option.getOrUndefined(configured)?.trim();
+  if (supplied) {
+    if (!/^[0-9a-f]{7,40}$/i.test(supplied)) {
+      return "unknown";
+    }
+    return supplied.slice(0, 12).toLowerCase();
+  }
   const result = yield* spawnAndCollectOutput(
     ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
       cwd: repoRoot,
