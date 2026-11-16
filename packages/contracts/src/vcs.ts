@@ -75,6 +75,7 @@ export interface VcsProcessTimeoutFailure {
 
 export const VcsProcessExitFailureKind = Schema.Literals([
   "authentication",
+  "permission-denied",
   "not-found",
   "rate-limited",
   "command-failed",
@@ -137,11 +138,13 @@ export class VcsProcessExitError extends Schema.TaggedError<VcsProcessExitError>
     const detail =
       failureKind === "authentication"
         ? "Authentication failed."
-        : failureKind === "rate-limited"
-          ? "API rate limit exceeded."
-          : failureKind === "not-found"
-            ? (options?.notFoundDetail ?? "VCS resource not found.")
-            : "Process exited with a non-zero status.";
+        : failureKind === "permission-denied"
+          ? "Permission denied."
+          : failureKind === "rate-limited"
+            ? "API rate limit exceeded."
+            : failureKind === "not-found"
+              ? (options?.notFoundDetail ?? "VCS resource not found.")
+              : "Process exited with a non-zero status.";
 
     return new VcsProcessExitError({
       ...context,

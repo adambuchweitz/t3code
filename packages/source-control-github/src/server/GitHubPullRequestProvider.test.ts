@@ -107,6 +107,28 @@ it.effect.each([
   }),
 );
 
+it.effect("reports token permission guidance instead of a missing pull request", () =>
+  Effect.gen(function* () {
+    const cause = new GitHubRequestPolicy.GitHubApiPermissionError({
+      host: "github.com",
+      operation: "detail",
+    });
+    const provider = yield* make.pipe(
+      Effect.provide(
+        Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+          revalidateChecks: (_input, read) => read,
+          getPullRequestDetail: () => Effect.fail(cause),
+        }),
+      ),
+    );
+    const error = yield* provider
+      .getChangeRequest({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 })
+      .pipe(Effect.flip);
+    expect(error.reason).toBe("failed");
+    expect(error.detail).toContain("Check the token's repository permissions");
+    expect(error.cause).toBe(cause);
+  }),
+);
 it.effect("advertises standalone branch deletion for source repository writers", () =>
   Effect.gen(function* () {
     let action: string | undefined;

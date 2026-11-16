@@ -51,6 +51,22 @@ export class GitHubApiAuthenticationError extends Schema.TaggedError<GitHubApiAu
   }
 }
 
+export class GitHubApiPermissionError extends Schema.TaggedError<GitHubApiPermissionError>()(
+  "GitHubApiPermissionError",
+  {
+    host: Schema.String,
+    operation: Schema.String,
+    githubErrors: Schema.optionalKey(Schema.Array(Schema.String)),
+  },
+) {
+  override get message(): string {
+    return "GitHub token does not have permission to access this resource. Check the token's repository permissions and try again.";
+  }
+}
+
+export const isTokenPermissionDenied = (message: string): boolean =>
+  /resource not accessible by personal access token/i.test(message);
+
 export class GitHubApiRateLimitError extends Schema.TaggedError<GitHubApiRateLimitError>()(
   "GitHubApiRateLimitError",
   {
@@ -105,6 +121,7 @@ export type GitHubApiError =
   | GitHubAppSignIn.GitHubAppSessionError
   | GitHubApiRequestError
   | GitHubApiAuthenticationError
+  | GitHubApiPermissionError
   | GitHubApiRateLimitError
   | GitHubApiNotFoundError
   | GitHubApiResponseError
@@ -195,7 +212,7 @@ export type GitHubAnswer<A> = {
       /** GitHub left part of the answer out as not found or forbidden for this credential. */
       readonly withheld?: boolean;
     }
-  | { readonly _tag: "RateLimited" | "Unauthorized" | "NotFound" }
+  | { readonly _tag: "RateLimited" | "Unauthorized" | "PermissionDenied" | "NotFound" }
   | { readonly _tag: "Failed"; readonly messages?: ReadonlyArray<string> | undefined }
 );
 
@@ -391,6 +408,8 @@ export const make = Effect.gen(function* () {
           yield* appSignIn.invalidate(host, Redacted.value(held.token));
           yield* credentials.invalidate(host);
           return yield* new GitHubApiAuthenticationError(context);
+        case "PermissionDenied":
+          return yield* new GitHubApiPermissionError(context);
         case "NotFound":
           return yield* new GitHubApiNotFoundError({
             ...context,

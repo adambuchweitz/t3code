@@ -72,6 +72,13 @@ export const describeErrors = (error: GraphQLClientError.GraphQLClientError) =>
       )
     : [];
 
+export const isTokenPermissionError = (error: unknown): boolean =>
+  GraphQLClientError.isGraphQLClientError(error) &&
+  error.reason._tag === "ResponseError" &&
+  error.reason.errors.some((graphQlError) =>
+    GitHubRequestPolicy.isTokenPermissionDenied(graphQlError.message),
+  );
+
 /** Share REST's credentials/slots/quota/pause; leave non-rate-limit errors to each lookup. */
 export class GitHubGraphQlAuth extends GraphQLMiddleware.Service<
   GitHubGraphQlAuth,
@@ -172,9 +179,11 @@ const refused = Effect.fn("gitHubGraphQlClient.refused")(function* (
     ? "RateLimited"
     : status === 401
       ? "Unauthorized"
-      : status === 404
-        ? "NotFound"
-        : "Failed";
+      : GitHubRequestPolicy.isTokenPermissionDenied(body)
+        ? "PermissionDenied"
+        : status === 404
+          ? "NotFound"
+          : "Failed";
   return { _tag: tag, status: status ?? 200, headers } as const;
 });
 
@@ -248,6 +257,7 @@ const fromClientError = (
   target: { readonly host: string; readonly operation: string },
   error: GraphQLClientError.GraphQLClientError,
 ):
+  | GitHubRequestPolicy.GitHubApiPermissionError
   | GitHubRequestPolicy.GitHubApiNotFoundError
   | GitHubRequestPolicy.GitHubApiResponseError
   | GraphQLClientError.GraphQLClientError => {
@@ -258,6 +268,9 @@ const fromClientError = (
     operation: target.operation,
     githubErrors: describeErrors(error),
   };
+  if (isTokenPermissionError(error)) {
+    return new GitHubRequestPolicy.GitHubApiPermissionError(context);
+  }
   const credential = Option.filter(
     Headers.get(reason.headers ?? Headers.empty, CREDENTIAL_SOURCE_HEADER),
     isCredentialSource,
@@ -284,7 +297,10 @@ export const call: {
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<
     A,
-    E | GitHubRequestPolicy.GitHubApiNotFoundError | GitHubRequestPolicy.GitHubApiResponseError,
+    | E
+    | GitHubRequestPolicy.GitHubApiPermissionError
+    | GitHubRequestPolicy.GitHubApiNotFoundError
+    | GitHubRequestPolicy.GitHubApiResponseError,
     Exclude<R, GitHubGraphQlTarget>
   >;
   <A, E, R>(
@@ -292,7 +308,10 @@ export const call: {
     target: GitHubGraphQlTarget["Service"],
   ): Effect.Effect<
     A,
-    E | GitHubRequestPolicy.GitHubApiNotFoundError | GitHubRequestPolicy.GitHubApiResponseError,
+    | E
+    | GitHubRequestPolicy.GitHubApiPermissionError
+    | GitHubRequestPolicy.GitHubApiNotFoundError
+    | GitHubRequestPolicy.GitHubApiResponseError,
     Exclude<R, GitHubGraphQlTarget>
   >;
 } = dual(2, <A, E, R>(effect: Effect.Effect<A, E, R>, target: GitHubGraphQlTarget["Service"]) =>
@@ -301,6 +320,7 @@ export const call: {
       GraphQLClientError.isGraphQLClientError(error)
         ? (fromClientError(target, error) as
             | E
+            | GitHubRequestPolicy.GitHubApiPermissionError
             | GitHubRequestPolicy.GitHubApiNotFoundError
             | GitHubRequestPolicy.GitHubApiResponseError)
         : error,

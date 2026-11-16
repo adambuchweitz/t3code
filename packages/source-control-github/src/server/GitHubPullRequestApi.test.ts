@@ -741,6 +741,75 @@ it.effect(
     }),
 );
 
+it.effect.each([
+  "Resource not accessible by integration",
+  "Resource not accessible by personal access token",
+])("verifies an HTTP 403 from /user through GraphQL: %s", (message) =>
+  Effect.gen(function* () {
+    const requests: Array<{ readonly url: string; readonly authorization: string | undefined }> =
+      [];
+    let invalidations = 0;
+    const services = Layer.mergeAll(
+      Layer.succeed(GitHubCredentials.GitHubCredentials, {
+        get: (host) =>
+          Effect.succeed({
+            host,
+            token: Redacted.make("restricted-token"),
+            fingerprint: "restricted",
+            source: "gh" as const,
+          }),
+        saved: () => Effect.succeedNone,
+        fingerprint: (host, token) => Effect.succeed(`${host}:${token}`),
+        invalidate: () =>
+          Effect.sync(() => {
+            invalidations++;
+          }),
+      }),
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() => {
+            requests.push({ url: request.url, authorization: request.headers.authorization });
+            const refused = request.url.endsWith("/user");
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                encodeJson(
+                  refused
+                    ? { message }
+                    : { data: { viewer: { databaseId: 789, login: "restricted-user" } } },
+                ),
+                { status: refused ? 403 : 200, headers: { "content-type": "application/json" } },
+              ),
+            );
+          }),
+        ),
+      ),
+      GitHubQuota.layer,
+      SourceControlRateLimit.layer,
+    );
+    const api = yield* GitHubPullRequestApi.make.pipe(
+      Effect.provide(
+        GitHubAppAccess.layer.pipe(
+          Layer.provideMerge(GitHubRest.layer),
+          Layer.provideMerge(Layer.mergeAll(services, appSignedOut)),
+          Layer.merge(TestSourceControlHost.layer()),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    );
+    const input = { cwd: "/repo", host: "github.com" };
+    const identity = { accountId: "789", viewer: "restricted-user" };
+    expect(yield* api.getRoutingIdentity(input)).toEqual(identity);
+    expect(yield* api.getRoutingIdentity(input)).toEqual(identity);
+    expect(requests).toEqual([
+      { url: "https://api.github.com/user", authorization: "Bearer restricted-token" },
+      { url: "https://api.github.com/graphql", authorization: "Bearer restricted-token" },
+    ]);
+    expect(invalidations).toBe(0);
+  }),
+);
+
 layer("GitHubPullRequestApi.layer", (it) => {
   it.effect("keeps recent references when the typed number does not exist", () =>
     Effect.gen(function* () {
@@ -1303,9 +1372,20 @@ layer("GitHubPullRequestApi.layer", (it) => {
     }),
   );
 
-  it.effect(
-    "fails only the pull request GitHub cannot find, and answers the rest of its batch",
-    () =>
+  it.effect.each([
+    {
+      type: "NOT_FOUND",
+      message: "Could not resolve to a PullRequest with the number of 7.",
+      tag: "GitHubApiNotFoundError",
+    },
+    {
+      type: "FORBIDDEN",
+      message: "Resource not accessible by personal access token",
+      tag: "GitHubApiPermissionError",
+    },
+  ])(
+    "fails only the refused pull request as $tag, and answers the rest of its batch",
+    ({ type, message, tag }) =>
       Effect.gen(function* () {
         mockedExecute.mockReturnValueOnce(
           Effect.succeed(
@@ -1340,9 +1420,9 @@ layer("GitHubPullRequestApi.layer", (it) => {
                 },
                 errors: [
                   {
-                    type: "NOT_FOUND",
+                    type,
                     path: ["_0_repository", "pullRequest"],
-                    message: "Could not resolve to a PullRequest with the number of 7.",
+                    message,
                   },
                 ],
               }),
@@ -1367,7 +1447,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
         yield* TestClock.adjust("10 millis");
         const [seven, eight] = yield* Fiber.join(reads);
 
-        expect(Result.isFailure(seven!) ? seven.failure._tag : null).toBe("GitHubApiNotFoundError");
+        expect(Result.isFailure(seven!) ? seven.failure._tag : null).toBe(tag);
         expect(Result.isSuccess(eight!) ? eight.success.headBranch : null).toBe("feat/eight");
         expect(mockedExecute).toHaveBeenCalledOnce();
         expect(callAt(0)).toMatchObject({ kind: "graphql", partial: true });

@@ -150,6 +150,7 @@ export class GitLabCliCommandError extends Schema.TaggedError<GitLabCliCommandEr
             return new GitLabCliAuthenticationError({ ...context, cause });
           case "rate-limited":
             return new GitLabCliRateLimitError({ ...context, cause });
+          case "permission-denied":
           case "not-found":
           case "command-failed":
           case undefined:

@@ -1110,6 +1110,18 @@ export const make = Effect.gen(function* () {
           ? yield* api.credential(host)
           : yield* appAccess.credentialFor(host, input.repository);
       const credential = { host, token, credentialFingerprint: key };
+      const readViewerIdentity = Effect.fn("GitHubPullRequestApi.readViewerIdentity")(function* () {
+        const { viewer } = yield* client
+          .RoutingIdentityViewer({})
+          .pipe(
+            GitHubGraphQlClient.call({ host, operation: "getRoutingIdentity", allowReserve: true }),
+            Effect.catchTags({ GraphQLClientError: () => Effect.fail(unavailable()) }),
+          );
+        return yield* decodeViewerIdentity({
+          id: viewer.databaseId,
+          login: viewer.login,
+        }).pipe(Effect.mapError(unavailable));
+      });
       return yield* Effect.acquireUseRelease(
         Effect.sync(() => {
           const lock = identityLocks.get(key) ?? { gate: Semaphore.makeUnsafe(1), users: 0 };
@@ -1132,24 +1144,9 @@ export const make = Effect.gen(function* () {
                     decodeRoutingIdentity(response.body).pipe(Effect.mapError(unavailable)),
                   ),
                   Effect.catchTags({
-                    // The enclosing operation owns the span for this inline handler.
-                    GitHubApiResponseError: Effect.fnUntraced(function* (error) {
-                      if (error.status !== 403) return yield* error;
-                      const { viewer } = yield* client.RoutingIdentityViewer({}).pipe(
-                        GitHubGraphQlClient.call({
-                          host,
-                          operation: "getRoutingIdentity",
-                          allowReserve: true,
-                        }),
-                        Effect.catchTags({
-                          GraphQLClientError: () => Effect.fail(unavailable()),
-                        }),
-                      );
-                      return yield* decodeViewerIdentity({
-                        id: viewer.databaseId,
-                        login: viewer.login,
-                      }).pipe(Effect.mapError(unavailable));
-                    }),
+                    GitHubApiPermissionError: () => readViewerIdentity(),
+                    GitHubApiResponseError: (error) =>
+                      error.status === 403 ? readViewerIdentity() : Effect.fail(error),
                   }),
                   Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, credential),
                   Effect.provideService(SourceControlRateLimit.CredentialScope, key),
@@ -1205,6 +1202,7 @@ export const make = Effect.gen(function* () {
     ): Effect.Effect<
       A,
       | Exclude<E, GraphQLClientError.GraphQLClientError>
+      | GitHubRequestPolicy.GitHubApiPermissionError
       | GitHubRequestPolicy.GitHubApiNotFoundError
       | GitHubRequestPolicy.GitHubApiResponseError
       | GitHubPullRequestReadError,
@@ -1840,6 +1838,7 @@ export const make = Effect.gen(function* () {
     A,
     | Exclude<E, GraphQLClientError.GraphQLClientError>
     | GitHubPullRequestReadError
+    | GitHubRequestPolicy.GitHubApiPermissionError
     | GitHubRequestPolicy.GitHubApiNotFoundError,
     Exclude<R, GitHubGraphQlClient.GitHubGraphQlTarget>
   > =>
@@ -1851,13 +1850,18 @@ export const make = Effect.gen(function* () {
       Effect.mapError((error) =>
         !isGraphQlClientError(error)
           ? (error as Exclude<E, GraphQLClientError.GraphQLClientError>)
-          : isNotFoundOnly(error)
-            ? new GitHubRequestPolicy.GitHubApiNotFoundError({
+          : GitHubGraphQlClient.isTokenPermissionError(error)
+            ? new GitHubRequestPolicy.GitHubApiPermissionError({
                 host: input.host,
                 operation: input.operation,
                 githubErrors: GitHubGraphQlClient.describeErrors(error),
               })
-            : readError(input.cwd, input.operation, error),
+            : isNotFoundOnly(error)
+              ? new GitHubRequestPolicy.GitHubApiNotFoundError({
+                  host: input.host,
+                  operation: input.operation,
+                })
+              : readError(input.cwd, input.operation, error),
       ),
     );
 
