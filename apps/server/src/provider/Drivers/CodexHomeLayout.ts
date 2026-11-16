@@ -40,6 +40,51 @@ const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
   ".sqlite-maintenance.lock",
 ]);
 
+// SQLite opens its database and journals together through CODEX_SQLITE_HOME.
+// Replacing individual links can disrupt live connections in either home.
+const ROOT_SQLITE_RUNTIME_ENTRY_PATTERN = /\.sqlite(?:-(?:wal|shm|journal))?$/;
+
+export const applyCodexSqliteHomeEnvironment = Effect.fn(
+  "CodexHomeLayout.applyCodexSqliteHomeEnvironment",
+)(function* (
+  layout: CodexHomeLayout,
+  env: NodeJS.ProcessEnv,
+  inheritedEnv: NodeJS.ProcessEnv = {},
+) {
+  if (layout.mode !== "authOverlay") return env;
+  const platform = yield* HostProcess.Platform;
+  const home = yield* HostProcess.HomeDirectory;
+  const sqliteHomeKey = (environment: NodeJS.ProcessEnv) =>
+    platform === "win32"
+      ? Object.keys(environment).findLast((key) => key.toUpperCase() === "CODEX_SQLITE_HOME")
+      : "CODEX_SQLITE_HOME";
+  const key = sqliteHomeKey(env) ?? "CODEX_SQLITE_HOME";
+  // Merging provider overrides into a Windows environment can leave differently
+  // cased aliases. Keep only the last override so the child cannot pick the old one.
+  const normalizedEnv =
+    platform === "win32"
+      ? Object.fromEntries(
+          Object.entries(env).filter(
+            ([candidate]) => candidate === key || candidate.toUpperCase() !== "CODEX_SQLITE_HOME",
+          ),
+        )
+      : env;
+  const existingSqliteHome = normalizedEnv[key];
+  if (existingSqliteHome !== undefined && existingSqliteHome.trim().length > 0) {
+    return { ...normalizedEnv, [key]: expandHomePath(existingSqliteHome, home) };
+  }
+  const inheritedKey = sqliteHomeKey(inheritedEnv) ?? "CODEX_SQLITE_HOME";
+  const inheritedSqliteHome = inheritedEnv[inheritedKey];
+  if (
+    !Object.hasOwn(normalizedEnv, key) &&
+    inheritedSqliteHome !== undefined &&
+    inheritedSqliteHome.trim().length > 0
+  ) {
+    return normalizedEnv;
+  }
+  return { ...normalizedEnv, [key]: layout.sharedHomePath };
+});
+
 function resolveHomePath(path: Path.Path, home: string, value: string | undefined): string {
   const expanded =
     value && value.trim().length > 0 ? expandHomePath(value, home) : path.join(home, ".codex");
@@ -418,7 +463,11 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
   );
   const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
   for (const entryName of sharedEntryNames) {
-    if (!PRIVATE_ENTRY_NAMES.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
+    if (
+      !PRIVATE_ENTRY_NAMES.has(entryName) &&
+      !SHADOW_LOCAL_ENTRY_NAMES.has(entryName) &&
+      !ROOT_SQLITE_RUNTIME_ENTRY_PATTERN.test(entryName)
+    ) {
       entries.add(entryName);
     }
   }

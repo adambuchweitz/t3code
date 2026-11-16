@@ -11,7 +11,10 @@ import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeR
 import * as CodexInstallation from "./CodexInstallation.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 import { COMMAND_TIMEOUT_MS } from "./CodexManagedTokenProtocol.ts";
-import { materializeCodexShadowHome } from "./Drivers/CodexHomeLayout.ts";
+import {
+  applyCodexSqliteHomeEnvironment,
+  materializeCodexShadowHome,
+} from "./Drivers/CodexHomeLayout.ts";
 
 export interface CodexEffectiveRuntime {
   readonly config: CodexSettings;
@@ -58,6 +61,10 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
     options.config,
   );
   const homePath = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+  const runtimeEnvironment = yield* applyCodexSqliteHomeEnvironment(
+    homeLayout,
+    options.environment,
+  );
   const resolve = Effect.gen(function* () {
     // Establish renewal availability before auth.access can consume a refresh token.
     const endpoint = yield* broker.endpoint.pipe(
@@ -115,7 +122,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
     );
     // Ambient CLI overrides cannot redirect a T3-owned token to a different provider.
     const environment: NodeJS.ProcessEnv = {
-      ...options.environment,
+      ...runtimeEnvironment,
       CODEX_HOME: homePath,
     };
     delete environment.ACCESS_TOKEN;

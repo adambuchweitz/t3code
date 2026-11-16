@@ -1,4 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqlite from "node:sqlite";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -7,6 +9,7 @@ import * as Schema from "effect/Schema";
 
 import { CodexSettings } from "@t3tools/contracts";
 import {
+  applyCodexSqliteHomeEnvironment,
   CodexShadowHomeEntryConflictError,
   CodexShadowHomePathConflictError,
   materializeCodexShadowHome,
@@ -62,7 +65,97 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         });
       }),
     );
+
+    it.effect("defaults CODEX_SQLITE_HOME only for auth overlays without an explicit value", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const overlayLayout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({
+            homePath: sharedHome,
+            shadowHomePath: shadowHome,
+          }),
+        );
+        const directLayout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({
+            homePath: sharedHome,
+          }),
+        );
+
+        expect(yield* applyCodexSqliteHomeEnvironment(overlayLayout, {})).toMatchObject({
+          CODEX_SQLITE_HOME: sharedHome,
+        });
+        expect(
+          yield* applyCodexSqliteHomeEnvironment(overlayLayout, {
+            CODEX_SQLITE_HOME: "/configured/sqlite",
+          }),
+        ).toMatchObject({ CODEX_SQLITE_HOME: "/configured/sqlite" });
+        expect(
+          yield* applyCodexSqliteHomeEnvironment(overlayLayout, { CODEX_SQLITE_HOME: "  " }),
+        ).toMatchObject({ CODEX_SQLITE_HOME: sharedHome });
+        expect(
+          yield* applyCodexSqliteHomeEnvironment(
+            overlayLayout,
+            { CODEX_SQLITE_HOME: "  " },
+            { CODEX_SQLITE_HOME: "/inherited/sqlite" },
+          ),
+        ).toMatchObject({ CODEX_SQLITE_HOME: sharedHome });
+        const customHome = yield* applyCodexSqliteHomeEnvironment(overlayLayout, {
+          CODEX_SQLITE_HOME: "~/sqlite-custom",
+          OTHER: "~/unchanged",
+        }).pipe(Effect.provideService(HostProcess.HomeDirectory, sharedHome));
+        expect(customHome).toEqual({
+          CODEX_SQLITE_HOME: path.join(sharedHome, "sqlite-custom"),
+          OTHER: "~/unchanged",
+        });
+        expect(yield* applyCodexSqliteHomeEnvironment(directLayout, {})).not.toHaveProperty(
+          "CODEX_SQLITE_HOME",
+        );
+      }),
+    );
   });
+
+  it.effect.each([
+    { env: { Codex_Sqlite_Home: "~/sqlite" }, inherited: {}, expected: "~/sqlite" },
+    {
+      env: { CODEX_SQLITE_HOME: "/inherited/sqlite", Codex_Sqlite_Home: "~/sqlite" },
+      inherited: {},
+      expected: "~/sqlite",
+    },
+    {
+      env: { Codex_Sqlite_Home: "/inherited/sqlite", CODEX_SQLITE_HOME: "~/sqlite" },
+      inherited: {},
+      expected: "~/sqlite",
+    },
+    { env: {}, inherited: { Codex_Sqlite_Home: "/inherited/sqlite" }, expected: undefined },
+    {
+      env: { codex_sqlite_home: "" },
+      inherited: { CODEX_SQLITE_HOME: "/inherited/sqlite" },
+      expected: "shared",
+    },
+  ])("honors Windows SQLite environment key casing: $env", ({ env, inherited, expected }) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const home = yield* HostProcess.HomeDirectory;
+      const layout = yield* resolveCodexHomeLayout(
+        decodeCodexSettings({
+          homePath: "/shared",
+          shadowHomePath: "/shadow",
+        }),
+      );
+      const result = yield* applyCodexSqliteHomeEnvironment(layout, env, inherited);
+      const entries = Object.entries(result).filter(
+        ([key]) => key.toUpperCase() === "CODEX_SQLITE_HOME",
+      );
+      expect(entries.map(([, value]) => value)).toEqual(
+        expected === undefined
+          ? []
+          : [expected === "shared" ? layout.sharedHomePath : path.join(home, "sqlite")],
+      );
+    }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+  );
 
   describe("materializeCodexShadowHome", () => {
     it.effect.skipIf(!symlinksSupported)(
@@ -261,6 +354,96 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         }),
     );
 
+    it.effect.skipIf(!symlinksSupported)(
+      "preserves shadow-local root sqlite databases and open WAL connections during materialization",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          yield* fileSystem.makeDirectory(sharedHome, { recursive: true });
+          yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
+
+          const sharedDbPath = path.join(sharedHome, "queue.sqlite");
+          const shadowDbPath = path.join(shadowHome, "queue.sqlite");
+          const unknownShadowDbPath = path.join(shadowHome, "unknown.sqlite");
+          const sharedDb = new NodeSqlite.DatabaseSync(sharedDbPath);
+          const shadowDb = new NodeSqlite.DatabaseSync(shadowDbPath);
+          const unknownShadowDb = new NodeSqlite.DatabaseSync(unknownShadowDbPath);
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              sharedDb.close();
+              shadowDb.close();
+              unknownShadowDb.close();
+            }),
+          );
+
+          sharedDb.exec("CREATE TABLE entries (value TEXT NOT NULL)");
+          sharedDb.exec("INSERT INTO entries (value) VALUES ('shared')");
+          shadowDb.exec("PRAGMA journal_mode = WAL");
+          shadowDb.exec("CREATE TABLE entries (value TEXT NOT NULL)");
+          shadowDb.exec("INSERT INTO entries (value) VALUES ('shadow-before')");
+          unknownShadowDb.exec("CREATE TABLE entries (value TEXT NOT NULL)");
+          unknownShadowDb.exec("INSERT INTO entries (value) VALUES ('unknown-shadow')");
+          yield* writeTextFile(path.join(sharedHome, "queue.sqlite-journal"), "");
+          for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+            yield* writeTextFile(path.join(sharedHome, `shared-only.sqlite${suffix}`), "shared");
+          }
+          yield* writeTextFile(path.join(sharedHome, "unknown.sqlite"), "shared-unknown");
+          expect(yield* fileSystem.exists(`${sharedDbPath}-wal`)).toBe(false);
+          expect(yield* fileSystem.exists(`${shadowDbPath}-wal`)).toBe(true);
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({
+              homePath: sharedHome,
+              shadowHomePath: shadowHome,
+            }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          shadowDb.exec("INSERT INTO entries (value) VALUES ('shadow-after-first')");
+          yield* materializeCodexShadowHome(layout);
+          shadowDb.exec("INSERT INTO entries (value) VALUES ('shadow-after-second')");
+
+          const shadowLink = yield* fileSystem.readLink(shadowDbPath).pipe(Effect.result);
+          const sharedWalLink = yield* fileSystem
+            .readLink(path.join(shadowHome, "queue.sqlite-wal"))
+            .pipe(Effect.result);
+          const sharedShmLink = yield* fileSystem
+            .readLink(path.join(shadowHome, "queue.sqlite-shm"))
+            .pipe(Effect.result);
+          const sharedJournalLink = yield* fileSystem
+            .readLink(path.join(shadowHome, "queue.sqlite-journal"))
+            .pipe(Effect.result);
+          const unknownLink = yield* fileSystem.readLink(unknownShadowDbPath).pipe(Effect.result);
+
+          expect(shadowLink._tag).toBe("Failure");
+          expect(sharedWalLink._tag).toBe("Failure");
+          expect(sharedShmLink._tag).toBe("Failure");
+          expect(sharedJournalLink._tag).toBe("Failure");
+          expect(unknownLink._tag).toBe("Failure");
+          for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+            expect(
+              yield* fileSystem.exists(path.join(shadowHome, `shared-only.sqlite${suffix}`)),
+            ).toBe(false);
+          }
+          expect(
+            shadowDb.prepare("SELECT group_concat(value, ',') AS values_text FROM entries").get(),
+          ).toMatchObject({
+            values_text: "shadow-before,shadow-after-first,shadow-after-second",
+          });
+          expect(
+            sharedDb.prepare("SELECT group_concat(value, ',') AS values_text FROM entries").get(),
+          ).toMatchObject({ values_text: "shared" });
+          expect(
+            unknownShadowDb
+              .prepare("SELECT group_concat(value, ',') AS values_text FROM entries")
+              .get(),
+          ).toMatchObject({ values_text: "unknown-shadow" });
+        }),
+    );
     it.effect.skipIf(!symlinksSupported)(
       "accepts Codex-created shadow-local runtime directories",
       () =>

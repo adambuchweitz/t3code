@@ -52,6 +52,7 @@ import {
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
+  applyCodexSqliteHomeEnvironment,
   codexContinuationIdentity,
   codexHomeLaunchArgs,
   materializeCodexShadowHome,
@@ -186,16 +187,17 @@ export const CodexDriver: ProviderDriver<
     const installation = yield* CodexInstallation.CodexInstallation;
     const modelCatalog = yield* ModelCatalog.ModelCatalog;
     const currentCatalog = modelCatalog.current(DRIVER_KIND);
-    const processEnv = yield* mergeProviderInstanceEnvironment(
+    const mergedEnvironment = yield* mergeProviderInstanceEnvironment(
       environment,
       yield* HostProcess.Environment,
     );
-    const environmentHome = processEnv.CODEX_HOME;
+    const environmentHome = mergedEnvironment.CODEX_HOME;
     const homeConfig =
       !config.homePath.trim() && environmentHome?.trim()
         ? { ...config, homePath: environmentHome }
         : config;
     const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
+    const processEnv = yield* applyCodexSqliteHomeEnvironment(homeLayout, mergedEnvironment);
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,

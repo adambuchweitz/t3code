@@ -121,6 +121,7 @@ import {
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
 import {
+  applyCodexSqliteHomeEnvironment,
   codexHomeLaunchArgs,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
@@ -1947,7 +1948,10 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   return yield* makeCodexAdapterV2({
     instanceId,
     settings,
-    environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
+    environment: yield* applyCodexSqliteHomeEnvironment(
+      homeLayout,
+      yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
+    ),
     clientFactory,
     digest,
     fileSystem,

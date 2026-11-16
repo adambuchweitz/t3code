@@ -2732,6 +2732,145 @@ it.layer(
     }).pipe(Effect.provide(layerWithHostPlatform("win32"))),
   );
 
+  it.effect.each([
+    {
+      label: "inherited",
+      runtimeEnv: {},
+      instanceOverride: undefined,
+      expected: "/inherited/sqlite",
+    },
+    {
+      label: "blank runtime",
+      runtimeEnv: { CODEX_SQLITE_HOME: "  " },
+      instanceOverride: undefined,
+      expected: "/configured/codex",
+    },
+    {
+      label: "explicit runtime",
+      runtimeEnv: { CODEX_SQLITE_HOME: "/runtime/sqlite" },
+      instanceOverride: undefined,
+      expected: "/runtime/sqlite",
+    },
+    {
+      label: "blank instance",
+      runtimeEnv: {},
+      instanceOverride: "",
+      expected: "/configured/codex",
+    },
+    {
+      label: "whitespace instance",
+      runtimeEnv: {},
+      instanceOverride: "  ",
+      expected: "/configured/codex",
+    },
+    {
+      label: "explicit instance",
+      runtimeEnv: {},
+      instanceOverride: "/instance/sqlite",
+      expected: "/instance/sqlite",
+    },
+  ])(
+    "keeps $label SQLite environment routing through terminal spawning",
+    ({ runtimeEnv, instanceOverride, expected }) =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettings.ServerSettingsService;
+        const path = yield* Path.Path;
+        const inheritedEnv = { CODEX_SQLITE_HOME: "/inherited/sqlite" };
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          env: inheritedEnv,
+          resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
+            TerminalManager.resolveProviderInstanceTerminalEnvironment({
+              deriveProviderInstanceConfigMap,
+              serverSettings,
+              path,
+              rawProviderInstanceId,
+              env,
+              inheritedEnv,
+            }),
+        });
+        yield* manager.open(
+          openInput({
+            providerInstanceId: ProviderInstanceId.make("codex_shadow"),
+            env: runtimeEnv,
+          }),
+        );
+        expect(ptyAdapter.spawnInputs[0]?.env.CODEX_SQLITE_HOME).toBe(
+          expected === "/configured/codex" ? path.resolve(expected) : expected,
+        );
+      }).pipe(
+        Effect.provide(
+          ServerSettings.layerTest({
+            providerInstances: {
+              [ProviderInstanceId.make("codex_shadow")]: {
+                driver: ProviderDriverKind.make("codex"),
+                environment:
+                  instanceOverride === undefined
+                    ? []
+                    : [{ name: "CODEX_SQLITE_HOME", value: instanceOverride, sensitive: false }],
+                config: { homePath: "/configured/codex", shadowHomePath: "/configured/shadow" },
+              },
+            },
+          }),
+        ),
+      ),
+  );
+
+  it.effect("preserves Windows environment key casing while overriding SQLite home", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { Path: "base-path", Codex_Sqlite_Home: "/base/sqlite" },
+      });
+      yield* manager.open(
+        openInput({ env: { PATH: "runtime-path", CODEX_SQLITE_HOME: "~/sqlite" } }),
+      );
+      const env = ptyAdapter.spawnInputs[0]!.env;
+      expect(env.Path).toBe("runtime-path");
+      expect(env.PATH).toBeUndefined();
+      expect(env.Codex_Sqlite_Home).toBe(
+        (yield* Path.Path).join(yield* HostProcess.HomeDirectory, "sqlite"),
+      );
+      expect(env.CODEX_SQLITE_HOME).toBeUndefined();
+    }).pipe(Effect.provide(layerWithHostPlatform("win32"))),
+  );
+
+  it.effect("spawns Codex shadow terminals with shared sqlite state by default", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      const providerInstanceId = ProviderInstanceId.make("codex_shadow");
+      const sharedHome = path.resolve("/accounts/codex-shared");
+      const shadowHome = path.resolve("/accounts/codex-shadow");
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          [providerInstanceId]: {
+            driver: ProviderDriverKind.make("codex"),
+            config: { homePath: sharedHome, shadowHomePath: shadowHome },
+          },
+        },
+      });
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { T3CODE_SECRET: "server-only" },
+        resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
+          TerminalManager.resolveProviderInstanceTerminalEnvironment({
+            deriveProviderInstanceConfigMap,
+            serverSettings,
+            path,
+            rawProviderInstanceId,
+            env,
+          }),
+      });
+
+      yield* manager.open(openInput({ providerInstanceId, env: { CLIENT_FLAG: "1" } }));
+
+      expect(ptyAdapter.spawnInputs[0]?.env).toMatchObject({
+        CODEX_HOME: shadowHome,
+        CODEX_SQLITE_HOME: sharedHome,
+        CLIENT_FLAG: "1",
+      });
+      expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(ServerSettings.layerTest())),
+  );
+
   it.effect("fails closed when a provider instance is missing", () =>
     Effect.gen(function* () {
       const providerInstanceId = ProviderInstanceId.make("deleted_instance");
@@ -2797,6 +2936,69 @@ it.layer(
               driver: ProviderDriverKind.make(driver),
               environment: [{ name: variable, value: "~/.environment-account", sensitive: false }],
               config,
+            },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("defaults Codex shadow sqlite home unless runtime or inherited env overrides it", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const providerInstanceId = "codex_shadow";
+      const baseInput = {
+        deriveProviderInstanceConfigMap,
+        serverSettings,
+        path,
+        rawProviderInstanceId: providerInstanceId,
+      };
+
+      const defaultEnvironment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        ...baseInput,
+        env: undefined,
+      });
+      const explicitEnvironment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment(
+        {
+          ...baseInput,
+          env: { CODEX_SQLITE_HOME: "/explicit/sqlite" },
+        },
+      );
+      const inheritedEnvironment =
+        yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+          ...baseInput,
+          env: undefined,
+          inheritedEnv: { CODEX_SQLITE_HOME: "/inherited/sqlite" },
+        });
+      const directEnvironment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
+        deriveProviderInstanceConfigMap,
+        serverSettings,
+        path,
+        rawProviderInstanceId: "codex_direct",
+        env: undefined,
+      });
+
+      expect(defaultEnvironment.CODEX_HOME).toBe(path.resolve("/configured/codex-shadow"));
+      expect(defaultEnvironment.CODEX_SQLITE_HOME).toBe(path.resolve("/configured/codex"));
+      expect(explicitEnvironment.CODEX_SQLITE_HOME).toBe("/explicit/sqlite");
+      expect(inheritedEnvironment.CODEX_SQLITE_HOME).toBeUndefined();
+      expect(directEnvironment.CODEX_HOME).toBe(path.resolve("/configured/codex"));
+      expect(directEnvironment.CODEX_SQLITE_HOME).toBeUndefined();
+    }).pipe(
+      Effect.provide(
+        ServerSettings.ServerSettingsService.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("codex_shadow")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: {
+                homePath: "/configured/codex",
+                shadowHomePath: "/configured/codex-shadow",
+              },
+            },
+            [ProviderInstanceId.make("codex_direct")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { homePath: "/configured/codex" },
             },
           },
         }),

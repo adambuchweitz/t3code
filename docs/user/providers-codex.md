@@ -92,6 +92,12 @@ Both instances must use the same **CODEX_HOME path**. T3 Code prepares the share
 state in the shadow directory; do not populate it by copying your whole Codex
 home.
 
+Shadow providers and their terminals use the shared home's SQLite state by
+default. Set `CODEX_SQLITE_HOME` in the provider's environment to use a different
+SQLite directory; an existing server environment value is also respected.
+Existing SQLite files in a shadow home stay in place and are not automatically
+merged into the shared home.
+
 The shadow account needs its own `auth.json` file. If Codex uses an OS credential
 store, configure file storage for this setup. See
 [OpenAI's credential storage guide](https://learn.chatgpt.com/docs/auth#credential-storage).
