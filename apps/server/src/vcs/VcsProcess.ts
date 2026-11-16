@@ -196,6 +196,10 @@ const classifyNonZeroExit = (
     return "authentication";
   }
 
+  if (normalized.includes("resource not accessible by personal access token")) {
+    return "permission-denied";
+  }
+
   if (
     commandKind === "rate-limited" ||
     normalized.includes("api rate limit") ||

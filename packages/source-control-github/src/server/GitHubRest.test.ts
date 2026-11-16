@@ -590,6 +590,32 @@ describe("GitHubRest", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "reports PAT permissions without invalidating a valid token or hiding the resource",
+    () => {
+      let refused = true;
+      const { layer, invalidations } = harness(() =>
+        refused
+          ? json({ message: "Resource not accessible by personal access token" }, { status: 403 })
+          : json({ ok: true }),
+      );
+      return Effect.gen(function* () {
+        const api = yield* GitHubRest.GitHubRest;
+        const input = { host: "github.com", operation: "checks", path: "repos/acme/web/pulls/7" };
+        const error = yield* Effect.flip(api.rest(input));
+        expect(error).toMatchObject({
+          _tag: "GitHubApiPermissionError",
+          host: "github.com",
+          operation: "checks",
+        });
+        expect(error.message).toContain("Check the token's repository permissions");
+        expect(invalidations()).toBe(0);
+        refused = false;
+        expect((yield* api.rest(input)).status).toBe(200);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("drops a refused token so the next request asks the source again", () => {
     const { layer, requests, invalidations } = harness((request) =>
       request.headers.authorization === "Bearer first"

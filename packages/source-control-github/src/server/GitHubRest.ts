@@ -106,6 +106,9 @@ function classify(input: {
     return { _tag: "RateLimited", ...meta };
   }
   if (status === 401) return { _tag: "Unauthorized", ...meta };
+  if (status >= 400 && GitHubRequestPolicy.isTokenPermissionDenied(body)) {
+    return { _tag: "PermissionDenied", ...meta };
+  }
   if (status === 404) return { _tag: "NotFound", ...meta };
   if ((status >= 200 && status < 300) || (status === 304 && input.acceptNotModified)) {
     return { _tag: "Ok", value: input.answer, ...meta };

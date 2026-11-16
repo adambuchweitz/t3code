@@ -580,6 +580,44 @@ describe("GitHubSourceControlProvider.getChangeRequest", () => {
       );
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("reports PAT permissions instead of a missing pull request", () => {
+    const { layer } = harness({
+      remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
+      graphql: () =>
+        new Response(
+          encodeJson({
+            data: { repository: { pullRequest: null } },
+            errors: [
+              {
+                type: "FORBIDDEN",
+                message: "Resource not accessible by personal access token",
+                path: ["repository", "pullRequest"],
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    });
+    return Effect.gen(function* () {
+      const gh = yield* GitHubSourceControlProvider.make;
+      const error = yield* gh.getChangeRequest({ cwd: "/repo", reference: "7" }).pipe(Effect.flip);
+      assert.include(error.detail, "Check the token's repository permissions");
+      assert.notInclude(error.detail, "Pull request not found");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("fails a missing pull request as not found", () => {
+    const { layer } = harness({
+      remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
+      graphql: () => ({ pullRequest: null }),
+    });
+    return Effect.gen(function* () {
+      const gh = yield* GitHubSourceControlProvider.make;
+      const error = yield* gh.getChangeRequest({ cwd: "/repo", reference: "7" }).pipe(Effect.flip);
+      assert.include(error.detail, "Pull request not found");
+    }).pipe(Effect.provide(layer));
+  });
 });
 
 describe("GitHubSourceControlProvider writes", () => {

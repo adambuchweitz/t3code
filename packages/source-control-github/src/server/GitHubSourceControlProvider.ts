@@ -407,6 +407,7 @@ function fromGitHubApiError(
       );
     case "GitHubApiNotFoundError":
       return failure(notFound, error);
+    case "GitHubApiPermissionError":
     case "GitHubCliFailedError":
     case "GitHubCliTimeoutError":
     case "GitHubAppSessionError":

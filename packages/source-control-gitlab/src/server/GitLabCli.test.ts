@@ -478,6 +478,26 @@ layer("GitLabCli.layer", (it) => {
       }),
   );
 
+  it.effect("keeps permission failures distinct from missing merge requests", () =>
+    Effect.gen(function* () {
+      const cause = new VcsProcessExitError({
+        operation: "GitLabCli.execute",
+        command: "glab",
+        cwd: "/repo",
+        exitCode: 1,
+        detail: "Permission denied.",
+        failureKind: "permission-denied",
+      });
+      mockedRun.mockReturnValueOnce(Effect.fail(cause));
+      const glab = yield* GitLabCli.GitLabCli;
+      const error = yield* glab
+        .getMergeRequest({ cwd: "/repo", reference: "42" })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "GitLabCliCommandError");
+      assert.strictEqual(error.cause, cause);
+    }),
+  );
+
   it.effect("preserves rate-limit failures as a distinct error", () =>
     Effect.gen(function* () {
       const cause = new VcsProcessExitError({

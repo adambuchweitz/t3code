@@ -42,13 +42,14 @@ const baseInput = {
 
 const captureProcessResult = (
   result: Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
+  input: VcsProcess.VcsProcessInput = baseInput,
 ) =>
   VcsProcess.make.pipe(
     Effect.provideService(
       ProcessRunner.ProcessRunner,
       ProcessRunner.ProcessRunner.of({ run: () => result }),
     ),
-    Effect.flatMap((service) => service.run(baseInput)),
+    Effect.flatMap((service) => service.run(input)),
     Effect.flip,
   );
 
@@ -470,6 +471,75 @@ describe("VcsProcess.run", () => {
       expect(error.message).not.toContain(secretStderr);
       expect(error.message).not.toContain("super-secret-token");
     }).pipe(provideLive),
+  );
+
+  it.effect.each([
+    {
+      command: "gh",
+      stderr:
+        "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)",
+      failureKind: "permission-denied",
+      detail: "Permission denied.",
+    },
+    {
+      command: "gh",
+      stderr: "GraphQL: An unrelated failure (repository.pullRequest.statusCheckRollup)",
+      failureKind: "command-failed",
+      detail: "Process exited with a non-zero status.",
+    },
+    {
+      command: "gh",
+      stderr:
+        "GraphQL: Could not resolve to a PullRequest with the number of 1155. (repository.pullRequest)",
+      failureKind: "not-found",
+      detail: "Pull request not found.",
+    },
+    {
+      command: "gh",
+      stderr: "no pull requests found for branch feature/test",
+      failureKind: "not-found",
+      detail: "Pull request not found.",
+    },
+    {
+      command: "gh",
+      stderr: "GraphQL: API rate limit exceeded (repository.pullRequest)",
+      failureKind: "rate-limited",
+      detail: "API rate limit exceeded.",
+    },
+    {
+      command: "glab",
+      stderr: "GET 404 merge request not found",
+      failureKind: "not-found",
+      detail: "Merge request not found.",
+    },
+    {
+      command: "az",
+      stderr: "Pull request does not exist",
+      failureKind: "not-found",
+      detail: "Pull request not found.",
+    },
+  ])(
+    "classifies $command: $stderr without retaining provider output",
+    ({ command, stderr, failureKind, detail }) =>
+      Effect.gen(function* () {
+        const error = yield* captureProcessResult(
+          Effect.succeed({
+            stdout: "",
+            stderr,
+            code: ChildProcessSpawner.ExitCode(1),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          }),
+          { ...baseInput, command },
+        );
+        expect(error).toMatchObject({ command, failureKind, detail, stderrLength: stderr.length });
+        expect(error.message).not.toContain(stderr);
+        if (error._tag !== "VcsProcessExitError") return yield* Effect.die(error);
+        expect(yield* encodeExitError(error)).not.toContain(stderr);
+      }),
   );
 
   it.effect("classifies API rate limits without retaining provider stderr", () =>

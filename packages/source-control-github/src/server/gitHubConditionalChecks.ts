@@ -102,6 +102,7 @@ export const makeChecksRevalidator = Effect.gen(function* () {
               })
               .pipe(
                 Effect.catchTags({
+                  GitHubApiPermissionError: () => Effect.succeed(null),
                   GitHubApiNotFoundError: () =>
                     Effect.sync(() => {
                       entry.supported = false;

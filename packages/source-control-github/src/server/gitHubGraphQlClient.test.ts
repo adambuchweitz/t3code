@@ -243,6 +243,17 @@ describe("GitHubGraphQlAuth", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("reports a GraphQL HTTP refusal of a PAT as a permission error", () => {
+    const { layer, invalidations } = harness(() =>
+      json({ message: "Resource not accessible by personal access token" }, { status: 403 }),
+    );
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(readStats("github.com"));
+      expect(error._tag).toBe("GitHubApiPermissionError");
+      expect(invalidations()).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the quota reserve for interactive requests", () => {
     const reset = Math.floor(NOW / 1000) + 600;
     const { layer, requests } = harness(() =>
@@ -356,6 +367,34 @@ describe("call", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect.each([
+    {
+      message:
+        "Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)",
+      tag: "GitHubApiPermissionError",
+    },
+    {
+      message: "An unrelated failure (repository.pullRequest.statusCheckRollup)",
+      tag: "GitHubApiResponseError",
+    },
+  ])("distinguishes GraphQL failures: $message", ({ message, tag }) => {
+    const { layer, invalidations } = harness(() =>
+      json({
+        data: { repository: null },
+        errors: [{ type: "FORBIDDEN", message, path: ["repository", "pullRequest"] }],
+      }),
+    );
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(callStats());
+      expect(error._tag).toBe(tag);
+      if (error._tag === "GitHubApiPermissionError") {
+        expect(error.message).toContain("Check the token's repository permissions");
+        expect(error.message).not.toContain("statusCheckRollup");
+      }
+      expect(invalidations()).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("fails an answer past the byte cap with its status", () => {
     const { layer } = harness(() =>
