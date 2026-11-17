@@ -236,7 +236,8 @@ with open(path, 'wb') as f:
     plistlib.dump(config, f)
 PY
 launchctl bootstrap "$domain" "$plist"
-curl -fsS --retry 85 --retry-connrefused --retry-delay 2 --max-time 5 \
+# Startup runs pending migrations first; a rollback mid-migration would put the old server on a newer database.
+curl -fsS --retry 450 --retry-connrefused --retry-delay 2 --max-time 5 \
   -o /dev/null http://127.0.0.1:3773/
 trap cleanup EXIT
 if [[ -n "$previous" ]]; then
