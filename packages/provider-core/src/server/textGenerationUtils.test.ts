@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { limitSection, sanitizeCommitSubject, sanitizeThreadTitle } from "./textGenerationUtils.ts";
+import {
+  limitSection,
+  sanitizeCommitSubject,
+  sanitizeSpeechText,
+  sanitizeThreadTitle,
+} from "./textGenerationUtils.ts";
 
 describe("limitSection", () => {
   it("cuts a long section without splitting an emoji", () => {
@@ -42,5 +47,12 @@ describe("sanitizeThreadTitle", () => {
     const title = `${prefix}${character} more`;
 
     expect(sanitizeThreadTitle(title)).toBe(`${prefix}${retained}...`);
+  });
+});
+
+describe("sanitizeSpeechText", () => {
+  it("unwraps fenced and quoted replies and keeps single paragraph breaks", () => {
+    expect(sanitizeSpeechText("```markdown\nFirst.\n\n\n\nSecond.\n```")).toBe("First.\n\nSecond.");
+    expect(sanitizeSpeechText('  "Quoted reply."  ')).toBe("Quoted reply.");
   });
 });

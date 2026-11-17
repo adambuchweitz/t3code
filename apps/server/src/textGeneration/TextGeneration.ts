@@ -31,6 +31,8 @@ export type {
   PrContentGenerationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
+  SpeechTextGenerationInput,
+  SpeechTextGenerationResult,
   ThreadTitleGenerationInput,
   ThreadTitleGenerationResult,
   TranscriptionPostProcessingInput,
@@ -47,7 +49,8 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
-  | "generateTranscriptionPostProcessing";
+  | "generateTranscriptionPostProcessing"
+  | "generateSpeechText";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -215,6 +218,11 @@ export const make = Effect.gen(function* () {
         null,
         (service, modelSelection) =>
           service.generateTranscriptionPostProcessing({ ...input, modelSelection }),
+      );
+    }),
+    generateSpeechText: Effect.fn("TextGeneration.generateSpeechText")(function (input) {
+      return generate("generateSpeechText", input.modelSelection, null, (service, modelSelection) =>
+        service.generateSpeechText({ ...input, modelSelection }),
       );
     }),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {

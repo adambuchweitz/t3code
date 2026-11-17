@@ -5,6 +5,7 @@ import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferenc
 import type { ComposerAttachmentInsertion } from "../composerAttachmentInsertion";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { BackgroundThreadContext, HiddenThreadContext } from "./backgroundThread";
+import { ComposerReadAloud } from "./ComposerReadAloud";
 import {
   draftRuntimeModeLimitsInstance,
   draftSupportedRuntimeModes,
@@ -407,6 +408,8 @@ export interface ChatComposerProps {
   activeThread: Thread | undefined;
   activeThreadRuns: ReadonlyArray<OrchestrationV2Run>;
   promptHistoryEntries: ReadonlyArray<TimelineEntry>;
+  /** Thread detail has loaded under ChatView's own wait-for-listing rule. */
+  threadDetailLoaded: boolean;
   forceExpandedOnMobile: boolean;
   projectSelectionRequired: boolean;
 
@@ -558,6 +561,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread,
     activeThreadRuns,
     promptHistoryEntries,
+    threadDetailLoaded,
     forceExpandedOnMobile,
     projectSelectionRequired,
     phase,
@@ -4109,6 +4113,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-2"
                 >
+                  {routeKind === "server" ? (
+                    <ComposerReadAloud
+                      key={`${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
+                      threadRef={routeThreadRef}
+                      detailLoaded={threadDetailLoaded}
+                    />
+                  ) : null}
                   <div
                     ref={attachExpandedComposerControls}
                     data-chat-composer-controls="footer"

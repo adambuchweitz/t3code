@@ -332,6 +332,7 @@ function createTextGeneration(
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
     generateTranscriptionPostProcessing: () =>
       Effect.succeed({ transcription: "processed transcript" }),
+    generateSpeechText: (input) => Effect.succeed({ speech: input.message }),
     ...overrides,
   };
 
@@ -383,6 +384,7 @@ function createTextGeneration(
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
     generateTranscriptionPostProcessing: (input) =>
       implementation.generateTranscriptionPostProcessing(input),
+    generateSpeechText: (input) => implementation.generateSpeechText(input),
   };
 }
 

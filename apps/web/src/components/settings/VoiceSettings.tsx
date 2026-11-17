@@ -1,0 +1,444 @@
+import {
+  AuthOrchestrationOperateScope,
+  DEFAULT_SPEECH_OPTIONS,
+  DEFAULT_SPEECH_VOICE,
+  type EnvironmentId,
+  SPEECH_ACCENTS,
+  SPEECH_AGES,
+  SPEECH_GENDERS,
+  SPEECH_PITCHES,
+  type SpeechOptions,
+  type SpeechVoiceProfiles,
+  isDefaultSpeechVoice,
+} from "@t3tools/contracts";
+import { ChevronRightIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+
+import { updateClientSettings, useClientSettings } from "~/hooks/useSettings";
+import { useSpeechPlayback } from "~/hooks/useSpeechPlayback";
+import { requestSpeechAudio, requestVoiceProfiles } from "~/lib/readAloud";
+import { cn } from "~/lib/utils";
+import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
+import { FoldedSettingsSection } from "./FoldedSettingsSection";
+import { SettingsRow } from "./settingsLayout";
+import { useSearchableSetting } from "./settingsSearch";
+import { useSettingsScope } from "./SettingsScopeContext";
+
+const DEFAULT_VOICE_LABEL = "Default OmniVoice";
+const DEFAULT_PREVIEW_TEXT = "Here is a preview of your read-aloud voice.";
+
+/** Commits on blur or Enter; an invalid draft snaps back instead of saving. */
+function DraftInput({
+  label,
+  value,
+  parse,
+  placeholder,
+  type = "text",
+  inputMode,
+  className = "w-28",
+}: {
+  label: string;
+  value: string;
+  parse: (draft: string) => { readonly ok: true; readonly commit: () => void } | { ok: false };
+  placeholder?: string;
+  type?: "text" | "number";
+  inputMode?: "decimal" | "numeric";
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [shownValue, setShownValue] = useState(value);
+  if (shownValue !== value) {
+    setShownValue(value);
+    setDraft(value);
+  }
+  const parsed = parse(draft.trim());
+  return (
+    <div className={className}>
+      <Input
+        type={type}
+        inputMode={inputMode}
+        aria-label={label}
+        aria-invalid={!parsed.ok}
+        value={draft}
+        placeholder={placeholder}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          if (parsed.ok) parsed.commit();
+          else setDraft(value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+      />
+    </div>
+  );
+}
+
+const numberIn =
+  (
+    min: number,
+    max: number,
+    options: { readonly integer?: boolean; readonly blank?: () => void },
+    commit: (value: number) => void,
+  ) =>
+  (draft: string) => {
+    if (draft === "")
+      return options.blank ? { ok: true as const, commit: options.blank } : { ok: false as const };
+    const value = Number(draft);
+    const ok =
+      Number.isFinite(value) &&
+      value >= min &&
+      value <= max &&
+      (!options.integer || Number.isInteger(value));
+    return ok ? { ok: true as const, commit: () => commit(value) } : { ok: false as const };
+  };
+
+const ATTRIBUTES = [
+  { key: "gender", title: "Gender", values: SPEECH_GENDERS },
+  { key: "age", title: "Age", values: SPEECH_AGES },
+  { key: "pitch", title: "Pitch", values: SPEECH_PITCHES },
+  { key: "accent", title: "Accent", values: SPEECH_ACCENTS },
+] as const;
+
+const sentenceCase = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+
+export function VoiceSettings() {
+  const { environment } = useSettingsScope();
+  const environmentId = environment?.environmentId ?? null;
+  // Keyed so profiles and an in-flight preview never carry over to another environment.
+  return <VoiceSettingsContent key={environmentId ?? "none"} environmentId={environmentId} />;
+}
+
+function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId | null }) {
+  const enabled = useClientSettings((settings) => settings.readAloudEnabled);
+  const savedVoice = useClientSettings((settings) => settings.readAloudVoice);
+  const options = useClientSettings((settings) => settings.readAloudOptions);
+  const connected = usePreparedConnection(environmentId)._tag === "Some";
+  const canSpeak = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  const reachable = environmentId !== null && connected && canSpeak;
+
+  const voice = isDefaultSpeechVoice(savedVoice) ? DEFAULT_SPEECH_VOICE : savedVoice;
+  // Each load is tagged with the request that started it, so loading and a
+  // stale error are derived instead of being reset from an effect.
+  const [profileRequest, setProfileRequest] = useState(0);
+  const [profileResult, setProfileResult] = useState<{
+    readonly request: number;
+    readonly profiles: SpeechVoiceProfiles;
+    readonly error: string | null;
+  } | null>(null);
+  const [previewText, setPreviewText] = useState(DEFAULT_PREVIEW_TEXT);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const preview = useSpeechPlayback(setPreviewError);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads voice profiles from the environment, aborting the request on change or unmount
+  useEffect(() => {
+    if (!reachable || environmentId === null) return;
+    const request = profileRequest;
+    // A refresh or leaving the page cancels the load still in flight.
+    const controller = new AbortController();
+    requestVoiceProfiles(environmentId, controller.signal).then(
+      (profiles) => {
+        if (!controller.signal.aborted) setProfileResult({ request, profiles, error: null });
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        setProfileResult((previous) => ({
+          request,
+          profiles: previous?.profiles ?? [],
+          error: error instanceof Error ? error.message : "Could not load profiles.",
+        }));
+      },
+    );
+    return () => controller.abort();
+  }, [reachable, environmentId, profileRequest]);
+  const loadingProfiles = reachable && profileResult?.request !== profileRequest;
+  const profiles = profileResult?.profiles ?? [];
+  const profileError = loadingProfiles ? null : (profileResult?.error ?? null);
+
+  const updateOptions = (patch: Partial<SpeechOptions>) =>
+    void updateClientSettings({ readAloudOptions: { ...options, ...patch } });
+
+  const savedProfile = profiles.find((profile) => profile.id === voice);
+  const voiceLabel =
+    voice === DEFAULT_SPEECH_VOICE
+      ? DEFAULT_VOICE_LABEL
+      : (savedProfile?.name ??
+        (loadingProfiles ? "Loading profiles…" : `Missing profile (${voice})`));
+
+  const unavailableReason =
+    environmentId === null || !connected
+      ? "Connect to an environment to load profiles and preview voices."
+      : !canSpeak
+        ? "This connection can't use read aloud. It needs permission to operate this environment."
+        : null;
+
+  const { id, title } = useSearchableSetting()("read-aloud-enabled");
+  return (
+    <FoldedSettingsSection
+      id={id}
+      title={title}
+      summary={enabled ? `${voiceLabel} · ${options.speed}×` : "Read aloud off"}
+      control={
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) => void updateClientSettings({ readAloudEnabled: checked })}
+          aria-label="Read responses aloud"
+        />
+      }
+    >
+      <SettingsRow
+        title="Voice profile"
+        description="Profiles come from VoiceStudio on lan-party. The environment that hosts a thread must reach it over Tailscale."
+        status={unavailableReason ?? profileError}
+        control={
+          <div className="flex items-center gap-2">
+            <Select
+              value={voice}
+              onValueChange={(value) => {
+                if (value !== null) void updateClientSettings({ readAloudVoice: value });
+              }}
+              disabled={!reachable || loadingProfiles}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-48" aria-label="Voice profile">
+                <SelectValue>{voiceLabel}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value={DEFAULT_SPEECH_VOICE}>{DEFAULT_VOICE_LABEL}</SelectItem>
+                {profiles.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+                {voice !== DEFAULT_SPEECH_VOICE && savedProfile === undefined ? (
+                  <SelectItem value={voice} disabled>
+                    Missing profile ({voice})
+                  </SelectItem>
+                ) : null}
+              </SelectPopup>
+            </Select>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!reachable || loadingProfiles}
+              onClick={() => setProfileRequest((count) => count + 1)}
+            >
+              Refresh
+            </Button>
+          </div>
+        }
+      />
+      <SettingsRow
+        title="Speaking speed"
+        description="1× is normal speed, from 0.25× to 4×."
+        control={
+          <DraftInput
+            label="Speaking speed"
+            type="number"
+            inputMode="decimal"
+            value={String(options.speed)}
+            parse={numberIn(0.25, 4, {}, (speed) => updateOptions({ speed }))}
+          />
+        }
+      />
+      <SettingsRow
+        title="Language"
+        description="A code such as en, es, or ja guides pronunciation. It does not translate the response."
+        control={
+          <DraftInput
+            label="Speech language"
+            value={options.language}
+            placeholder="Automatic"
+            className="w-36"
+            parse={(draft) =>
+              draft.length <= 20
+                ? { ok: true, commit: () => updateOptions({ language: draft }) }
+                : { ok: false }
+            }
+          />
+        }
+      />
+      {ATTRIBUTES.map(({ key, title, values }) => (
+        <SettingsRow
+          key={key}
+          title={title}
+          description={
+            key === "gender"
+              ? "Optional. A cloned profile can override attributes that conflict with it."
+              : undefined
+          }
+          control={
+            <Select
+              value={options[key] || "default"}
+              onValueChange={(value) => {
+                if (value !== null) updateOptions({ [key]: value === "default" ? "" : value });
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-48"
+                aria-label={`Voice ${title.toLowerCase()}`}
+              >
+                <SelectValue>{options[key] ? sentenceCase(options[key]) : "Default"}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value="default">Default</SelectItem>
+                {values.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {sentenceCase(value)}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      ))}
+      <SettingsRow
+        title="Whisper"
+        control={
+          <Switch
+            checked={options.whisper}
+            onCheckedChange={(whisper) => updateOptions({ whisper })}
+            aria-label="Whisper"
+          />
+        }
+      />
+      <AdvancedVoiceSettings options={options} updateOptions={updateOptions} />
+      <SettingsRow
+        title="Preview voice"
+        description="Speaks this text as written. VoiceStudio can take about 25 seconds to load on its first request."
+        status={previewError}
+        control={
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-96">
+            <div className="min-w-0 flex-1">
+              <Input
+                aria-label="Voice preview text"
+                value={previewText}
+                maxLength={4000}
+                onChange={(event) => setPreviewText(event.target.value)}
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!reachable || (preview.state === "idle" && previewText.trim() === "")}
+              onClick={() => {
+                if (preview.state !== "idle" || environmentId === null) {
+                  preview.stop();
+                  return;
+                }
+                setPreviewError(null);
+                void preview.play((signal) =>
+                  requestSpeechAudio(
+                    environmentId,
+                    { text: previewText.trim(), voice, options, verbatim: true },
+                    signal,
+                  ),
+                );
+              }}
+            >
+              {preview.state === "loading"
+                ? "Cancel"
+                : preview.state === "playing"
+                  ? "Stop"
+                  : "Preview"}
+            </Button>
+          </div>
+        }
+      />
+      <SettingsRow
+        title="Reset voice"
+        description="Returns the profile and every voice setting to its default. Read aloud stays on or off."
+        control={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void updateClientSettings({
+                readAloudVoice: DEFAULT_SPEECH_VOICE,
+                readAloudOptions: DEFAULT_SPEECH_OPTIONS,
+              })
+            }
+          >
+            Reset
+          </Button>
+        }
+      />
+    </FoldedSettingsSection>
+  );
+}
+
+function AdvancedVoiceSettings({
+  options,
+  updateOptions,
+}: {
+  options: SpeechOptions;
+  updateOptions: (patch: Partial<SpeechOptions>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex min-h-11 w-full items-center gap-2 rounded-md px-4 text-left text-sm text-foreground/70 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        <ChevronRightIcon
+          aria-hidden
+          className={cn(
+            "size-4 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        />
+        Advanced voice settings
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <SettingsRow
+          title="Seed"
+          description="Blank uses VoiceStudio's sampling. A fixed seed makes settings easier to compare."
+          control={
+            <DraftInput
+              label="Voice seed"
+              type="number"
+              inputMode="numeric"
+              value={options.seed === null ? "" : String(options.seed)}
+              placeholder="Automatic"
+              parse={numberIn(
+                0,
+                2_147_483_647,
+                { integer: true, blank: () => updateOptions({ seed: null }) },
+                (seed) => updateOptions({ seed }),
+              )}
+            />
+          }
+        />
+        <SettingsRow
+          title="Generation steps"
+          description="16 is the default and 32 the quality preset. More steps take longer."
+          control={
+            <DraftInput
+              label="Generation steps"
+              type="number"
+              inputMode="numeric"
+              value={String(options.steps)}
+              parse={numberIn(1, 128, { integer: true }, (steps) => updateOptions({ steps }))}
+            />
+          }
+        />
+        <SettingsRow
+          title="Guidance"
+          description="How strongly the model follows the voice. The default is 2."
+          control={
+            <DraftInput
+              label="Voice guidance"
+              type="number"
+              inputMode="decimal"
+              value={String(options.guidance)}
+              parse={numberIn(0.1, 20, {}, (guidance) => updateOptions({ guidance }))}
+            />
+          }
+        />
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+}

@@ -79,6 +79,10 @@
       "types": "./src/git.ts",
       "import": "./src/git.ts"
     },
+    "./speechText": {
+      "types": "./src/speechText.ts",
+      "import": "./src/speechText.ts"
+    },
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"

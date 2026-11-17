@@ -72,6 +72,9 @@ const clientSettings: ClientSettings = {
   pullRequestMergeMethodOverrides: {},
   timestampFormat: "24-hour",
   wordWrap: true,
+  readAloudEnabled: true,
+  readAloudVoice: "demo0001",
+  readAloudOptions: { ...DEFAULT_CLIENT_SETTINGS.readAloudOptions, speed: 1.5, seed: 42 },
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));

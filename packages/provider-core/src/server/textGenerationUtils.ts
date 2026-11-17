@@ -54,6 +54,18 @@ export function sanitizePrTitle(raw: string): string {
   return "Update project changes";
 }
 
+/** Unwraps a fenced or quoted reply into plain prose paragraphs. */
+export function sanitizeSpeechText(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^```(?:md|markdown)?\n/, "")
+    .replace(/\n?```$/, "")
+    .replace(/^["'`]/, "")
+    .replace(/["'`]$/, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const MAX_THREAD_TITLE_CHARS = 120;
 
 export function sanitizeThreadTitle(raw: string): string {

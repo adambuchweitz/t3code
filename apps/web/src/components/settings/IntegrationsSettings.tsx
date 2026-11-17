@@ -118,6 +118,7 @@ import { useSearchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { commitNumberFieldOnEnter } from "./commitNumberFieldOnEnter";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { VoiceSettings } from "./VoiceSettings";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
 import type { ImportOutcome } from "./browserImportWizard.logic";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
@@ -1738,6 +1739,7 @@ export function BrowserSettingsPanel() {
 export function DevicesSettingsPanel() {
   return (
     <SettingsPageContainer>
+      <VoiceSettings />
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

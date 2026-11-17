@@ -1,7 +1,14 @@
 import * as Schema from "effect/Schema";
-import { expect, it } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
-import { EnvironmentSpeechModel, EnvironmentSpeechStatus } from "./speech.ts";
+import { ClientSettingsPatch, ClientSettingsSchema } from "./settings.ts";
+import {
+  DEFAULT_SPEECH_OPTIONS,
+  EnvironmentSpeechModel,
+  EnvironmentSpeechStatus,
+  SpeechAudioRequest,
+  isDefaultSpeechVoice,
+} from "./speech.ts";
 
 const decodeStatus = Schema.decodeUnknownSync(EnvironmentSpeechStatus);
 const encodeStatus = Schema.encodeSync(EnvironmentSpeechStatus);
@@ -94,4 +101,59 @@ it.each([
       }),
     ).toThrow();
   }
+});
+
+const decodeRequest = Schema.decodeUnknownSync(SpeechAudioRequest);
+const decodeSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodePatch = Schema.decodeUnknownSync(ClientSettingsPatch);
+
+describe("speech contracts", () => {
+  it("fills defaults for a bare request and for settings saved before read aloud", () => {
+    expect(decodeRequest({ text: "Hello" })).toEqual({
+      text: "Hello",
+      voice: "alloy",
+      options: DEFAULT_SPEECH_OPTIONS,
+      verbatim: false,
+    });
+    const settings = decodeSettings({});
+    expect(settings.readAloudEnabled).toBe(false);
+    expect(settings.readAloudVoice).toBe("alloy");
+    expect(settings.readAloudOptions).toEqual(DEFAULT_SPEECH_OPTIONS);
+  });
+
+  it.each([
+    { speed: 0 },
+    { speed: 4.1 },
+    { steps: 0 },
+    { steps: 129 },
+    { steps: 1.5 },
+    { guidance: 0 },
+    { guidance: 21 },
+    { seed: 1.5 },
+    { gender: "unsupported" },
+    { pitch: "loud" },
+  ])("rejects invalid synthesis options %j", (options) => {
+    expect(() => decodeRequest({ text: "Hello", options })).toThrow();
+  });
+
+  it("rejects text over the read-aloud limit", () => {
+    expect(() => decodeRequest({ text: "a".repeat(4001) })).toThrow();
+  });
+
+  it("keeps a profile id that is not a known voice name", () => {
+    const patch = {
+      readAloudVoice: "demo0001",
+      readAloudOptions: { ...DEFAULT_SPEECH_OPTIONS, seed: 42, whisper: true },
+    };
+    expect(decodePatch(patch)).toEqual(patch);
+    expect(decodeSettings({ readAloudVoice: "retired-voice" }).readAloudVoice).toBe(
+      "retired-voice",
+    );
+  });
+
+  it("treats blank and OpenAI alias voices as VoiceStudio's default", () => {
+    expect(isDefaultSpeechVoice("")).toBe(true);
+    expect(isDefaultSpeechVoice("nova")).toBe(true);
+    expect(isDefaultSpeechVoice("demo0001")).toBe(false);
+  });
 });

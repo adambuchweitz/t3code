@@ -1,4 +1,5 @@
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
+import { DEFAULT_SPEECH_VOICE, SpeechOptions } from "./speech.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthAccessWriteScope,
@@ -617,6 +618,13 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Read aloud plays audio on this client, so enablement and voice stay per client.
+  readAloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // A free string rather than a literal: VoiceStudio profile ids are user-defined.
+  readAloudVoice: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SPEECH_VOICE)),
+  ),
+  readAloudOptions: SpeechOptions.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -2212,5 +2220,8 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
   mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
+  readAloudEnabled: Schema.optionalKey(Schema.Boolean),
+  readAloudVoice: Schema.optionalKey(TrimmedString),
+  readAloudOptions: Schema.optionalKey(SpeechOptions),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
