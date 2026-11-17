@@ -233,6 +233,13 @@ describe("searchSettings", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it.each(["hide project", "unhide"])("finds project visibility through %s", (query) => {
+    expect(searchSettings(query)[0]).toMatchObject({
+      id: "project-sidebar-visibility",
+      to: "/settings/projects",
+    });
+  });
 });
 
 describe("settings search targets", () => {

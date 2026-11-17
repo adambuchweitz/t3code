@@ -1,3 +1,12 @@
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import {
+  sidebarProjectVisibility,
+  updateHiddenSidebarProjectKeys,
+} from "@t3tools/client-runtime/state/project-visibility";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { useHiddenSidebarProjectKeys } from "../../state/project-visibility";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -137,6 +146,14 @@ function ProjectOverviewContent(props: {
   readonly onProjectRemoved: (projectKey: string | null) => void;
 }) {
   const { isRemoving, setIsRemoving, startRemoval, finishRemoval } = props;
+  const hiddenProjectKeys = useHiddenSidebarProjectKeys();
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const preferencesReady = AsyncResult.isSuccess(preferences) && !preferences.waiting;
+  const projectRefs = props.members.map((member) =>
+    scopeProjectRef(member.environmentId, member.id),
+  );
+  const visibility = sidebarProjectVisibility(hiddenProjectKeys, projectRefs);
   const representative = props.members[0]!;
   const displayName = deriveProjectGroupLabel({
     groupKey: props.group.key,
@@ -346,6 +363,23 @@ function ProjectOverviewContent(props: {
             ) : null}
           </View>
         </View>
+        <SettingsSwitchRow
+          label="Show in sidebar"
+          subtitle="Show this project and its threads on this device. Hidden projects remain available in Settings."
+          value={visibility}
+          disabled={!preferencesReady}
+          onValueChange={(visible) =>
+            savePreferences({
+              transform: (current) => ({
+                hiddenSidebarProjectKeys: updateHiddenSidebarProjectKeys(
+                  current.hiddenSidebarProjectKeys ?? [],
+                  projectRefs,
+                  !visible,
+                ),
+              }),
+            })
+          }
+        />
       </SettingsSection>
 
       {canOrganize ? (

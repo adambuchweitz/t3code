@@ -1,4 +1,5 @@
 import { attachSidebarTree } from "../lib/sidebarTree";
+import { filterSidebarProjects } from "@t3tools/client-runtime/state/project-visibility";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
@@ -72,6 +73,7 @@ import {
   ListFilterIcon,
   PlusIcon,
   SettingsIcon,
+  StarIcon,
 } from "lucide-react";
 import {
   useEffect,
@@ -111,6 +113,7 @@ import {
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
+  FOCUSED_PROJECT_SCOPE_KEY,
   projectGroupsSpanEnvironments,
   resolveSidebarProjectScopeKeys,
   getSidebarProjectSettingsKey,
@@ -133,7 +136,7 @@ import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings } from "../hooks/useSettings";
+import { persistClientSettingsUpdate, useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -152,7 +155,11 @@ import {
   useQuietThreadShells,
 } from "../state/entities";
 import { environmentPresentations } from "../state/presentation";
-import { primaryServerKeybindingsAtom } from "../state/server";
+import {
+  primaryServerConfigAtom,
+  primaryServerSettingsAtom,
+  primaryServerKeybindingsAtom,
+} from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
@@ -168,7 +175,8 @@ import {
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
-import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { isHomeProject, isScratchProject } from "@t3tools/client-runtime/state/projects";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { ProjectRowActions } from "./ProjectComboboxRow";
@@ -186,7 +194,10 @@ import {
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  focusedProjectKeys,
+  handleProjectFocusShortcutKeyDown,
   firstValidTimestampMs,
+  isProjectGroupFocused,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -207,6 +218,7 @@ import {
   sortPinnedThreadsForSidebar,
   sortThreadsForSidebar,
   sortWorkingThreadsBySend,
+  toggleProjectGroupFocus,
   useSnoozeWakeClock,
   threadShortcutContext,
   useThreadJumpHintsVisible,
@@ -273,6 +285,7 @@ import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
 } from "./sidebar/SidebarProjectFolderHeader";
+import { SidebarHomeRow } from "./sidebar/SidebarHomeRow";
 import {
   SidebarDragBoundary,
   SidebarSectionHeader,
@@ -437,12 +450,28 @@ function useSidebarThreads(input: {
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
-    threads,
+    threads: inputThreads,
     delegatedUnderParent,
     routeRowThreadKey,
     folderGroups,
     keepEmptyFolders: keepEmpty,
   } = input;
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const homeThreadId = useAtomValue(
+    primaryServerSettingsAtom,
+    (settings) => settings.home.threadId,
+  );
+  const allThreads = inputThreads.filter(
+    (thread) => thread.environmentId !== primaryEnvironmentId || thread.id !== homeThreadId,
+  );
+  const hiddenProjectKeys = useClientSettings((settings) => settings.hiddenSidebarProjectKeys);
+  const hiddenProjectKeySet = new Set(hiddenProjectKeys);
+  const threads =
+    hiddenProjectKeySet.size === 0
+      ? allThreads
+      : allThreads.filter(
+          (thread) => !hiddenProjectKeySet.has(`${thread.environmentId}:${thread.projectId}`),
+        );
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
@@ -808,11 +837,22 @@ function isOptimisticDropReleased(input: {
 
 // Build maps in a hook so the compiler can prove they are frozen and cache them.
 function useSidebarLookups() {
-  const projects = useProjects();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const homeWorkspaceRoot = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => config?.homeWorkspaceRoot ?? null,
+  );
+  const isHome = (project: EnvironmentProject) =>
+    project.environmentId === primaryEnvironmentId && isHomeProject(project, homeWorkspaceRoot);
+  const allProjects = useProjects().filter((project) => !isHome(project));
+  const hiddenProjectKeys = useClientSettings((settings) => settings.hiddenSidebarProjectKeys);
+  const projects = filterSidebarProjects(allProjects, new Set(hiddenProjectKeys));
   const environments = useEnvironmentIdentities();
   const serverConfigs = useServerConfigs();
   const providerEntriesByEnvironment = useAtomValue(sidebarProviderEntriesAtom);
-  const projectGroups = useSidebarProjectGroups();
+  const projectGroups = useSidebarProjectGroups({ excludeHidden: true }).filter(
+    (group) => !group.memberProjects.some(isHome),
+  );
   const environmentLabelById = new Map(
     environments.map((environment) => [environment.environmentId, environment.label] as const),
   );
@@ -826,18 +866,40 @@ function useSidebarLookups() {
       ),
     ),
   );
+  const allProjectKeys = new Set(
+    allProjects.map((project) => `${project.environmentId}:${project.id}`),
+  );
+  const projectFilterGroups = useSidebarProjectGroups().filter((group) =>
+    group.memberProjects.some((project) =>
+      allProjectKeys.has(`${project.environmentId}:${project.id}`),
+    ),
+  );
+  const visibleGroupKeys = new Set(projectGroups.map((project) => project.projectKey));
   const projectGroupByScopeKey = new Map(
-    projectGroups.map((project) => [project.projectKey, project] as const),
+    [...projectFilterGroups, ...projectGroups].map(
+      (project) => [project.projectKey, project] as const,
+    ),
   );
   const projectScopeItems = [
-    { value: "all", label: "All projects" },
+    { value: "all", label: "All projects", hidden: false },
+    { value: FOCUSED_PROJECT_SCOPE_KEY, label: "Focused", hidden: false },
     ...pickableProjectGroups(projectGroups).map((project) => ({
       value: project.projectKey,
       label: project.displayName,
+      hidden: false,
     })),
+    ...projectFilterGroups
+      .filter((project) => !visibleGroupKeys.has(project.projectKey))
+      .map((project) => ({
+        value: project.projectKey,
+        label: project.displayName,
+        hidden: true,
+      })),
   ];
   return {
+    allProjects,
     projects,
+    hasHiddenProjects: allProjects.length > projects.length,
     serverConfigs,
     projectGroups,
     environmentLabelById,
@@ -903,8 +965,11 @@ function readRouteThreadKey(router: AnyRouter): string | null {
 }
 
 export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReveal }) {
+  const hiddenProjectKeys = useClientSettings((settings) => settings.hiddenSidebarProjectKeys);
   const {
+    allProjects,
     projects,
+    hasHiddenProjects,
     serverConfigs,
     projectGroups,
     environmentLabelById,
@@ -922,6 +987,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const focusedProjects = useClientSettings((s) => s.sidebarFocusedProjects);
   const {
     settleThread,
     unsettleThread,
@@ -984,6 +1050,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Row callbacks capture only the handler; the rest of the context changes with the route.
   const { handleNewThread } = newThreadContext;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const homeThreadId = useAtomValue(
+    primaryServerSettingsAtom,
+    (settings) => settings.home.threadId,
+  );
+  // The current Home thread lives on the primary environment and gets its own
+  // fixed row; older Home threads stay in the normal lists.
+  const homeThreadRef =
+    primaryEnvironmentId !== null && homeThreadId !== null
+      ? scopeThreadRef(primaryEnvironmentId, homeThreadId)
+      : null;
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1085,11 +1161,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     settings: projectGroupingSettings,
     canClearMissingScope: allProjectSnapshotsReady && allProjectConfigsReady,
   }).filter((key) => !archivedProjectKeys.has(key));
+  const focusedProjectKeySet = focusedProjectKeys(focusedProjects);
+  const visibleFocusedProjectKeys = new Set(
+    projects
+      .filter((project) => project.archivedAt == null)
+      .map((project) => `${project.environmentId}:${project.id}`)
+      .filter((key) => focusedProjectKeySet.has(key)),
+  );
+  const hasFocusedProjects = visibleFocusedProjectKeys.size > 0;
   const chosenProjectGroups = scopeGroups.filter((project) =>
     chosenProjectScopeKeys.includes(project.projectKey),
   );
-  const chosenScopeProjectKeys =
-    chosenProjectGroups.length === 0
+  const chosenScopeProjectKeys = chosenProjectScopeKeys.includes(FOCUSED_PROJECT_SCOPE_KEY)
+    ? visibleFocusedProjectKeys
+    : chosenProjectGroups.length === 0
       ? null
       : new Set(
           chosenProjectGroups.flatMap((project) =>
@@ -1132,11 +1217,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
+  const isFocusedScope = projectScopeKeys.includes(FOCUSED_PROJECT_SCOPE_KEY);
   const toggleProjectScopeKey = (key: string) =>
     setProjectScopeKeys(
-      projectScopeKeys.includes(key)
-        ? projectScopeKeys.filter((candidate) => candidate !== key)
-        : [...projectScopeKeys, key],
+      key === FOCUSED_PROJECT_SCOPE_KEY
+        ? isFocusedScope
+          ? []
+          : [FOCUSED_PROJECT_SCOPE_KEY]
+        : isFocusedScope
+          ? [key]
+          : projectScopeKeys.includes(key)
+            ? projectScopeKeys.filter((candidate) => candidate !== key)
+            : [...projectScopeKeys, key],
     );
   // The widened scope outlives the reveal, so it is written back to the persisted
   // scope. Route changes arrive from history, links and the palette, and only this
@@ -1182,7 +1274,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const scopedProjectGroups = revealWidensScope ? [] : chosenProjectGroups;
   const scopedProjectRefs = scopedProjectGroups.flatMap((project) => project.memberProjectRefs);
-  const scopedProjectKeys = revealWidensScope ? null : chosenScopeProjectKeys;
+  const scopedProjectKeys =
+    (revealWidensScope ? null : chosenScopeProjectKeys) ??
+    (hiddenProjectKeys.length === 0
+      ? null
+      : new Set(projects.map((project) => `${project.environmentId}:${project.id}`)));
   const threadSearch = useThreadSearch(
     connectedEnvironmentIds,
     threadSearchQuery,
@@ -1211,6 +1307,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return count;
   });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the external multi-select store when hidden projects drop rows from the list
+  useEffect(() => {
+    if (hiddenProjectKeys.length > 0) clearSelection();
+  }, [clearSelection, hiddenProjectKeys]);
+
   const openProjectSettings = useStableCallback(
     (projectGroup: SidebarProjectSnapshot, projectRef?: ScopedProjectRef) => {
       if (isMobile) {
@@ -1222,7 +1323,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           projectKey: getSidebarProjectSettingsKey(
             projectGroup,
             projectGroupingSettings,
-            projects,
+            allProjects,
             projectRef,
           ),
         },
@@ -1234,6 +1335,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     setProjectGroupPinned,
     toggleProjectGroupPin,
   } = useProjectPin();
+  const toggleProjectFocus = (projectGroup: SidebarProjectSnapshot) => {
+    if (isFocusedScope) clearSelection();
+    void persistClientSettingsUpdate((current) => ({
+      ...current,
+      sidebarFocusedProjects: toggleProjectGroupFocus({
+        focusedProjects: current.sidebarFocusedProjects,
+        projectRefs: projectGroup.memberProjectRefs,
+      }),
+    })).catch(() => {
+      toastManager.add({ type: "error", title: "Couldn't update focused projects" });
+    });
+  };
   const handleProjectSettings = useStableCallback(
     (
       event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLInputElement>,
@@ -2970,7 +3083,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         fixedHeader={
           <SidebarGroup className="z-[1]">
             <SidebarThreadHeader
-              hasProjects={projectGroups.length > 0}
+              hasProjects={allProjects.length > 0}
               projectScope={
                 <Combobox
                   items={projectScopeItems}
@@ -2994,6 +3107,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       return;
                     }
                     if (!item) return;
+                    if (item.hidden) {
+                      const project = projectGroupByScopeKey.get(item.value);
+                      if (project) {
+                        dispatchProjectScopeMenu({ type: "project-settings-opened" });
+                        openProjectSettings(project);
+                      }
+                      return;
+                    }
                     if (item.value === "all") {
                       setProjectScopeKeys([]);
                     } else if (
@@ -3014,7 +3135,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         label={
                           scopedProjectGroups.length > 0
                             ? `Filter threads by project: ${scopedProjectGroups.map((project) => project.displayName).join(", ")}`
-                            : "Filter threads by project"
+                            : isFocusedScope
+                              ? "Filter threads by project: Focused"
+                              : "Filter threads by project"
                         }
                       />
                     }
@@ -3038,6 +3161,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       <span className="flex shrink-0">
                         <ProjectFavicon project={scopedProjectGroups[0]} className="size-4" />
                       </span>
+                    ) : isFocusedScope ? (
+                      <StarIcon className="size-4" fill="currentColor" />
                     ) : (
                       <ListFilterIcon className="size-4" />
                     )}
@@ -3053,7 +3178,28 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       aria-label="Search projects"
                       placeholder="Search projects..."
                       value={projectScopeMenuState.query}
+                      aria-keyshortcuts="Shift+Enter"
                       onKeyDown={(event) => {
+                        const highlightedKey = highlightedProjectScopeKeyRef.current;
+                        const project = highlightedKey
+                          ? (projectGroupByScopeKey.get(highlightedKey) ?? null)
+                          : null;
+                        // Hidden entries cannot be starred. Shift+Enter on one is not
+                        // claimed, so it acts like Enter and opens the project's settings,
+                        // the same fallback as on the All and Focused entries.
+                        const focusableProject =
+                          project !== null &&
+                          projectGroups.some((group) => group.projectKey === project.projectKey)
+                            ? project
+                            : null;
+                        if (
+                          handleProjectFocusShortcutKeyDown(event, {
+                            project: focusableProject,
+                            toggle: toggleProjectFocus,
+                          })
+                        ) {
+                          return;
+                        }
                         if (
                           event.defaultPrevented ||
                           event.nativeEvent.isComposing ||
@@ -3061,9 +3207,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         ) {
                           return;
                         }
-                        const scopeKey = highlightedProjectScopeKeyRef.current;
-                        const project = scopeKey ? projectGroupByScopeKey.get(scopeKey) : null;
-                        // The thread pin shortcut pins the highlighted project here.
                         if (
                           project &&
                           canPinProject(project) &&
@@ -3075,12 +3218,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           return;
                         }
                         if (event.ctrlKey || event.altKey || event.metaKey) return;
-                        if (event.shiftKey && event.key === "Enter") {
-                          if (!project) return;
-                          event.preventDefault();
-                          toggleProjectScopeKey(project.projectKey);
-                          return;
-                        }
                         if (
                           event.key !== "ContextMenu" &&
                           !(event.shiftKey && event.key === "F10")
@@ -3100,9 +3237,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     <ComboboxList aria-multiselectable>
                       {(item: (typeof projectScopeItems)[number]) => {
                         const project = projectGroupByScopeKey.get(item.value) ?? null;
-                        const isSelected = project
-                          ? projectScopeKeys.includes(item.value)
-                          : projectScopeKeys.length === 0;
+                        const isSelected =
+                          item.value === FOCUSED_PROJECT_SCOPE_KEY
+                            ? isFocusedScope
+                            : project
+                              ? projectScopeKeys.includes(item.value)
+                              : projectScopeKeys.length === 0;
+                        const isFocused =
+                          project !== null &&
+                          isProjectGroupFocused({
+                            focusedProjectKeys: focusedProjectKeySet,
+                            projectRefs: project.memberProjectRefs,
+                          });
                         return (
                           <ComboboxItem
                             key={item.value}
@@ -3118,17 +3264,48 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             <ProjectScopeRowIcon isSelected={isSelected}>
                               {project ? (
                                 <ProjectFavicon project={project} className="size-4 shrink-0" />
+                              ) : item.value === FOCUSED_PROJECT_SCOPE_KEY ? (
+                                <StarIcon className="size-4 shrink-0" />
                               ) : (
                                 <FolderIcon className="size-4 shrink-0" />
                               )}
                             </ProjectScopeRowIcon>
                             <span className="min-w-0 truncate text-sm">{item.label}</span>
+                            {item.hidden ? (
+                              <span className="text-xs text-muted-foreground">Hidden</span>
+                            ) : null}
+                            {isFocused ? <span className="sr-only">, focused</span> : null}
                             {project && showProjectEnvironments ? (
                               <ProjectEnvironmentBadge
                                 group={project}
                                 primaryEnvironmentId={primaryEnvironmentId}
                                 machineByEnvironmentId={environmentMachineById}
                               />
+                            ) : null}
+                            {project && !item.hidden ? (
+                              <Button
+                                size="icon-xs"
+                                variant="ghost-muted"
+                                tabIndex={-1}
+                                aria-hidden="true"
+                                title={
+                                  isFocused
+                                    ? "Remove from focused (Shift+Enter)"
+                                    : "Add to focused (Shift+Enter)"
+                                }
+                                className="ml-auto"
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  toggleProjectFocus(project);
+                                }}
+                              >
+                                <StarIcon
+                                  className="size-3.5"
+                                  fill={isFocused ? "currentColor" : "none"}
+                                />
+                              </Button>
                             ) : null}
                             {project ? (
                               <ProjectRowActions
@@ -3295,7 +3472,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
               {projects.length === 0 ? (
                 <>
-                  <span>No projects yet</span>
+                  <span>
+                    {hasHiddenProjects
+                      ? "All projects are hidden. Show them again in Settings → Project."
+                      : "No projects yet"}
+                  </span>
                   <button
                     type="button"
                     onClick={openAddProjectCommandPalette}
@@ -3322,6 +3503,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     Show all projects
                   </button>
                 </>
+              ) : isFocusedScope ? (
+                hasFocusedProjects ? (
+                  "No threads in focused projects yet"
+                ) : (
+                  "Star projects in the project filter to focus them"
+                )
               ) : (
                 "No threads yet"
               )}
@@ -3481,6 +3668,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
+                        homeThreadRef === null ? null : (
+                          <SidebarHomeRow
+                            key="home"
+                            threadRef={homeThreadRef}
+                            isActive={routeThreadKey === scopedThreadKey(homeThreadRef)}
+                            onActivate={navigateToThread}
+                          />
+                        ),
                         <SidebarDraftBlock
                           key="draft-sessions"
                           projectByKey={projectByKey}

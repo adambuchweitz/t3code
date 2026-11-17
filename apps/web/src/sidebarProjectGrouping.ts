@@ -89,13 +89,16 @@ export function getSidebarProjectSettingsKey(
   );
 }
 
+/** Scope key for the persisted focused-project set rather than one project row. */
+export const FOCUSED_PROJECT_SCOPE_KEY = "__focused__";
+
 export function resolveSidebarProjectScopeKey(input: {
   readonly groups: ReadonlyArray<SidebarProjectSnapshot>;
   readonly key: string | null;
   readonly settings?: ProjectGroupingSettings;
   readonly canClearMissingScope?: boolean;
 }): string | null {
-  if (input.key === null) return null;
+  if (input.key === null || input.key === FOCUSED_PROJECT_SCOPE_KEY) return input.key;
   const group =
     input.groups.find((candidate) => candidate.projectKey === input.key) ??
     input.groups.find(

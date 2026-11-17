@@ -18,6 +18,13 @@ import { WS_METHODS } from "./rpc.ts";
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
+  [WS_METHODS.homeEnable]: AuthOrchestrationOperateScope,
+  [WS_METHODS.homeDisable]: AuthOrchestrationOperateScope,
+  [WS_METHODS.homeStartFresh]: AuthOrchestrationOperateScope,
+  [WS_METHODS.fleetInvoke]: AuthOrchestrationOperateScope,
+  [WS_METHODS.fleetConnect]: AuthOrchestrationOperateScope,
+  [WS_METHODS.fleetRespond]: AuthOrchestrationOperateScope,
+  [WS_METHODS.fleetReportWatchEvents]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,

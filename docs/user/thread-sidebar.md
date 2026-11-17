@@ -160,6 +160,13 @@ Pinned threads stay above the folders, and Snoozed and Settled stay below them. 
 can drag a thread onto the composer to mention it, but not within the sidebar, and the Working
 section is off. Each device keeps its own choice.
 
+## Focus on a set of projects
+
+On web and desktop, click the star beside a project in the sidebar's project filter to add it to
+**Focused**, and click it again to remove it. From the keyboard, highlight a project in the filter
+and press `Shift+Enter`. Choose **Focused** in that filter to show threads from only those projects.
+**All projects** still lists every project, focused or not. Each device keeps its own focused set.
+
 ## Settle finished work
 
 Choose **Settle thread** from its menu to move finished work out of the active list

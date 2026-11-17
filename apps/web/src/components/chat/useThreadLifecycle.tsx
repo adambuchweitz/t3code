@@ -38,6 +38,7 @@ import { settleAndAdvance } from "../../settleAndAdvance";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { guessThreadLinkRef, threadLinkCandidates } from "@t3tools/shared/threadLinks";
 import { type SetStateAction, useRef, useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
@@ -56,7 +57,12 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  useThreadRefs,
+  readThreadShell,
+  waitForThreadShell,
+} from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
@@ -181,6 +187,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   } = input;
   const navigate = useNavigate();
   const router = useRouter();
+  const serverThreadRefs = useThreadRefs();
   const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
@@ -470,7 +477,20 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     threadEnvironmentId: EnvironmentId = environmentId,
   ) => {
     const generation = ++openRelatedThreadGenerationRef.current;
-    const threadRef = scopeThreadRef(threadEnvironmentId, threadId);
+    const link = { environmentId: null, threadId };
+    const threadRef =
+      threadEnvironmentId !== environmentId
+        ? scopeThreadRef(threadEnvironmentId, threadId)
+        : (threadLinkCandidates(link, environmentId).find((candidate) =>
+            serverThreadRefs.some(
+              (ref) =>
+                ref.environmentId === candidate.environmentId &&
+                ref.threadId === candidate.threadId,
+            ),
+          ) ??
+          guessThreadLinkRef(link, serverThreadRefs) ??
+          scopeThreadRef(environmentId, threadId));
+    threadEnvironmentId = threadRef.environmentId;
     const isEnvironmentLive = () =>
       appAtomRegistry.get(environmentShell.stateValueAtom(threadEnvironmentId)).status === "live";
     // The shell can leave idle subagent children out, so absence is not deletion there: the

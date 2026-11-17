@@ -4,6 +4,7 @@ import { WebSocket } from "@effect/platform-node/NodeWS";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Bind an isolated WebSocket negotiation fixture.
 import * as NodeHttp from "node:http";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { notHomeLayer } from "./home/HomeTestkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -62,7 +63,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as ProviderInstallationGate from "./provider/ProviderInstallationGate.ts";
 import * as Ws from "./ws.ts";
-import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
+import { Rpc, RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
@@ -920,6 +921,7 @@ it.live.each([
     Effect.gen(function* () {
       const services = Layer.mergeAll(
         layerUnusedConfigRpcServices,
+        notHomeLayer,
         Layer.mock(ServerBrowser.ServerBrowser)({
           profileReporter: Effect.succeed(() => Effect.void),
         }),
@@ -1040,6 +1042,7 @@ it.effect.each([
       const directStopped = yield* Deferred.make<void>();
       const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
       const configRpcServices = Layer.mergeAll(
+        notHomeLayer,
         layerUnusedConfigRpcServices,
         Layer.mock(ExternalLauncher.ExternalLauncher)({
           resolveAvailableEditors: () =>
@@ -1118,6 +1121,30 @@ it.effect.each([
           subscribeChanges: settingsChanges,
         }),
       );
+      // This fixture uses one RPC from the full group; narrowing its layer avoids the compiler's type-depth limit.
+      const makeConfigHandlers = layerWsRpc as (
+        ...args: Parameters<typeof layerWsRpc>
+      ) => Layer.Layer<
+        Rpc.ToHandler<typeof WsSubscribeServerConfigRpc>,
+        never,
+        | Layer.Success<typeof configRpcServices>
+        | ServerConfigModule.ServerConfig
+        | FileSystem.FileSystem
+        | SqlClient.SqlClient
+        | Path.Path
+      >;
+      const configHandlers = makeConfigHandlers(
+        {
+          sessionId: AuthSessionId.make("config-test"),
+          subject: "config-test",
+          method: "browser-session-cookie",
+          scopes: [],
+        },
+        {},
+        yield* ServerBrowser.ServerBrowser,
+        () => Effect.void,
+        { secretReferences: true },
+      ).pipe(Layer.provide(configRpcServices));
       const server = yield* RpcServer.makeNoSerialization(
         RpcGroup.make(WsSubscribeServerConfigRpc),
         {
@@ -1129,22 +1156,7 @@ it.effect.each([
                 })
               : Effect.void,
         },
-      ).pipe(
-        Effect.provide(
-          layerWsRpc(
-            {
-              sessionId: AuthSessionId.make("config-test"),
-              subject: "config-test",
-              method: "browser-session-cookie",
-              scopes: [],
-            },
-            {},
-            yield* ServerBrowser.ServerBrowser,
-            () => Effect.void,
-            { secretReferences: true },
-          ).pipe(Layer.provide(configRpcServices)),
-        ),
-      );
+      ).pipe(Effect.provide(configHandlers));
       const requestId = RpcMessage.RequestId("config");
       const acknowledge = server.write(0, { _tag: "Ack", requestId });
       yield* server.write(0, {
@@ -1301,6 +1313,7 @@ it.effect("access changes made while the snapshot loads reach the client after i
           Layer.merge(RpcAuthorization.layer([AuthAccessReadScope])),
           Layer.provide(
             Layer.mergeAll(
+              notHomeLayer,
               layerUnusedConfigRpcServices,
               Layer.mock(ExternalLauncher.ExternalLauncher)({}),
               Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -1422,6 +1435,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
     const responses = yield* Queue.unbounded<unknown>();
     const configRpcServices = Layer.mergeAll(
       layerUnusedConfigRpcServices,
+      notHomeLayer,
       Layer.mock(ExternalLauncher.ExternalLauncher)({
         resolveAvailableEditors: () => Effect.succeed([]),
         resolveFileManagerRevealKind: () => Effect.undefined,
@@ -1797,6 +1811,7 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
     const responses = yield* Queue.unbounded<unknown>();
     const services = Layer.mergeAll(
       layerUnusedConfigRpcServices,
+      notHomeLayer,
       Layer.mock(ProviderRegistry.ProviderRegistry)({
         getProviders: Effect.succeed([provider]),
         refreshWorkspaceSnapshot: (input) =>
@@ -1972,6 +1987,7 @@ it.effect("a git action that fails partway still refreshes the repository status
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
+        notHomeLayer,
         Layer.fresh(layerConfigSources),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
@@ -2059,6 +2075,7 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
+        notHomeLayer,
         Layer.fresh(layerConfigSources),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
@@ -2618,6 +2635,7 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
+        notHomeLayer,
         EventSink.layer.pipe(Layer.provideMerge(acpStores)),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),

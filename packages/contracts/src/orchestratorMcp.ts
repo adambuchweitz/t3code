@@ -356,7 +356,12 @@ export const clampedPositiveInt = (maximum: number) =>
 
 export const OrchestratorMcpThreadListInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
-  projectId: OrchestratorMcpProjectTarget,
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description:
+        "Project to list. Omit for the calling thread's project; Home lists every project when omitted. Required when the caller is not a T3 thread unless allProjects is true.",
+    }),
+  ),
   allProjects: Schema.optional(Schema.Boolean),
   statuses: Schema.optional(
     Schema.Array(OrchestratorMcpThreadStatus).check(Schema.isMaxLength(10)),
@@ -431,8 +436,9 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
 export type OrchestratorMcpThreadListItem = typeof OrchestratorMcpThreadListItem.Type;
 
 export const OrchestratorMcpThreadListResult = Schema.Struct({
-  /** null with `allProjects`. */
+  /** null with `allProjects` or when Home lists every project. */
   projectId: Schema.NullOr(ProjectId),
+  /** The calling thread, or null when the caller is not a T3 thread or the list comes from another environment. */
   currentThreadId: Schema.NullOr(ThreadId),
   threads: Schema.Array(OrchestratorMcpThreadListItem),
   nextCursor: Schema.NullOr(NonNegativeInt),
@@ -957,6 +963,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
       "thread_credential_required",
       "target_required",
+      "environment_unavailable",
     ]),
     message: Schema.String,
   },

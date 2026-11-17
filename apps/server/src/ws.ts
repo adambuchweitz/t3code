@@ -101,6 +101,7 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
+  HomeUnavailableError,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import {
@@ -196,6 +197,9 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { makePrepareTerminalLaunch } from "./workspace/restoreMissingWorktree.ts";
 import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
+import * as FleetBroker from "./home/FleetBroker.ts";
+import * as FleetService from "./home/FleetService.ts";
+import * as HomeService from "./home/HomeService.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -1454,6 +1458,9 @@ export const layerWsRpc = (
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
+      const home = yield* HomeService.HomeService;
+      const fleet = yield* FleetService.FleetService;
+      const fleetBroker = yield* FleetBroker.FleetBroker;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
@@ -1910,6 +1917,7 @@ export const layerWsRpc = (
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
           newProjectsRoot: managedFolders.namedProjectsRoot,
+          ...(home.available ? { homeWorkspaceRoot: yield* managedFolders.homeRoot } : {}),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
           serverTime: DateTime.formatIso(yield* DateTime.now),
         };
@@ -2705,7 +2713,9 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
+          Effect.fnUntraced(function* ({ patch: clientPatch, providerInstanceMutation }) {
+            // Home state changes only through its dedicated operations.
+            const { home: _home, ...patch } = clientPatch;
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),
@@ -3283,6 +3293,22 @@ export const layerWsRpc = (
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
         [WS_METHODS.previewReportProfiles]: (input) => reportProfiles(input),
         [WS_METHODS.previewReportStatus]: (input) => previewManager.reportStatus(input),
+        [WS_METHODS.homeEnable]: (input) => home.enable(input),
+        [WS_METHODS.homeDisable]: (_input) => home.disable,
+        [WS_METHODS.homeStartFresh]: (_input) => home.startFresh,
+        [WS_METHODS.fleetInvoke]: (input) => fleet.execute(input),
+        [WS_METHODS.fleetConnect]: (input) =>
+          Stream.unwrap(
+            home.available
+              ? fleetBroker.connect(input)
+              : Effect.fail(
+                  new HomeUnavailableError({
+                    message: "Home runs only on a server the T3 Code desktop app hosts.",
+                  }),
+                ),
+          ),
+        [WS_METHODS.fleetRespond]: (input) => fleetBroker.respond(input),
+        [WS_METHODS.fleetReportWatchEvents]: (input) => home.report(input),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),
@@ -3597,6 +3623,11 @@ export const WS_RPC_SERVER_OPTIONS = {
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
+    const homeLayer = Layer.mergeAll(
+      Layer.succeed(HomeService.HomeService, yield* HomeService.HomeService),
+      Layer.succeed(FleetService.FleetService, yield* FleetService.FleetService),
+      Layer.succeed(FleetBroker.FleetBroker, yield* FleetBroker.FleetBroker),
+    );
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3686,6 +3717,7 @@ export const layer = Layer.unwrap(
               Layer.provide(DefectReporter.layer),
               Layer.provide(AcpRegistrySessions.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(homeLayer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(NpmRelease.NpmRelease, npmRelease)),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),

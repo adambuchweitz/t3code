@@ -9,9 +9,13 @@ import { AsyncResult } from "effect/reactivity";
 import {
   shouldCreateNewThreadInCurrentProject,
   deleteSelectedThreadEntries,
+  focusedProjectKeys,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
+  isProjectGroupFocused,
+  resolveProjectFocusShortcut,
   orderItemsByPreferredIds,
+  toggleProjectGroupFocus,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
   resolveSidebarRowStatus,
@@ -134,6 +138,125 @@ describe("deleteSelectedThreadEntries", () => {
       deletedThreadKeys: testCase.deletedThreadKeys,
       firstFailure: testCase.firstFailure,
     });
+  });
+});
+
+describe("project focus", () => {
+  const workProject = {
+    environmentId: EnvironmentId.make("environment-work"),
+    projectId: ProjectId.make("project-work"),
+  };
+  const remoteWorkProject = {
+    environmentId: EnvironmentId.make("environment-remote"),
+    projectId: ProjectId.make("project-work"),
+  };
+  const personalProject = {
+    environmentId: EnvironmentId.make("environment-personal"),
+    projectId: ProjectId.make("project-personal"),
+  };
+
+  it("adds every physical project a grouped row represents", () => {
+    expect(
+      toggleProjectGroupFocus({
+        focusedProjects: [personalProject],
+        projectRefs: [workProject, remoteWorkProject],
+      }),
+    ).toEqual([personalProject, workProject, remoteWorkProject]);
+  });
+
+  it("removes a focused row without disturbing other projects", () => {
+    expect(
+      toggleProjectGroupFocus({
+        focusedProjects: [personalProject, workProject, remoteWorkProject],
+        projectRefs: [workProject, remoteWorkProject],
+      }),
+    ).toEqual([personalProject]);
+  });
+
+  it("completes a partly focused row after grouping merges physical projects", () => {
+    const focused = [workProject];
+    expect(
+      isProjectGroupFocused({
+        focusedProjectKeys: focusedProjectKeys(focused),
+        projectRefs: [workProject, remoteWorkProject],
+      }),
+    ).toBe(false);
+    expect(
+      toggleProjectGroupFocus({
+        focusedProjects: focused,
+        projectRefs: [workProject, remoteWorkProject],
+      }),
+    ).toEqual([workProject, remoteWorkProject]);
+  });
+
+  it("keeps per-environment refs when grouping splits a focused row", () => {
+    const focused = [workProject, remoteWorkProject];
+    const keys = focusedProjectKeys(focused);
+    expect(isProjectGroupFocused({ focusedProjectKeys: keys, projectRefs: [workProject] })).toBe(
+      true,
+    );
+    expect(
+      toggleProjectGroupFocus({ focusedProjects: focused, projectRefs: [remoteWorkProject] }),
+    ).toEqual([workProject]);
+  });
+
+  it("toggles focus only on a plain Shift+Enter", () => {
+    const enter = {
+      key: "Enter",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: false,
+      isComposing: false,
+      keyCode: 13,
+    };
+    expect(resolveProjectFocusShortcut(enter)).toBe("toggle");
+    expect(resolveProjectFocusShortcut({ ...enter, shiftKey: false })).toBeNull();
+    expect(resolveProjectFocusShortcut({ ...enter, ctrlKey: true })).toBeNull();
+    expect(resolveProjectFocusShortcut({ ...enter, altKey: true })).toBeNull();
+    expect(resolveProjectFocusShortcut({ ...enter, metaKey: true })).toBeNull();
+    expect(resolveProjectFocusShortcut({ ...enter, key: "F10" })).toBeNull();
+  });
+
+  it("holds a repeated Shift+Enter without toggling again or selecting the row", () => {
+    const held = {
+      key: "Enter",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: true,
+      isComposing: false,
+      keyCode: 13,
+    };
+    expect(resolveProjectFocusShortcut(held)).toBe("suppress");
+  });
+
+  it("leaves an Enter that ends IME composition to the input", () => {
+    const enter = {
+      key: "Enter",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: false,
+      isComposing: true,
+      keyCode: 13,
+    };
+    expect(resolveProjectFocusShortcut(enter)).toBeNull();
+    // Safari's last composition Enter already reports isComposing false.
+    expect(resolveProjectFocusShortcut({ ...enter, isComposing: false, keyCode: 229 })).toBeNull();
+  });
+
+  it("drops duplicate refs and never treats an empty row as focused", () => {
+    expect(
+      toggleProjectGroupFocus({
+        focusedProjects: [workProject, { ...workProject }],
+        projectRefs: [workProject],
+      }),
+    ).toEqual([]);
+    expect(isProjectGroupFocused({ focusedProjectKeys: new Set(), projectRefs: [] })).toBe(false);
   });
 });
 

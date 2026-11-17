@@ -27,7 +27,7 @@ click a project to jump to it, or **Reset all** to make those projects follow th
 again.
 
 Providers and diagnostics are per machine: they show one environment at a time, the primary
-one until you pick another. Every other setting fans out to the selection.
+one until you pick another. Other server settings fan out to the selection.
 
 With a project selected, a provider's switch in **Settings → Providers** turns it on or off for
 that project only, in either direction: a provider off on the machine can be used in one project,
@@ -63,6 +63,16 @@ Settings project list, marked **Archived**. Choose one there and select **Unarch
 back. On mobile, both are in **Settings → Projects → Organize**.
 
 A project on several machines must have every machine connected to pin or archive it.
+
+## Hide a project from the sidebar
+
+Select a project in **Settings → Project** and turn off **Show in sidebar**. On mobile,
+use **Settings → Projects & threads → Overview**. This hides the selected checkouts and their
+threads on this device while keeping their history and running work. Hidden projects remain in
+the Settings project picker; select one there and turn **Show in sidebar** back on to restore it.
+On web and desktop, you can also search for a hidden project in the sidebar's project filter.
+Select its **Hidden** result to open Project settings. Its threads stay hidden until you turn
+**Show in sidebar** back on.
 
 ## Worktree branch names
 

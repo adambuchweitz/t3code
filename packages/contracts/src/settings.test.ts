@@ -342,6 +342,33 @@ describe("ClientSettings quit confirmation", () => {
     expect(settings.confirmQuit).toBe(mode);
     expect(encodeClientSettings(settings).confirmQuit).toBe(mode);
   });
+  describe("ClientSettings focused projects", () => {
+    it("defaults to no focused projects and leaves patches untouched", () => {
+      expect(decodeClientSettings({}).sidebarFocusedProjects).toEqual([]);
+      expect(decodeClientSettingsPatch({})).not.toHaveProperty("sidebarFocusedProjects");
+    });
+
+    it("persists environment-scoped project refs", () => {
+      const focusedProjects = [
+        { environmentId: "environment-work", projectId: "project-client" },
+        { environmentId: "environment-personal", projectId: "project-side" },
+      ];
+
+      expect(
+        decodeClientSettings({ sidebarFocusedProjects: focusedProjects }).sidebarFocusedProjects,
+      ).toEqual(focusedProjects);
+      expect(
+        decodeClientSettingsPatch({ sidebarFocusedProjects: focusedProjects })
+          .sidebarFocusedProjects,
+      ).toEqual(focusedProjects);
+    });
+
+    it("rejects a project ref without its environment", () => {
+      expect(() =>
+        decodeClientSettingsPatch({ sidebarFocusedProjects: [{ projectId: "project-client" }] }),
+      ).toThrow();
+    });
+  });
 });
 
 describe("provider enabled defaults", () => {
@@ -553,5 +580,17 @@ describe("server model preferences", () => {
     const input = { favorites: [], providerModelPreferences: {} };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+});
+
+describe("hidden sidebar projects", () => {
+  it("keeps older clients visible by default and round-trips the preference", () => {
+    expect(decodeClientSettings({}).hiddenSidebarProjectKeys).toEqual([]);
+    const patch = { hiddenSidebarProjectKeys: ["local:repo", "remote:repo"] };
+    expect(encodeClientSettings(decodeClientSettings(patch))).toMatchObject(patch);
+    expect(decodeClientSettingsPatch(patch)).toEqual(patch);
+    expect(decodeClientSettingsPatch({ hiddenSidebarProjectKeys: [] })).toEqual({
+      hiddenSidebarProjectKeys: [],
+    });
   });
 });

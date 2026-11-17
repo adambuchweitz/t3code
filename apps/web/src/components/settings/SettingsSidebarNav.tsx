@@ -17,6 +17,7 @@ import {
   FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
+  HouseIcon,
   InfoIcon,
   MessageSquareTextIcon,
   MessagesSquareIcon,
@@ -36,8 +37,11 @@ import {
 import { resolveEventKeys } from "@t3tools/shared/keybindings";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { T, useGT, useMessages } from "gt-react";
+import { useAtomValue } from "@effect/atom-react";
 
 import { cn } from "../../lib/utils";
+import { isElectron } from "../../env";
+import { primaryServerConfigAtom } from "../../state/server";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import {
@@ -91,6 +95,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/general": Settings2Icon,
   "/settings/diagnostics": WrenchIcon,
   "/settings/voice": MicIcon,
+  "/settings/home": HouseIcon,
   "/settings/appearance": PaletteIcon,
   "/settings/chat": MessageSquareTextIcon,
   "/settings/diffs": FileDiffIcon,
@@ -136,6 +141,10 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
+  const canRunHome = useAtomValue(
+    primaryServerConfigAtom,
+    (config) => isElectron && config?.homeWorkspaceRoot != null,
+  );
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.
@@ -395,30 +404,32 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       {/* The heading stays outside the group it names so NVDA does not read the name twice. */}
                       <div role="group" aria-labelledby={`settings-nav-group-${index}`}>
                         <SidebarMenu>
-                          {group.paths.map((to) => {
-                            const Icon = SETTINGS_SECTION_ICONS[to];
-                            const isActive = activePath === to || activePath.startsWith(`${to}/`);
-                            return (
-                              <SidebarMenuItem key={to}>
-                                <SidebarMenuButton
-                                  data-settings-section={to}
-                                  aria-current={isActive ? "page" : undefined}
-                                  isActive={isActive}
-                                  onClick={() => handleSectionClick(to)}
-                                >
-                                  <Icon />
-                                  <span
-                                    className={cn(
-                                      "truncate",
-                                      !compactSearchOpen && "max-md:sr-only",
-                                    )}
+                          {group.paths
+                            .filter((to) => to !== "/settings/home" || canRunHome)
+                            .map((to) => {
+                              const Icon = SETTINGS_SECTION_ICONS[to];
+                              const isActive = activePath === to || activePath.startsWith(`${to}/`);
+                              return (
+                                <SidebarMenuItem key={to}>
+                                  <SidebarMenuButton
+                                    data-settings-section={to}
+                                    aria-current={isActive ? "page" : undefined}
+                                    isActive={isActive}
+                                    onClick={() => handleSectionClick(to)}
                                   >
-                                    {m(SETTINGS_SECTION_LABELS[to])}
-                                  </span>
-                                </SidebarMenuButton>
-                              </SidebarMenuItem>
-                            );
-                          })}
+                                    <Icon />
+                                    <span
+                                      className={cn(
+                                        "truncate",
+                                        !compactSearchOpen && "max-md:sr-only",
+                                      )}
+                                    >
+                                      {m(SETTINGS_SECTION_LABELS[to])}
+                                    </span>
+                                  </SidebarMenuButton>
+                                </SidebarMenuItem>
+                              );
+                            })}
                         </SidebarMenu>
                       </div>
                     </div>

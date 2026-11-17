@@ -6,7 +6,12 @@ import {
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type OrchestrationV2ThreadShell,
+  type ThreadId,
+  isHomeLaunchedThreadId,
+} from "@t3tools/contracts";
 import { monitorHoldsWakeCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
@@ -21,6 +26,7 @@ import {
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
 import { environmentSummaries } from "../state/presentation";
+import { primaryServerSettingsAtom } from "../state/server";
 import { environmentShell } from "../state/shell";
 import { environmentThreadShells } from "../state/threads";
 import {
@@ -138,6 +144,11 @@ export function startThreadNotifications(
       registry
         .get(environmentThreadShells.hiddenThreadKeysAtom)
         .has(threadKey({ environmentId, threadId: thread.id }))
+    )
+      return;
+    if (
+      registry.get(primaryServerSettingsAtom).home.threadId !== null &&
+      isHomeLaunchedThreadId(thread.id)
     )
       return;
     const { notificationMode: mode, inAppNotificationsEnabled } = getClientSettings();
@@ -299,13 +310,16 @@ export function startThreadNotifications(
       changed.push([prior, state]);
     }
     entry.reconnecting = false;
+    const homeOn = registry.get(primaryServerSettingsAtom).home.threadId !== null;
     entry.previous = next;
     entry.gate.retain(new Set(next.keys()));
     const now = Date.now();
     for (const [prior, state] of changed) {
       entry.gate.observe(state.thread.id, prior, state, {
         archived: state.thread.archivedAt !== null,
-        quiet: state.raw.latestRunStopRequested === true,
+        quiet:
+          (homeOn && isHomeLaunchedThreadId(state.thread.id)) ||
+          state.raw.latestRunStopRequested === true,
         snoozed: isSnoozedForNotification(state.thread, state.completedAt, now),
       });
     }

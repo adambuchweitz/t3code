@@ -1,3 +1,12 @@
+import {
+  sidebarProjectVisibility,
+  updateHiddenSidebarProjectKeys,
+} from "@t3tools/client-runtime/state/project-visibility";
+import {
+  persistClientSettingsUpdate,
+  useClientSettings,
+  useClientSettingsHydrated,
+} from "../../hooks/useSettings";
 import { useComposerMenuState } from "../chat/useComposerMenuState";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
@@ -18,7 +27,6 @@ import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { releaseProjectDraftUploads } from "../../lib/composerDraftUploads";
-import { persistClientSettingsUpdate, useClientSettings } from "../../hooks/useSettings";
 import { readLocalApi } from "../../localApi";
 import { derivePhysicalProjectKey } from "@t3tools/client-runtime/state/project-grouping";
 import {
@@ -258,6 +266,34 @@ function ProjectDetail({
   allMembers: ReadonlyArray<SidebarProjectGroupMember>;
   hasOtherMembers: boolean;
 }) {
+  const hiddenProjectKeys = useClientSettings((settings) => settings.hiddenSidebarProjectKeys);
+  const clientSettingsReady = useClientSettingsHydrated();
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const projectRefs = group.memberProjects.map((member) =>
+    scopeProjectRef(member.environmentId, member.id),
+  );
+  const visibility = sidebarProjectVisibility(hiddenProjectKeys, projectRefs);
+  const setVisible = async (visible: boolean) => {
+    if (savingVisibility) return;
+    setSavingVisibility(true);
+    try {
+      await persistClientSettingsUpdate((settings) => ({
+        ...settings,
+        hiddenSidebarProjectKeys: updateHiddenSidebarProjectKeys(
+          settings.hiddenSidebarProjectKeys,
+          projectRefs,
+          !visible,
+        ),
+      }));
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Failed to update sidebar visibility",
+        description: error instanceof Error ? error.message : "Try again.",
+      });
+    }
+    setSavingVisibility(false);
+  };
   const navigate = useNavigate({ from: "/settings" });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
@@ -568,6 +604,20 @@ function ProjectDetail({
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === "Enter") event.currentTarget.blur();
                 }}
+              />
+            }
+          />
+          <SettingsRow
+            id="project-sidebar-visibility"
+            title="Show in sidebar"
+            description="Show this project and its threads on this device. Hidden projects remain available in Settings."
+            control={
+              <Switch
+                aria-label="Show in sidebar"
+                checked={visibility !== false}
+                mixed={visibility === null}
+                disabled={!clientSettingsReady || savingVisibility}
+                onCheckedChange={(checked) => void setVisible(visibility === null || checked)}
               />
             }
           />

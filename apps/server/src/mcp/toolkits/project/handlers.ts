@@ -1,4 +1,6 @@
 import {
+  type EnvironmentId,
+  HOME_LAUNCHED_THREAD_ID_PREFIX,
   CommandId,
   MessageId,
   ThreadId,
@@ -15,6 +17,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import { refuseHomeFolder } from "../../../home/FleetService.ts";
+import * as HomeService from "../../../home/HomeService.ts";
+import { callerIsHome, readHomeChangeCaller, routeHome, runAsHome } from "../../homeRouting.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -165,6 +170,24 @@ const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+// A Home launch's watch is saved first; no saved watch, no launch. A failed launch keeps its
+// watch (a relay timeout doesn't prove no thread exists); an orphaned watch ends at next start.
+const watchLaunched = (homeThreadId: ThreadId, environmentId: EnvironmentId, threadId: ThreadId) =>
+  HomeService.HomeService.pipe(
+    Effect.flatMap((home) =>
+      home.updateWatches(homeThreadId, (current) =>
+        HomeService.addWatch(current, { environmentId, threadId, reason: "launched" }),
+      ),
+    ),
+    Effect.mapError(
+      () =>
+        new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "Home could not watch the new thread, so it was not launched.",
+        }),
+    ),
+  );
+
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
@@ -173,6 +196,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const context = yield* readCaller();
         const { caller } = context;
+        const homeThreadId = (yield* callerIsHome()) ? caller?.id : undefined;
+        const isHome = homeThreadId !== undefined;
+        if (isHome) yield* readHomeChangeCaller();
+        const targetEnvironmentId = input.environmentId ?? scope.environmentId;
+        const remote = targetEnvironmentId !== scope.environmentId;
         // A retry with the same key replays the first launch: the ids derive
         // from the caller and the key, and the launch service replays a
         // command it already accepted.
@@ -180,9 +208,27 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? yield* newCommandId()
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
-        const threadId = ThreadId.make(commandId);
+        const threadId = ThreadId.make(
+          isHome ? `${HOME_LAUNCHED_THREAD_ID_PREFIX}${commandId}` : commandId,
+        );
         const messageId = MessageId.make(commandId);
+        if (isHome && input.projectId === undefined && input.scratch !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Home must pass projectId or scratch:true. Threads never launch in Home's folder.",
+          });
+        if (remote && !isHome)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Only Home can act in another environment.",
+          });
         const attachments = input.attachments ?? [];
+        if (remote && attachments.length > 0)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Attachments cannot be sent to another environment.",
+          });
         if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -197,6 +243,32 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "scratch:true picks its own project and folder; omit projectId and workspaceStrategy.",
           });
+        if (isHome && !remote && input.projectId !== undefined)
+          yield* refuseHomeFolder(
+            {
+              projects: yield* Project.ProjectService,
+              folders: yield* ManagedProjectFolders.ManagedProjectFolders,
+            },
+            { projectId: input.projectId, workspaceStrategy: input.workspaceStrategy },
+          );
+        if (homeThreadId !== undefined && attachments.length === 0) {
+          const modelSelection =
+            input.modelSelection ?? (remote ? undefined : caller?.modelSelection);
+          yield* watchLaunched(homeThreadId, targetEnvironmentId, threadId);
+          return yield* runAsHome(input.environmentId, "threads.launch", {
+            threadId,
+            ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+            ...(input.scratch === undefined ? {} : { scratch: input.scratch }),
+            title: input.title,
+            ...(modelSelection === undefined ? {} : { modelSelection }),
+            runtimeMode,
+            interactionMode,
+            ...(input.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: input.workspaceStrategy }),
+            ...(input.message === undefined ? {} : { message: input.message }),
+          });
+        }
         const projectId =
           input.scratch === true
             ? (yield* ManagedProjectFolders.ManagedProjectFolders.pipe(
@@ -405,6 +477,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
+      const routed = yield* routeHome(input.environmentId, "projects.list", input);
+      if (Option.isSome(routed)) return routed.value;
       const projects = yield* access;
       // Identities are resolved: linked environments find this side's project by repository.
       return yield* projects
@@ -482,6 +556,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_delete: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
+      if (yield* callerIsHome())
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Home cannot delete projects. Archive or settle their threads instead.",
+        });
       const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
       if (yield* folders.isScratchProject(input.projectId))
         return yield* new OrchestratorMcpFailure({

@@ -590,3 +590,39 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(writes).toBe(0);
   }),
 );
+
+it.effect("requires Home and fleet operations to use the destination orchestration grant", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      registry.set(sessions(env), AsyncResult.success(grant(false)));
+      registry.set(sessions(other), AsyncResult.success(grant(false)));
+      const methods = [
+        WS_METHODS.homeEnable,
+        WS_METHODS.homeDisable,
+        WS_METHODS.homeStartFresh,
+        WS_METHODS.fleetConnect,
+        WS_METHODS.fleetInvoke,
+        WS_METHODS.fleetRespond,
+        WS_METHODS.fleetReportWatchEvents,
+      ] as const;
+      for (const method of methods) {
+        const command = createCommandPermissions(runtime, method);
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      for (const method of methods) {
+        const command = createCommandPermissions(runtime, method);
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        yield* command.authorize(registry, env);
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
+        expect((yield* command.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }
+    }),
+  ),
+);

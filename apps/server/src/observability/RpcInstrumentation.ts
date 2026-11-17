@@ -12,6 +12,13 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
+  [WS_METHODS.homeEnable]: "home",
+  [WS_METHODS.homeDisable]: "home",
+  [WS_METHODS.homeStartFresh]: "home",
+  [WS_METHODS.fleetInvoke]: "fleet",
+  [WS_METHODS.fleetConnect]: "fleet",
+  [WS_METHODS.fleetRespond]: "fleet",
+  [WS_METHODS.fleetReportWatchEvents]: "fleet",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",

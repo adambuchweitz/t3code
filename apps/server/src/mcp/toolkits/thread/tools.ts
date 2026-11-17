@@ -1,5 +1,11 @@
 import {
   OrchestratorMcpEnvironmentTarget,
+  FleetRequestReadResult,
+  FleetRequestRespondInput,
+  FleetRequestTarget,
+  FleetRequestsListInput,
+  FleetRequestsListResult,
+  FleetThreadOrganizeInput,
   ScheduledTaskId,
   ScheduledTask,
   OrchestrationSearchThreadsInput,
@@ -10,9 +16,6 @@ import {
   ModelSelection,
   RuntimeMode,
   ProviderInteractionMode,
-  RuntimeRequestId,
-  ProviderUserInputAnswers,
-  IsoDateTime,
   OrchestratorMcpFailure,
   OrchestrationV2DispatchCommandResult,
   ThreadId,
@@ -28,27 +31,13 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import { homeRoutingDependencies } from "../../homeRouting.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(ThreadId),
-    action: Schema.Literals([
-      "pin",
-      "unpin",
-      "snooze",
-      "unsnooze",
-      "settle",
-      "unsettle",
-      "archive",
-      "unarchive",
-      "mark_unread",
-    ]),
-    snoozedUntil: Schema.optional(IsoDateTime),
-  }),
+    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active. Home can organize across environments.",
+  parameters: FleetThreadOrganizeInput,
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,
     Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
@@ -59,6 +48,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
     SecureRandom.SecureRandom,
+    ...homeRoutingDependencies,
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
@@ -109,37 +99,26 @@ const QueueTool = Tool.make("t3_queue", {
   ]),
 }).annotate(Tool.Destructive, true);
 
-const question = Schema.Struct({
-  id: Schema.String,
-  header: Schema.String,
-  question: Schema.String,
-  options: Schema.Array(
-    Schema.Struct({
-      label: Schema.String,
-      description: Schema.String,
-      value: Schema.optional(Schema.String),
-      preview: Schema.optional(Schema.String),
-    }),
-  ),
-  multiSelect: Schema.optional(Schema.Boolean),
-  allowCustomAnswer: Schema.optional(Schema.Boolean),
-  initialAnswer: Schema.optional(Schema.String),
-  required: Schema.optional(Schema.Boolean),
-});
-const PendingRequestTool = Tool.make("t3_pending_request", {
+const requestTool = {
   ...commandTool,
+  dependencies: [...commandTool.dependencies, ...homeRoutingDependencies],
+};
+const PendingRequestTool = Tool.make("t3_pending_request", {
+  ...requestTool,
   description:
-    "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
+    "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids. read: one by `requestId`. respond: answer one with `answers`. Only Home can list and answer approvals with `decision`, or access another environment.",
   parameters: Schema.Struct({
+    ...FleetRequestsListInput.fields,
     action: Schema.Literals(["list", "read", "respond"]),
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
-    requestId: Schema.optional(RuntimeRequestId),
-    answers: Schema.optional(ProviderUserInputAnswers),
+    requestId: Schema.optional(FleetRequestTarget.fields.requestId),
+    answers: FleetRequestRespondInput.fields.answers,
+    decision: FleetRequestRespondInput.fields.decision,
   }),
   success: Schema.Union([
-    Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
-    Schema.Struct({ requestId: RuntimeRequestId, questions: Schema.Array(question) }),
+    FleetRequestsListResult,
+    FleetRequestReadResult,
     OrchestrationV2DispatchCommandResult,
   ]),
 })
@@ -194,7 +173,7 @@ const ThreadTransferTool = Tool.make("t3_thread_transfer", {
 const ThreadSearchTool = Tool.make("t3_thread_search", {
   ...commandTool,
   description:
-    "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Not exhaustive.",
+    "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Not exhaustive. Home searches all projects when projectId is omitted.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...OrchestrationSearchThreadsInput.fields,
@@ -214,7 +193,11 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
       }),
     ),
   }),
-  dependencies: [...commandTool.dependencies, ThreadSearch.ThreadSearch],
+  dependencies: [
+    ...commandTool.dependencies,
+    ThreadSearch.ThreadSearch,
+    ...homeRoutingDependencies,
+  ],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

@@ -16,11 +16,13 @@ import {
   type ThreadSearchShell,
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
+import { scopedProjectKey } from "@t3tools/client-runtime/environment";
 import {
   type ContextMenuItem,
   type EnvironmentId,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type ScopedProjectRef,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
@@ -593,6 +595,7 @@ export function filterSidebarV2VisibleThreads<
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  homeThread: { readonly environmentId: string; readonly threadId: string } | null = null,
 ): T[] {
   return threads.filter(
     (thread) =>
@@ -602,9 +605,109 @@ export function filterSidebarV2VisibleThreads<
         thread.lineage,
         delegatedUnderParent,
       ) &&
+      !(
+        homeThread !== null &&
+        thread.environmentId === homeThread.environmentId &&
+        thread.id === homeThread.threadId
+      ) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
+}
+
+export function focusedProjectKeys(projects: ReadonlyArray<ScopedProjectRef>): ReadonlySet<string> {
+  return new Set(projects.map(scopedProjectKey));
+}
+
+export function isProjectGroupFocused(input: {
+  readonly focusedProjectKeys: ReadonlySet<string>;
+  readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
+}): boolean {
+  return (
+    input.projectRefs.length > 0 &&
+    input.projectRefs.every((projectRef) =>
+      input.focusedProjectKeys.has(scopedProjectKey(projectRef)),
+    )
+  );
+}
+
+/**
+ * Shift+Enter in the project picker search stars the highlighted project. A keyCode-229 Enter is IME
+ * typing (Safari); a held key keeps the match so Base UI never selects, but only the first press toggles.
+ */
+export function resolveProjectFocusShortcut(event: {
+  readonly key: string;
+  readonly shiftKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  readonly metaKey: boolean;
+  readonly repeat: boolean;
+  readonly isComposing: boolean;
+  readonly keyCode: number;
+}): "toggle" | "suppress" | null {
+  if (
+    event.key !== "Enter" ||
+    !event.shiftKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    event.metaKey ||
+    event.isComposing ||
+    event.keyCode === 229
+  ) {
+    return null;
+  }
+  return event.repeat ? "suppress" : "toggle";
+}
+
+/**
+ * Claims Shift+Enter from the project picker search when a project is
+ * highlighted. Base UI selects the highlighted row on any Enter, so every
+ * matching press, held repeats included, suppresses it and keeps the picker
+ * open on the current scope.
+ */
+export function handleProjectFocusShortcutKeyDown<TProject>(
+  event: React.KeyboardEvent<HTMLInputElement>,
+  input: { readonly project: TProject | null; readonly toggle: (project: TProject) => void },
+): boolean {
+  if (event.defaultPrevented || input.project === null) return false;
+  const shortcut = resolveProjectFocusShortcut({
+    key: event.key,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    repeat: event.repeat,
+    isComposing: event.nativeEvent.isComposing,
+    keyCode: event.nativeEvent.keyCode,
+  });
+  if (shortcut === null) return false;
+  (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+  event.preventDefault();
+  if (shortcut === "toggle") input.toggle(input.project);
+  return true;
+}
+
+/**
+ * Focus stores each physical project behind a logical sidebar row, so the set
+ * survives a grouping change that splits or merges rows. A partly focused row
+ * counts as unfocused, and toggling it completes the row instead of clearing it.
+ */
+export function toggleProjectGroupFocus(input: {
+  readonly focusedProjects: ReadonlyArray<ScopedProjectRef>;
+  readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
+}): ReadonlyArray<ScopedProjectRef> {
+  const current = [
+    ...new Map(input.focusedProjects.map((project) => [scopedProjectKey(project), project])),
+  ].map(([, project]) => project);
+  const currentKeys = focusedProjectKeys(current);
+  if (isProjectGroupFocused({ focusedProjectKeys: currentKeys, projectRefs: input.projectRefs })) {
+    const groupKeys = focusedProjectKeys(input.projectRefs);
+    return current.filter((project) => !groupKeys.has(scopedProjectKey(project)));
+  }
+  return [
+    ...current,
+    ...input.projectRefs.filter((project) => !currentKeys.has(scopedProjectKey(project))),
+  ];
 }
 
 export function buildBulkTitleRegenerationContextMenuItem(input: {
@@ -1147,13 +1250,15 @@ export function pullRequestMatchesSearchQuery(
   return normalizedQuery.split(" ").every((token) => haystack.includes(token));
 }
 
-export function filterSidebarProjectScopeItems<TItem extends { readonly value: string }>(input: {
+export function filterSidebarProjectScopeItems<
+  TItem extends { readonly value: string; readonly hidden?: boolean },
+>(input: {
   items: readonly TItem[];
   query: string;
   matches: (item: TItem, query: string) => boolean;
 }): readonly TItem[] {
   const query = input.query.trim();
-  if (query.length === 0) return input.items;
+  if (query.length === 0) return input.items.filter((item) => !item.hidden);
   return input.items.filter((item) => item.value !== "all" && input.matches(item, query));
 }
 

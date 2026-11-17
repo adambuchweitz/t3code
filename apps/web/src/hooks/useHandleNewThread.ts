@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -40,13 +41,13 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSummaries } from "../state/presentation";
-import { environmentServerConfigsAtom } from "../state/server";
+import { environmentServerConfigsAtom, primaryServerConfigAtom } from "../state/server";
+import { defaultNewThreadProjectRef } from "../lib/chatThreadActions";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { getClientSettings } from "./useSettings";
 import { getLocalStorageItem, useLocalStorage } from "./useLocalStorage";
 import * as Schema from "effect/Schema";
-import { useAtomValue } from "@effect/atom-react";
 import { defaultProjectFallbackReadyAtom } from "../state/projects";
 import { useThreadRouteTarget } from "./useThreadRouteTarget";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
@@ -450,6 +451,7 @@ export function resolveDefaultProjectRef(
   projectOrder: readonly string[],
   lastUsedProjectKey: string | null,
   fallbackReady = true,
+  serverConfig = appAtomRegistry.get(primaryServerConfigAtom),
 ): ScopedProjectRef | null {
   const lastUsed = projects.find(
     (project) =>
@@ -458,7 +460,7 @@ export function resolveDefaultProjectRef(
   );
   if (lastUsed) return scopeProjectRef(lastUsed.environmentId, lastUsed.id);
   if (!fallbackReady) return null;
-  const [defaultProject] = orderItemsByPreferredIds({
+  const orderedProjects = orderItemsByPreferredIds({
     items: projects.filter((project) => project.archivedAt == null),
     preferredIds: projectOrder,
     getId: getProjectOrderKey,
@@ -467,7 +469,10 @@ export function resolveDefaultProjectRef(
       legacyProjectCwdPreferenceKey(project.workspaceRoot),
     ],
   });
-  return defaultProject ? scopeProjectRef(defaultProject.environmentId, defaultProject.id) : null;
+  return defaultNewThreadProjectRef(orderedProjects, {
+    primaryEnvironmentId: serverConfig?.environment.environmentId ?? null,
+    homeWorkspaceRoot: serverConfig?.homeWorkspaceRoot ?? null,
+  });
 }
 
 export function useHandleNewThread() {
@@ -494,11 +499,13 @@ export function useHandleNewThread() {
   );
   const projects = useProjects();
   const handleNewThread = useNewThreadHandler();
+  const serverConfig = useAtomValue(primaryServerConfigAtom);
   const defaultProjectRef = resolveDefaultProjectRef(
     projects,
     projectOrder,
     lastUsedProjectKey,
     defaultProjectFallbackReady,
+    serverConfig,
   );
 
   return {

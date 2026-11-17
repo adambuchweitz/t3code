@@ -8,6 +8,7 @@ import {
 import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
+  FOCUSED_PROJECT_SCOPE_KEY,
   resolveSidebarProjectScopeKey,
   getSidebarProjectSettingsKey,
 } from "./sidebarProjectGrouping";
@@ -123,6 +124,22 @@ describe("environment grouping", () => {
     });
     const key = deriveLogicalProjectKeyFromSettings(ordinary, defaultGroupingSettings);
     expect(resolveSidebarProjectScopeKey({ groups, key, canClearMissingScope: true })).toBe(key);
+  });
+
+  it("keeps the focused-projects scope once every project has loaded", () => {
+    const groups = buildSidebarProjectSnapshots({
+      projects: [makeProject({ repositoryIdentity })],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+    expect(
+      resolveSidebarProjectScopeKey({
+        groups,
+        key: FOCUSED_PROJECT_SCOPE_KEY,
+        canClearMissingScope: true,
+      }),
+    ).toBe(FOCUSED_PROJECT_SCOPE_KEY);
   });
 
   it("dedupes stale project rows with the same environment and workspace path", () => {

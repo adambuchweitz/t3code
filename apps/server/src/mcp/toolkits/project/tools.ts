@@ -1,13 +1,12 @@
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
   clampedPositiveInt,
+  FleetProjectListInput,
+  FleetThreadLaunchResult,
   NonNegativeInt,
   ModelSelection,
   TrimmedNonEmptyString,
-  ThreadId,
-  RunId,
   OrchestrationV2DelegatedFrom,
-  OrchestrationV2RunStatus,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   RuntimeMode,
   ProviderInteractionMode,
@@ -37,6 +36,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import { homeRoutingDependencies } from "../../homeRouting.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const shared = {
@@ -48,14 +48,15 @@ const shared = {
     ThreadManagementService.ThreadManagementService,
     ProjectService.ProjectService,
     SecureRandom.SecureRandom,
+    ...homeRoutingDependencies,
   ],
 };
 const ProjectListTool = Tool.make("t3_project_list", {
   ...shared,
-  description: "List projects. Pages can shift.",
+  description: "List projects (Home: across environments). Pages can shift.",
+  // A limit above the maximum is clamped rather than rejected, as everywhere else.
   parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    cursor: Schema.optional(NonNegativeInt),
+    ...FleetProjectListInput.fields,
     limit: Schema.optional(clampedPositiveInt(100)),
   }),
   success: Schema.Struct({
@@ -98,7 +99,8 @@ const ProjectUpdateTool = Tool.make("t3_project_update", {
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,
-  description: "Delete one project. Nonempty needs `force: true`. Folder on disk stays.",
+  description:
+    "Delete one project. Nonempty needs `force: true`. Folder on disk stays. Home cannot delete projects.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: ProjectId,
@@ -129,7 +131,7 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`. Home can launch across environments with environmentId; it must pass projectId or scratch:true. Home watches the threads it launches.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
@@ -159,14 +161,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   }),
-  success: Schema.Struct({
-    threadId: ThreadId,
-    link: Schema.optional(Schema.String),
-    projectId: ProjectId,
-    modelSelection: ModelSelection,
-    runId: Schema.NullOr(RunId),
-    status: Schema.NullOr(OrchestrationV2RunStatus),
-  }),
+  success: FleetThreadLaunchResult,
   dependencies: [
     ...shared.dependencies,
     ThreadLaunchService.ThreadLaunchService,

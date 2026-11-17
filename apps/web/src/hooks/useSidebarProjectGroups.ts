@@ -1,3 +1,5 @@
+import { filterSidebarProjects } from "@t3tools/client-runtime/state/project-visibility";
+
 import { orderItemsByPreferredIds, sortSidebarV2ProjectGroups } from "../components/Sidebar.logic";
 import {
   getProjectOrderKey,
@@ -9,12 +11,21 @@ import { useDelegatedUnderParent, useProjects, useQuietThreadShells } from "../s
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 
-export function useSidebarProjectGroups() {
-  const projects = useProjects();
+export function useSidebarProjectGroups(options?: { excludeHidden?: boolean }) {
+  const allProjects = useProjects();
   // Activity order lags a running thread's streaming ticks until its next
   // real change; reading every tick re-rendered the whole sidebar with it.
-  const threads = useQuietThreadShells();
+  const allThreads = useQuietThreadShells();
   const delegatedUnderParent = useDelegatedUnderParent();
+  const hiddenProjectKeys = useClientSettings((settings) => settings.hiddenSidebarProjectKeys);
+  const hiddenProjectKeySet = new Set(options?.excludeHidden ? hiddenProjectKeys : []);
+  const projects = filterSidebarProjects(allProjects, hiddenProjectKeySet);
+  const threads =
+    hiddenProjectKeySet.size === 0
+      ? allThreads
+      : allThreads.filter(
+          (thread) => !hiddenProjectKeySet.has(`${thread.environmentId}:${thread.projectId}`),
+        );
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const sortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);

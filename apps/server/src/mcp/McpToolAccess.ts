@@ -23,6 +23,8 @@ import {
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as HomeService from "../home/HomeService.ts";
+import { homeRoutedTools } from "./homeRouting.ts";
 import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -419,6 +421,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
 ) {
   // Optional so toolkits that never leave this environment build without it.
   const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const home = yield* Effect.serviceOption(HomeService.HomeService);
   const handlers: Record<string, unknown> = { ...checked };
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
@@ -446,6 +449,17 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
     handlers[name] = ({ environmentId, ...params }: { readonly environmentId?: EnvironmentId }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
+        // Home uses the renderer's fleet relay, which reaches environments without a peer link.
+        if (
+          environmentId !== undefined &&
+          homeRoutedTools.has(name) &&
+          scope.capabilities.has("orchestration") &&
+          scope.thread !== undefined &&
+          Option.isSome(home) &&
+          (yield* home.value.isHome(scope.thread.threadId))
+        ) {
+          return yield* here({ ...params, environmentId });
+        }
         const target = PeerForwarding.remoteTarget(scope, environmentId);
         if (target === undefined) return yield* here(params);
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;

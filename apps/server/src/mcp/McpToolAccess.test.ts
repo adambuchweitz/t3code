@@ -24,6 +24,10 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import * as HomeService from "../home/HomeService.ts";
+import * as FleetBroker from "../home/FleetBroker.ts";
+import * as FleetService from "../home/FleetService.ts";
+import { homeRoutingDependencies, routeHome } from "./homeRouting.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -510,3 +514,58 @@ it.effect("refuses to build a thread-bound tool that outside clients would be of
     );
   }),
 );
+
+it.effect.each([true, false])("preserves Home's remote relay when Home is %s", (isHome) => {
+  const relayed: Array<EnvironmentId> = [];
+  const toolkit = Toolkit.make(
+    Tool.make("t3_thread_read", {
+      ...linkedProbe,
+      dependencies: [...probe.dependencies, ...homeRoutingDependencies],
+    }),
+  );
+  const server = McpHttpServer.toolkitRegistration(
+    toolkit,
+    McpToolAccess.toLayer(toolkit, {
+      t3_thread_read: McpToolAccess.reads((input) =>
+        routeHome(input.environmentId, "requests.list", { threadId: fullAccessThreadId }).pipe(
+          Effect.as({ ran: "Home" }),
+        ),
+      ),
+    }),
+  ).pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(HomeService.HomeService)({
+        available: true,
+        isHome: () => Effect.succeed(isHome),
+      }),
+    ),
+    Layer.provide(Layer.mock(FleetService.FleetService)({})),
+    Layer.provide(
+      Layer.mock(FleetBroker.FleetBroker)({
+        invoke: (environmentId) => {
+          relayed.push(environmentId);
+          return Effect.succeed({ requestIds: [] });
+        },
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(PeerForwarding.PeerForwarding)({
+        call: (_scope, tool, environmentId) =>
+          Effect.succeed({ ran: `${tool.name} in ${environmentId}` } as never),
+      }),
+    ),
+  );
+  return call("t3_thread_read", fullAccess, { environmentId: box }).pipe(
+    Effect.map((outcome) => {
+      expect(outcome).toBe(isHome ? "Home" : "t3_thread_read in environment-box");
+      expect(relayed).toEqual(isHome ? [box] : []);
+    }),
+    Effect.provide(server),
+  );
+});

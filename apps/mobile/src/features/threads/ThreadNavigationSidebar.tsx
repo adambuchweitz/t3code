@@ -1,5 +1,7 @@
 import { useActiveNewTask } from "../../state/active-new-task";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
+import { filterSidebarProjects } from "@t3tools/client-runtime/state/project-visibility";
+import { useHiddenSidebarProjectKeys } from "../../state/project-visibility";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import {
@@ -126,8 +128,18 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
 
   const insets = useSafeAreaInsets();
   const { fabClearance, fabSize } = useAndroidControlSizing();
-  const projects = useProjects();
-  const threads = useAtomValue(steadyNavigationThreadShellsAtom);
+  const allProjects = useProjects();
+  const allThreads = useAtomValue(steadyNavigationThreadShellsAtom);
+  const hiddenProjectKeys = useHiddenSidebarProjectKeys();
+  const hiddenProjectKeySet = new Set(hiddenProjectKeys);
+  const projects = filterSidebarProjects(allProjects, hiddenProjectKeySet);
+  const threads =
+    hiddenProjectKeySet.size === 0
+      ? allThreads
+      : allThreads.filter(
+          (thread) =>
+            !hiddenProjectKeySet.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+        );
   const selectedThreadKey = useSidebarRowThreadKey(props.selectedThreadKey);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
@@ -147,7 +159,13 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     renameThread,
     regenerateThreadTitle,
   } = useThreadListActions();
-  const pendingTasks = usePendingNewTasks();
+  const allPendingTasks = usePendingNewTasks();
+  const pendingTasks =
+    hiddenProjectKeySet.size === 0
+      ? allPendingTasks
+      : allPendingTasks.filter(
+          (task) => !hiddenProjectKeySet.has(scopedProjectKey(task.environmentId, task.projectId)),
+        );
   const launchingThreads = useLaunchingThreads(threads);
   const activeNewTask = useActiveNewTask();
   const queuedThreadKeys = useQueuedThreadKeys();
@@ -582,7 +600,9 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                   : "No matching threads"
               : selectedProjectScope !== null
                 ? `No threads in ${selectedProjectScope.title}`
-                : "No threads yet"}
+                : allProjects.length > 0 && projects.length === 0
+                  ? "All projects are hidden. Show them again in Settings → Projects & threads → Overview."
+                  : "No threads yet"}
       </Text>
       {showAddEnvironment ? (
         <View className={Platform.OS === "android" ? "self-center" : "px-2"}>

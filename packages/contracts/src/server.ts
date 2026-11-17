@@ -732,6 +732,11 @@ export const ServerConfig = Schema.Struct({
   /** A secret request card may be answered with a secret provider reference. */
   secretRequestReferences: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
+   * Folder behind Home, the fleet-wide agent thread. Present only on servers a
+   * desktop app hosts, which are the only ones that can run Home.
+   */
+  homeWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
    * The latest stall long enough to notice, sent only for a few minutes after

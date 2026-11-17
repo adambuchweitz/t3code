@@ -271,6 +271,10 @@
       "types": "./src/state/peerPairingCode.ts",
       "default": "./src/state/peerPairingCode.ts"
     },
+    "./state/home": {
+      "types": "./src/state/home.ts",
+      "default": "./src/state/home.ts"
+    },
     "./state/preview": {
       "types": "./src/state/preview.ts",
       "default": "./src/state/preview.ts"
@@ -290,6 +294,10 @@
     "./state/pull-requests": {
       "types": "./src/state/pullRequests.ts",
       "default": "./src/state/pullRequests.ts"
+    },
+    "./state/project-visibility": {
+      "types": "./src/state/projectVisibility.ts",
+      "default": "./src/state/projectVisibility.ts"
     },
     "./state/project-grouping": {
       "types": "./src/state/projectGrouping.ts",
