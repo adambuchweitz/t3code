@@ -281,6 +281,7 @@ function resolveSidebarResizable({
 
 function Sidebar({
   side = "left",
+  tone = "default",
   variant = "sidebar",
   collapsible = "offcanvas",
   resizable = false,
@@ -289,6 +290,7 @@ function Sidebar({
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right";
+  tone?: "default" | "highlighted";
   variant?: "sidebar" | "floating" | "inset";
   collapsible?: "offcanvas" | "icon" | "none";
   resizable?: boolean | SidebarResizableOptions;
@@ -303,6 +305,14 @@ function Sidebar({
   const panelAnimationsActive = panelAnimationDurationMs > 0 && !prefersReducedMotion;
   const offcanvasCollapsed = !isMobile && collapsible === "offcanvas" && state === "collapsed";
 
+  const highlight =
+    tone === "highlighted" ? (
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-20 rounded-[inherit] bg-primary/4 ring-1 ring-inset ring-primary/50 inset-shadow-[0_0_36px_color-mix(in_oklab,var(--primary)_16%,transparent)]"
+      />
+    ) : null;
+
   const resolvedResizable = resolveSidebarResizable({ collapsible, isMobile, resizable });
   const instanceContextValue: SidebarInstanceContextProps = { side, resizable: resolvedResizable };
 
@@ -311,13 +321,14 @@ function Sidebar({
       <SidebarInstanceContext value={instanceContextValue}>
         <div
           className={cn(
-            "flex h-full w-(--sidebar-width) flex-col bg-sidebar surface-grain text-sidebar-foreground",
+            "relative flex h-full w-(--sidebar-width) flex-col bg-sidebar surface-grain text-sidebar-foreground",
             className,
           )}
           data-slot="sidebar"
           {...props}
         >
           {children}
+          {highlight}
         </div>
       </SidebarInstanceContext>
     );
@@ -360,13 +371,14 @@ function Sidebar({
             </SheetHeader>
             <div
               className={cn(
-                "flex h-full w-full flex-col pb-safe pt-safe",
+                "relative flex h-full w-full flex-col pb-safe pt-safe",
                 SIDEBAR_TITLEBAR_CONTROL_SIZE,
                 side === "left" ? "pl-safe" : "pr-safe",
               )}
               {...props}
             >
               {children}
+              {highlight}
             </div>
           </SheetPopup>
         </Sheet>
@@ -414,11 +426,12 @@ function Sidebar({
           {...props}
         >
           <div
-            className="flex h-full w-full flex-col bg-sidebar surface-grain group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm/5"
+            className="relative flex h-full w-full flex-col bg-sidebar surface-grain group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm/5"
             data-sidebar="sidebar"
             data-slot="sidebar-inner"
           >
             {children}
+            {highlight}
           </div>
         </div>
       </div>

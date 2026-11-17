@@ -88,6 +88,8 @@ import {
   replaceTextRange,
 } from "../../composer-logic";
 import { DEFAULT_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
+import { useClearTheDecks, CLEAR_THE_DECKS_DURATIONS } from "../../hooks/useClearTheDecks";
+import { useEnvironment } from "../../state/environments";
 import { deriveComposerSendState, getAntigravitySendBlockReason } from "../ChatView.logic";
 import { threadHasStarted } from "../../lib/chatThreadActions";
 import {
@@ -609,6 +611,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useLayoutEffect(() => {
     onHeldRequestIdsChange(heldRequestIds);
   }, [heldRequestIds, onHeldRequestIdsChange]);
+
+  const { enabled: clearTheDecksEnabled, preset: clearTheDecksPreset } = useClearTheDecks();
+  const composerEnvironment = useEnvironment(environmentId);
+  const sendSnoozeLabel =
+    clearTheDecksEnabled &&
+    routeKind !== "draft" &&
+    composerEnvironment?.serverConfig?.environment.capabilities.sendAndSnooze === true
+      ? CLEAR_THE_DECKS_DURATIONS[clearTheDecksPreset].sendLabel
+      : null;
   const activePendingApproval =
     incomingPendingApproval && !heldRequestIds.has(incomingPendingApproval.requestId)
       ? incomingPendingApproval
@@ -3853,6 +3864,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <ComposerFooterPrimaryActions
                     // Stop state belongs to one thread; the composer stays mounted across threads.
                     key={`${environmentId}:${activeThreadId ?? "new"}`}
+                    sendSnoozeLabel={sendSnoozeLabel}
                     compact={isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}
                     pendingAction={pendingPrimaryAction}

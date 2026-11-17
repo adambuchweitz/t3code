@@ -1,3 +1,4 @@
+import { useClearTheDecks } from "../hooks/useClearTheDecks";
 import { useAtomValue } from "@effect/atom-react";
 import { useGT } from "gt-react";
 import * as Schema from "effect/Schema";
@@ -436,6 +437,7 @@ export function AppSidebarLayout({
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
+  const { enabled: clearTheDecksEnabled } = useClearTheDecks();
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);
@@ -477,6 +479,7 @@ export function AppSidebarLayout({
           <>
             <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
             <Sidebar
+              tone={clearTheDecksEnabled ? "highlighted" : "default"}
               side="left"
               collapsible="offcanvas"
               data-app-sidebar=""

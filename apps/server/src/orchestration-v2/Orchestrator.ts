@@ -7336,28 +7336,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection = applyToProjection(projection, event);
     }
     // Background wakes and delegated completions continue work the user already snoozed, so
-    // only a message someone actually sent ends the snooze.
+    // only a message someone actually sent ends the snooze, or re-snoozes it with snoozeUntil.
     const automaticWake =
       command.notification !== undefined || command.delegatedCompletion !== undefined;
-    if (projection.thread.snoozedUntil != null && !automaticWake) {
+    if (
+      !automaticWake &&
+      (command.snoozeUntil !== undefined || projection.thread.snoozedUntil != null)
+    ) {
       const now = yield* DateTime.now;
-      const thread: OrchestrationV2AppThread = {
-        ...projection.thread,
-        snoozedUntil: null,
-        snoozedAt: null,
-        updatedAt: now,
-      };
-      const event = yield* emit(
-        events,
-        command,
-      )({
-        type: "thread.unsnoozed",
-        threadId: command.threadId,
-        providerInstanceId: thread.providerInstanceId,
-        occurredAt: now,
-        payload: thread,
-      });
-      projection = applyToProjection(projection, event);
+      const snoozedUntil =
+        command.snoozeUntil === undefined
+          ? null
+          : Option.getOrNull(
+              Option.filter(
+                DateTime.make(command.snoozeUntil),
+                (until) => DateTime.toEpochMillis(until) > DateTime.toEpochMillis(now),
+              ),
+            );
+      if (snoozedUntil !== null || projection.thread.snoozedUntil != null) {
+        const thread: OrchestrationV2AppThread = {
+          ...projection.thread,
+          snoozedUntil,
+          snoozedAt: snoozedUntil === null ? null : now,
+          updatedAt: now,
+        };
+        const event = yield* emit(
+          events,
+          command,
+        )({
+          type: snoozedUntil === null ? "thread.unsnoozed" : "thread.snoozed",
+          threadId: command.threadId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: thread,
+        });
+        projection = applyToProjection(projection, event);
+      }
     }
     const userMessages = projection.messages.filter((message) => message.role === "user");
     // The recent runs of a compacted thread can hold only a `/compact` while an older prompt

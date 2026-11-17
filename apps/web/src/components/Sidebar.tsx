@@ -5,6 +5,10 @@ import { attachSidebarTree } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
+  nextClearTheDecksThread,
+  registerClearTheDecksNavigation,
+} from "../clearTheDecksNavigation";
+import {
   dropThreadContext,
   endThreadContextDrag,
   moveThreadContextDrag as moveThreadContextDragGhost,
@@ -2964,14 +2968,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (jumpIndex === null) return;
       navigateToRowKey(orderedRowKeys[jumpIndex] ?? null);
     };
+    const unregisterNavigation = registerClearTheDecksNavigation((threadKey) =>
+      nextClearTheDecksThread(threadKey, orderedThreadKeys, threadByKey, new Date().toISOString()),
+    );
     window.addEventListener("keydown", onWindowKeyDown);
-    return () => window.removeEventListener("keydown", onWindowKeyDown);
+    return () => {
+      unregisterNavigation();
+      window.removeEventListener("keydown", onWindowKeyDown);
+    };
   }, [
     draftIdByRowKey,
     keybindings,
     navigateToDraft,
     navigateToThread,
     orderedRowKeys,
+    orderedThreadKeys,
     routeRowKey,
     routeThreadRef,
     threadByKey,

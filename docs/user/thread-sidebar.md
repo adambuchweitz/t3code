@@ -375,3 +375,21 @@ A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early for an approval,
 a new question, a failed run, or a message or answer you send. You can snooze an existing
 question and answer when the thread wakes; the question stays unanswered.
+
+### Clear the decks
+
+On web and desktop, turn on **Clear the decks** in the top-right corner of the
+sidebar, or use **Turn on Clear the decks** in the command palette. The sidebar
+glows while the mode is on. Choose the snooze duration beside the toggle;
+it defaults to one hour. While the mode is on, T3 Code uses the flat thread
+sidebar, including its Snoozed shelf. Turning it off restores your sidebar preference.
+
+Sending a message in an existing thread starts the work, snoozes the thread,
+and opens the next thread needing attention in your sidebar's current scope.
+New threads send normally. Threads still return early for approvals, questions,
+or failures. When none remain, a fresh composer opens.
+
+The mode and duration are remembered on this device. Turn it off with the same
+toggle or command palette action; already-snoozed threads keep their wake times.
+If an environment's server needs an update, messages send normally and a notice
+explains that the thread wasn't snoozed.
