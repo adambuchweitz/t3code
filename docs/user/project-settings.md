@@ -211,6 +211,13 @@ Submodules still follow **Submodules** above, also under excluded paths; set it 
 them empty. The first sparse worktree turns on Git's `extensions.worktreeConfig` for the repository.
 This needs Git 2.35 or newer.
 
+To have a setup script fill new worktrees instead of Git, turn on **Skip initial worktree
+checkout** in **Settings → Worktrees** with the project selected. It applies to new worktree
+threads when the project has an action set to run automatically on worktree creation: the worktree
+starts with only Git metadata (and any sparse patterns above), and the agent starts once that
+action succeeds. The action cannot run scripts from the repository, because none are checked out
+yet. Other new worktrees, such as those for pull requests, are checked out as usual.
+
 ## Worktree location
 
 New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,

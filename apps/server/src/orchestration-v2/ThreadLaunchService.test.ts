@@ -3545,6 +3545,83 @@ it.effect("leaves uncertain Git detection failures to workspace preparation", ()
   }),
 );
 
+const setupSettled = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+    const settled = yield* tracker.stream(threadId).pipe(
+      Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+      Stream.runHead,
+    );
+    return Option.getOrNull(settled);
+  });
+
+const setupScript = {
+  id: "setup",
+  name: "Setup",
+  command: "populate-worktree",
+  icon: "configure",
+  runOnWorktreeCreate: true,
+} as const;
+
+it.effect("skips the checkout for a setup script and holds the agent until it succeeds", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      serverSettings: {
+        projectSettingsOverrides: {
+          [projectId]: { skipInitialWorktreeCheckout: true, defaultProjectScripts: [setupScript] },
+        },
+      },
+      runSetup: () =>
+        Effect.succeed({
+          status: "started" as const,
+          async: true,
+          scriptId: setupScript.id,
+          scriptName: setupScript.name,
+          scriptCommand: setupScript.command,
+          terminalId: "setup",
+          cwd: "/repo-worktrees/feature",
+          completion: Effect.succeed({ exitCode: 1, durationMs: 1 }),
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:skip-checkout",
+          thread: "thread:launch:skip-checkout",
+          message: "Start after setup",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      const settled = yield* setupSettled(launched.threadId);
+      assert.equal(harness.createWorktree.mock.calls[0]?.[1]?.skipInitialWorktreeCheckout, true);
+      assert.equal(settled?.phase, "failed");
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("checks out a worktree that no setup script would populate", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness({
+      serverSettings: {
+        projectSettingsOverrides: { [projectId]: { skipInitialWorktreeCheckout: true } },
+      },
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:no-setup-checkout",
+          thread: "thread:launch:no-setup-checkout",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      assert.equal((yield* setupSettled(launched.threadId))?.phase, "done");
+      assert.equal(harness.createWorktree.mock.calls[0]?.[1]?.skipInitialWorktreeCheckout, false);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect.each([
   { name: "is missing", baseRef: "t3/renamed", startFromOrigin: false, origin: true },
   {
