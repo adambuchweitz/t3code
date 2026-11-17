@@ -72,10 +72,10 @@ describe("buildReviewSectionItems", () => {
     });
 
     expect(sections).toMatchObject([
-      { id: "turn:3", subtitle: "1 file changed · api, web", unlistedRepositories: ["web"] },
+      { id: "turn:3", subtitle: "1 file in checkpoint comparison · api, web", unlistedRepositories: ["web"] },
       {
         id: "turn:2",
-        subtitle: "3 files changed · api, web",
+        subtitle: "3 files in checkpoint comparison · api, web",
         repositoryGroups: [
           { key: "/work/api", name: "api", relativePath: "api" },
           { key: "/work/web", name: "web", relativePath: "web" },

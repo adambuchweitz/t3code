@@ -118,6 +118,7 @@ export interface VcsCheckpointOps {
     input: VcsRestoreCheckpointInput,
   ) => Effect.Effect<boolean, VcsError>;
   readonly diffCheckpoints: (input: VcsDiffCheckpointsInput) => Effect.Effect<string, VcsError>;
+  /** Filters imports when HEAD moved between checkpoints; does not prove who changed a path. */
   readonly listAuthoredPaths: (
     input: VcsListAuthoredPathsInput,
   ) => Effect.Effect<ReadonlySet<string> | null, VcsError>;

@@ -663,6 +663,68 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
         }),
     );
 
+    it.effect("filters by HEAD movement and commit time, not by who made the change", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const threadId = ThreadId.make("checkpoint-authored-paths-no-attribution");
+        const refs = {
+          cwd: tmp,
+          fromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
+          toCheckpointRef: checkpointRefForThreadTurn(threadId, 1),
+        };
+        const commit = (
+          file: string,
+          options: {
+            readonly committedAt?: string;
+            readonly gitConfig?: ReadonlyArray<string>;
+          } = {},
+        ) =>
+          Effect.gen(function* () {
+            yield* writeTextFile(NodePath.join(tmp, file), `${file}\n`);
+            yield* git(tmp, ["add", file]);
+            yield* git(
+              tmp,
+              [...(options.gitConfig ?? []), "commit", "-m", file],
+              options.committedAt === undefined ? {} : { committedAt: options.committedAt },
+            );
+          });
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: refs.fromCheckpointRef,
+        });
+
+        // A commit that kept its old date is dropped even though it landed inside the comparison.
+        yield* commit("backdated.txt", { committedAt: "2020-01-01T00:00:00Z" });
+        yield* commit("same-turn.txt");
+        yield* commit("other-writer-commit.txt", {
+          gitConfig: ["-c", "user.name=Other writer", "-c", "user.email=other@test.com"],
+        });
+        yield* writeTextFile(NodePath.join(tmp, "other-writer-dirty.txt"), "dirty\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: refs.toCheckpointRef });
+
+        const numstat = yield* checkpointStore.diffCheckpoints({
+          ...refs,
+          ignoreWhitespace: false,
+          format: "numstat",
+        });
+        expect(
+          parseTurnDiffFilesFromNumstat(numstat)
+            .map((file) => file.path)
+            .toSorted(),
+        ).toEqual([
+          "backdated.txt",
+          "other-writer-commit.txt",
+          "other-writer-dirty.txt",
+          "same-turn.txt",
+        ]);
+        expect(yield* checkpointStore.listAuthoredPaths(refs)).toEqual(
+          new Set(["same-turn.txt", "other-writer-commit.txt", "other-writer-dirty.txt"]),
+        );
+      }),
+    );
+
     it.effect("keeps paths from signed commits under log.showSignature", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

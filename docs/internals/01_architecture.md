@@ -61,6 +61,12 @@ Checkpoints use hidden Git refs so workspace snapshots never add commits to the 
 Reverting a checkpoint must coordinate workspace state with the provider conversation: if the
 provider cannot roll back its conversation, reject the revert before touching the filesystem.
 
+A turn's diff compares two workspace snapshots, not the provider's actions. A run usually reuses the
+preceding checkpoint as its baseline, so the comparison can span idle time and other writers' changes
+to non-ignored files. When HEAD moves, the [filter for Git-imported files](../../apps/server/src/checkpointing/Diffs.ts)
+can also drop real changes. Clients describe the result as a checkpoint comparison, never as what a
+thread did.
+
 Thread settlement is server-owned. Clients render persisted settlement state rather than deriving it
 from local clocks or PR caches.
 

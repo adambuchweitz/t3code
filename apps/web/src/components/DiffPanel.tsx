@@ -1631,6 +1631,13 @@ export default function DiffPanel({
       ) : (
         <>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+            {selectedTurn && !toolCallSelection && (
+              <p className="shrink-0 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-2xs text-muted-foreground">
+                {gt(
+                  "Compares two checkpoints. May include other work or omit changes, and doesn't show who made them.",
+                )}
+              </p>
+            )}
             {preview?.incomplete && (
               <p className="shrink-0 border-b border-border/70 bg-muted/40 px-3 py-1.5 text-2xs text-muted-foreground">
                 {selectedPatchError
@@ -1703,7 +1710,9 @@ export default function DiffPanel({
                 <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                   <p>
                     {hasNoNetChanges
-                      ? gt("No net changes in this selection.")
+                      ? selectedTurn && !toolCallSelection
+                        ? gt("No differences shown for this selection.")
+                        : gt("No net changes in this selection.")
                       : gt("No patch available for this selection.")}
                   </p>
                 </div>

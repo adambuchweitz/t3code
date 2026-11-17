@@ -29,7 +29,7 @@ Install Git and authenticate on the machine running your T3 Code server (for rem
 
 ## Review turn changes
 
-A turn's diff shows only that turn's own edits, commits, and conflict fixes—excluding unrelated files brought in by a pull, merge, or rebase. Use the branch comparison to view everything changed against your base branch.
+A turn's diff compares its checkpoint with the previous one, so it can include other changes in that workspace since then (your own edits, another thread's work) and doesn't show who made a change. When HEAD moves (pull, merge, rebase, branch switch), files Git brought in are left out, which can occasionally hide other changes too. Git-ignored files aren't captured, whitespace-only changes can be hidden, and large diffs are cut off. Use the branch comparison to view everything changed against your base branch; Restore still returns the complete saved workspace.
 
 - **Commits view** (web/desktop): Switch the Diff pane source picker to **Commits** to inspect the latest 100 local commits one by one.
 - **Commit links**: Links to local commits open in the Diff pane (follows **Settings → Diffs → Open pull requests in T3 Code**; `Cmd/Ctrl+Click` opens in browser).
