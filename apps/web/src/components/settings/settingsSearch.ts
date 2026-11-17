@@ -905,6 +905,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("default workspace mode draft local worktree")],
   },
   {
+    id: "skip-initial-worktree-checkout",
+    title: "Skip initial worktree checkout",
+    to: "/settings/worktrees",
+    scope: "project",
+    searchTerms: ["git no-checkout setup populate sparse assets"],
+  },
+  {
     id: "worktree-submodules",
     title: msg("Submodules"),
     to: "/settings/worktrees",

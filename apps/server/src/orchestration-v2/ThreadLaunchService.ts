@@ -1,6 +1,7 @@
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import { resolveProjectScripts, setupProjectScript } from "@t3tools/shared/projectScripts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -739,6 +740,7 @@ const make = Effect.gen(function* () {
             ).pipe(Effect.forkIn(preparationScope))
           : null;
       if (branchName !== null) stopBranchName = Fiber.interrupt(branchName);
+      let checkoutSkipped = false;
       if (input.workspaceStrategy.type === "worktree") {
         const taskPlan = yield* taskFolders
           .plan({ projectId: project.id, repositories: input.workspaceStrategy.repositories })
@@ -839,6 +841,21 @@ const make = Effect.gen(function* () {
             }
           }
         }
+        // Unreadable settings keep the normal checkout, as the branch name falls back above.
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        // Only a setup script can populate a worktree created without a checkout. A task folder
+        // checks out every repository it holds.
+        checkoutSkipped =
+          taskPlan === null &&
+          settings !== null &&
+          resolveProjectSettings(settings, project.id).settings.skipInitialWorktreeCheckout &&
+          setupProjectScript(resolveProjectScripts(settings, project)) !== null;
+        const createWorktree: typeof git.createWorktree = (worktreeInput, options) =>
+          git.createWorktree(worktreeInput, {
+            ...options,
+            skipInitialWorktreeCheckout: checkoutSkipped,
+          });
+        const checkoutGit = { createWorktree };
         yield* setupTracker.stageStatus(threadId, "checkout", "running");
         let submoduleProgressReportedAt = Number.NEGATIVE_INFINITY;
         const progress: GitVcsDriver.CreateWorktreeProgress = {
@@ -882,7 +899,7 @@ const make = Effect.gen(function* () {
         };
         const worktree =
           taskPlan === null
-            ? (yield* git
+            ? (yield* checkoutGit
                 .createWorktree(
                   {
                     cwd: project.workspaceRoot,
@@ -1140,6 +1157,8 @@ const make = Effect.gen(function* () {
           },
         }));
         if (setup.completion) {
+          // A skipped checkout leaves the agent nothing to work on until setup succeeds.
+          const blocking = !setup.async || checkoutSkipped;
           const awaitCompletion = Effect.gen(function* () {
             const completion = yield* setup.completion!;
             yield* setupTracker.stageStatus(
@@ -1148,14 +1167,14 @@ const make = Effect.gen(function* () {
               completion.exitCode === 0 ? "done" : "failed",
               `exited with ${completion.exitCode ?? "no exit code"}`,
             );
-            if (completion.exitCode !== 0 && !setup.async)
+            if (completion.exitCode !== 0 && blocking)
               return yield* mapError(
                 input,
                 "run-setup-script",
                 threadId,
               )(`Setup script exited with ${completion.exitCode ?? "no exit code"}.`);
           });
-          if (setup.async) {
+          if (!blocking) {
             // Record the result when the script ends, not after the agent starts.
             const asyncSetup = yield* awaitCompletion.pipe(
               Effect.catchCause((cause) =>

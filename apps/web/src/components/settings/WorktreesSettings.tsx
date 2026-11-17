@@ -14,7 +14,12 @@ import {
 } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { WorktreeCleanupSection, WorktreesDirectoryRow } from "./StorageSettings";
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import {
+  useScopedSettings,
+  useScopedSettingsMixed,
+  useUpdateScopedSettings,
+} from "./useScopedSettings";
+import { Switch } from "../ui/switch";
 
 function StartFromRemoteRow() {
   const gt = useGT();
@@ -60,6 +65,9 @@ export function WorktreesSettingsPanel() {
   const gt = useGT();
   const searchableSetting = useSearchableSetting();
   const { scope } = useSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixedSkipCheckout = useScopedSettingsMixed(["skipInitialWorktreeCheckout"]);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
 
   return (
@@ -70,6 +78,25 @@ export function WorktreesSettingsPanel() {
       >
         {!isProjectScope && <WorktreesDirectoryRow />}
         <StartFromRemoteRow />
+        {isProjectScope && (
+          <SettingsRow
+            serverScoped
+            settingKeys={["skipInitialWorktreeCheckout"]}
+            mixed={mixedSkipCheckout}
+            {...searchableSetting("skip-initial-worktree-checkout")}
+            description="New worktree threads wait for the setup script to fill them."
+            control={
+              <Switch
+                aria-label="Skip initial worktree checkout"
+                mixed={mixedSkipCheckout}
+                checked={!mixedSkipCheckout && settings.skipInitialWorktreeCheckout}
+                onCheckedChange={(skipInitialWorktreeCheckout) =>
+                  updateSettings({ skipInitialWorktreeCheckout })
+                }
+              />
+            }
+          />
+        )}
         <AdvancedSettings targetIds={[searchableSetting("worktree-submodules").id]}>
           <WorktreeSubmodulesRow />
         </AdvancedSettings>
