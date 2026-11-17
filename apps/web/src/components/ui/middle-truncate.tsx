@@ -16,7 +16,8 @@ export function MiddleTruncate({
   showTitle?: boolean;
   variant?: "default" | "cap-aligned";
 }) {
-  const raw = splitForMiddleTruncate(value, tail);
+  // The split spans preserve whitespace, but a line break would still escape the one-line row.
+  const raw = splitForMiddleTruncate(value.replace(/[\r\n]+/g, " "), tail);
   const split = raw && collapseSegments(raw);
   const headRef = useRef<HTMLSpanElement>(null);
   const head = split?.head;
