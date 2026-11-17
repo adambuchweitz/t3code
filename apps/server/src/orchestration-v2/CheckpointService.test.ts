@@ -19,12 +19,16 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
+import * as Path from "effect/Path";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
@@ -620,3 +624,76 @@ it.effect("keeps the pre-rewind snapshot of a folder a failed rewind could not p
     assert.deepEqual(captured, ["/repo/first", "/repo/second", "/repo/second"]);
   }).pipe(Effect.provide(layerTest));
 });
+
+const layerVcsProcess = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
+const layerRealGit = CheckpointService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      IdAllocator.layer,
+      layerNoTrackedFolders,
+      CheckpointStore.layer.pipe(
+        Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(layerVcsProcess))),
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  ),
+  Layer.provideMerge(layerVcsProcess),
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
+);
+
+it.effect("compares a run with the preceding checkpoint rather than the run's start", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const vcsProcess = yield* VcsProcess.VcsProcess;
+    const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-comparison-" });
+    const git = (args: ReadonlyArray<string>) =>
+      vcsProcess.run({ operation: "CheckpointService.test.git", command: "git", cwd, args });
+    const write = (file: string) => fs.writeFileString(path.join(cwd, file), `${file}\n`);
+    yield* git(["init"]);
+    yield* git(["config", "user.email", "test@test.com"]);
+    yield* git(["config", "user.name", "Test"]);
+    yield* write("README.md");
+    yield* git(["add", "."]);
+    yield* git(["commit", "-m", "initial"]);
+
+    const scope: OrchestrationV2CheckpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:comparison"),
+      threadId: ThreadId.make("thread:comparison"),
+      runId: RunId.make("run:comparison:1"),
+      nodeId: NodeId.make("node:comparison:1"),
+      parentScopeId: null,
+      providerThreadId: ProviderThreadId.make("provider-thread:comparison"),
+      kind: "root_run",
+      ordinalWithinParent: 0,
+      advancesAppRunCount: true,
+      cwd,
+      createdAt: DateTime.makeUnsafe("2026-07-28T00:00:00.000Z"),
+    };
+    const capture = (ordinalWithinScope: number) =>
+      checkpoints
+        .capture({
+          scope,
+          ordinalWithinScope,
+          runId: scope.runId,
+          nodeId: scope.nodeId,
+          appRunOrdinal: ordinalWithinScope,
+          capturedAt: scope.createdAt,
+        })
+        .pipe(Effect.map((checkpoint) => checkpoint.files.map((file) => file.path).toSorted()));
+
+    yield* write("before-first-run.txt");
+    yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
+    yield* write("first-run.txt");
+    assert.deepEqual(yield* capture(1), ["first-run.txt"]);
+
+    yield* write("between-runs.txt");
+    yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 1 });
+    yield* write("second-run-commit.txt");
+    yield* git(["add", "second-run-commit.txt"]);
+    yield* git(["commit", "-m", "second run"]);
+    assert.deepEqual(yield* capture(2), ["between-runs.txt", "second-run-commit.txt"]);
+  }).pipe(Effect.provide(layerRealGit)),
+);

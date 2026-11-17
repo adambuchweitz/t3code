@@ -43,8 +43,8 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Runtime mode        | The thread's permission policy. See [permission modes](../user/permission-modes.md).                         |
 | Interaction mode    | How the agent approaches the task, such as planning. Separate from permission policy.                        |
 | Checkpoint          | A saved workspace state used for diffs and restore, stored as a hidden Git ref.                              |
-| Checkpoint baseline | The workspace state captured before the work being compared.                                                 |
-| Turn diff           | The workspace changes attributed to one turn.                                                                |
+| Checkpoint baseline | The checkpoint a run's result is compared against, usually the preceding one.                                |
+| Turn diff           | A comparison between a turn's checkpoint and the previous checkpoint. It does not attribute changes.         |
 
 ## Pull requests
 

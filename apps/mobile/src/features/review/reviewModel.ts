@@ -138,9 +138,10 @@ function checkpointSubtitle(checkpoint: ThreadCheckpointSummary, resolve: Messag
   }
   const { repositories, totals } = turnChanges(checkpoint);
   const files = resolve(
-    msg("{count, plural, one {{count} file changed} other {{count} files changed}}", {
-      count: totals.count,
-    }),
+    msg(
+      "{count, plural, one {{count} file in checkpoint comparison} other {{count} files in checkpoint comparison}}",
+      { count: totals.count },
+    ),
   );
   return repositories.length === 0
     ? files

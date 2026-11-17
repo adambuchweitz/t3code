@@ -102,7 +102,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-foreground">
           <span>
             {gt(
-              "{count, plural, one {{formattedCount} changed file} other {{formattedCount} changed files}}",
+              "{count, plural, one {{formattedCount} file in checkpoint comparison} other {{formattedCount} files in checkpoint comparison}}",
               { count: totals.count, formattedCount: totals.count.toLocaleString() },
             )}
           </span>

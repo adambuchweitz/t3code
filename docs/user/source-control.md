@@ -5,10 +5,14 @@ Origin to clone and publish repositories, create pull requests, and review chang
 
 ## Review turn changes
 
-A turn's changed files and diff show only the turn's own work. When a turn pulls, merges, or
-rebases, the files Git brought in are left out. A file stays in the list when the turn edited it,
-committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
-against your base branch. Restore still returns the complete saved workspace.
+A turn's changed files and diff compare its checkpoint with the previous checkpoint. They can include
+other changes in that workspace since then, such as your own edits or another thread's
+work, so they don't show who made a change. When the checkout's HEAD moves, such as a pull, merge,
+rebase, or branch switch, files that look brought in by Git are left out, which can occasionally
+hide other changes too. A file normally stays in the list when it was edited, committed, or had a
+conflict fixed. Git-ignored files aren't captured, whitespace-only changes can be hidden, and large
+diffs are cut off. Use the branch comparison to review everything that changed against your base
+branch. Restore still returns the complete saved workspace.
 
 In a [project with several repositories](multi-repo-projects.md),
 a turn's changed files are grouped by repository, and the Diff pane shows every repository the

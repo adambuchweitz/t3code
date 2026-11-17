@@ -10,7 +10,15 @@ import type { ReviewSectionItem } from "./reviewModel";
 import { useReviewHeaderPresentation } from "./useReviewHeaderPresentation";
 import { T, useGT, Var } from "gt-react-native";
 import { type Ref, type ReactElement, useImperativeHandle, useRef, useState } from "react";
-import { Pressable, ScrollView, type NativeSyntheticEvent, StyleSheet, View } from "react-native";
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  type NativeSyntheticEvent,
+  StyleSheet,
+  View,
+} from "react-native";
+import { cn } from "../../lib/cn";
 import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useReduceMotionEnabled } from "../../lib/appState";
@@ -648,6 +656,24 @@ export function ReviewSheet(props: ReviewSheetProps) {
       );
     }
 
+    if (selectedSection?.kind === "turn") {
+      children.push(
+        <View
+          key="review-checkpoint-comparison"
+          className={cn(
+            "bg-card px-4 py-3",
+            Platform.OS === "android" ? "m-2 rounded-[20px]" : "border-b border-border",
+          )}
+        >
+          <Text className="text-xs leading-normal text-foreground-muted">
+            {gt(
+              "Compares two checkpoints. May include other work or omit changes, and doesn't show who made them.",
+            )}
+          </Text>
+        </View>,
+      );
+    }
+
     if (parsedDiffNotice) {
       children.push(<ReviewNotice key="review-notice" notice={parsedDiffNotice} />);
     }
@@ -835,7 +861,9 @@ export function ReviewSheet(props: ReviewSheetProps) {
                 <ContentStatus loading detail={gt("Loading diff…")} />
               ) : parsedDiff.kind === "empty" ? (
                 <ContentStatus
-                  title={gt("No changes")}
+                  title={
+                    selectedSection.kind === "turn" ? gt("No differences shown") : gt("No changes")
+                  }
                   detail={selectedSection.subtitle ?? gt("This diff is empty.")}
                 />
               ) : parsedDiff.kind === "raw" ? (

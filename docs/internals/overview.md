@@ -114,6 +114,12 @@ linked, so they stay shared with the original. Its root checkpoints are `missing
 a file rewind there restores the repositories alone. `TaskFolders` owns every change to a task folder,
 and removal keeps any checkout the single-worktree rules would keep.
 
+A turn's diff compares two workspace snapshots, not the provider's actions. After a thread's first
+run, a run normally reuses the preceding checkpoint as its baseline, so the comparison can span idle
+time before the run. Other writes to non-ignored files under its directory land in it too. When HEAD
+moves, the [filter for Git-imported files](../../apps/server/src/checkpointing/Diffs.ts) can also
+drop real changes. Provider events can't reliably attribute workspace changes, so clients describe
+the result as a checkpoint comparison, never as what a thread did.
 Thread settlement is server-owned. The
 [settlement service](../../apps/server/src/orchestration-v2/ThreadSettlementService.ts) evaluates PR
 and inactivity settings without a connected client. Merge notifications invalidate cached PR state
