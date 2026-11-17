@@ -97,7 +97,8 @@ fi
 if [[ $activate_only == false ]]; then
 [[ -n ${T3CODE_BUILD_VERSION:-} ]] || { echo 'Set T3CODE_BUILD_VERSION to the pinned fleet version.' >&2; exit 1; }
 export T3CODE_BUILD_VERSION
-node_version=24.13.1
+node_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["engines"]["node"])' "$source_dir/package.json")
+[[ $node_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release must pin an exact Node version, got: $node_version" >&2; exit 1; }
 node_dir="$install_dir/runtime/node-v$node_version-darwin-x64"
 if [[ ! -x "$node_dir/bin/node" ]]; then
   (
@@ -142,9 +143,11 @@ cd "$workspace_dir"
 node "$source_dir/apps/server/dist/bin.mjs" --version
 test -s "$source_dir/apps/server/dist/client/index.html"
 python3 "$workspace_dir/scripts/fleet/smoke-mac.py" "$node_dir/bin/node" "$source_dir"
+printf '%s\n' "$node_version" > "$source_dir/NODE_VERSION"
 touch "$source_dir/BUILD_READY"
 fi
-node_dir="$install_dir/runtime/node-v24.13.1-darwin-x64"
+# Releases prepared before NODE_VERSION existed were built with Node 24.13.1.
+node_dir="$install_dir/runtime/node-v$(cat "$source_dir/NODE_VERSION" 2>/dev/null || echo 24.13.1)-darwin-x64"
 if [[ $prepare_only == true ]]; then
   printf '%s\n' "$source_dir" > "$install_dir/PREPARED_RELEASE"
   echo "Prepared $source_dir; the running server was not changed."
