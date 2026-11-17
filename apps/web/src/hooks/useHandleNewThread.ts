@@ -68,6 +68,7 @@ export function readLastUsedProjectKey(): string | null {
 
 interface NewThreadWorkspaceOptions {
   branch?: string | null;
+  gitbutlerBranch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
   startFromOrigin?: boolean;
@@ -76,6 +77,7 @@ interface NewThreadWorkspaceOptions {
 function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undefined) {
   return {
     ...(options?.branch !== undefined ? { branch: options.branch } : {}),
+    ...(options?.gitbutlerBranch !== undefined ? { gitbutlerBranch: options.gitbutlerBranch } : {}),
     ...(options?.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
     ...(options?.envMode !== undefined ? { envMode: options.envMode } : {}),
     ...(options?.startFromOrigin !== undefined ? { startFromOrigin: options.startFromOrigin } : {}),
@@ -98,6 +100,7 @@ export function createNewThreadHandler(router: AnyRouter) {
     projectRef: ScopedProjectRef,
     options?: {
       branch?: string | null;
+      gitbutlerBranch?: string | null;
       worktreePath?: string | null;
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
@@ -435,6 +438,7 @@ export function createNewThreadHandler(router: AnyRouter) {
         threadId,
         createdAt,
         branch: options?.branch ?? null,
+        gitbutlerBranch: options?.gitbutlerBranch ?? null,
         worktreePath: options?.worktreePath ?? null,
         envMode: initialEnvMode,
         startFromOrigin:

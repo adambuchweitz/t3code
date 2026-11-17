@@ -211,11 +211,20 @@ export function useReviewDiffData(input: {
                   input: {
                     cacheKey: scope,
                     // Newer preview revisions refresh patches read under an older one.
-                    preview: { cwd, sourceKind: lazySource.kind },
+                    preview:
+                      lazySource.kind === "gitbutler-branch"
+                        ? {
+                            cwd,
+                            ...(lazySource.headRef ? { gitbutlerBranch: lazySource.headRef } : {}),
+                          }
+                        : { cwd, sourceKind: lazySource.kind },
                     request: {
                       cwd,
                       ...(lazySource.baseRef ? { baseRef: lazySource.baseRef } : {}),
                       ...(lazySource.mergeBase ? { mergeBase: lazySource.mergeBase } : {}),
+                      ...(lazySource.kind === "gitbutler-branch" && lazySource.headRef
+                        ? { gitbutlerBranch: lazySource.headRef }
+                        : {}),
                       file: {
                         path: file.path,
                         previousPath: file.previousPath,

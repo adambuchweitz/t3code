@@ -545,6 +545,7 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
               workspaceSelection: {
                 mode: queuedMessage.creation.workspaceMode,
                 branch: queuedMessage.creation.branch,
+                gitbutlerBranch: queuedMessage.creation.gitbutlerBranch ?? null,
                 worktreePath: queuedMessage.creation.worktreePath,
                 pullRequestReference: queuedMessage.creation.pullRequestReference,
                 ...(queuedMessage.creation.startFromOrigin !== undefined
@@ -1205,6 +1206,7 @@ export function createThreadOutboxDelivery(): {
         interactionMode: sendSettings.interactionMode,
         workspaceMode: workspace.workspaceMode,
         branch: workspace.branch,
+        gitbutlerBranch: workspace.gitbutlerBranch ?? null,
         worktreePath: workspace.worktreePath,
         startFromOrigin: workspace.startFromOrigin ?? false,
         ...(workspace.repositories === undefined

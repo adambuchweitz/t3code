@@ -22,7 +22,11 @@ import { useNavigation } from "@react-navigation/native";
 import { T, useGT, useMessages, Var } from "gt-react-native";
 import { m } from "../../i18n/messages";
 import { useRef, useState, type ReactNode } from "react";
-import { sanitizeNewRefName } from "@t3tools/shared/git";
+import {
+  filterBranchPickerRefs,
+  isGitButlerWorkspaceRef,
+  sanitizeNewRefName,
+} from "@t3tools/shared/git";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -38,6 +42,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsEnvironment } from "../../state/vcs";
 import { useSearchToolbarInset } from "../../components/ui/useBarInset";
 import type { AppBarSearch } from "../../components/ui/AppBar";
+import { useEnvironmentQuery } from "../../state/query";
 import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { checkoutNewTaskBranch } from "./checkout-new-task-branch";
 import { filterNewTaskBranches } from "./new-task-context-presentation";
@@ -314,6 +319,7 @@ export function NewTaskBranchPickerRouteScreen() {
   return (
     <BranchPickerScreen
       title={flow.workspaceMode === "worktree" ? gt("Base branch") : gt("Branch")}
+      isSelectingWorktreeBase={flow.workspaceMode === "worktree"}
       project={flow.selectedProject}
       branches={filterNewTaskBranches(branchState.refs, branchQuery)}
       selectedBranchName={
@@ -444,6 +450,7 @@ export function NewTaskRepositoriesPickerRouteScreen() {
 
 export function BranchPickerScreen(props: {
   readonly title: string;
+  readonly isSelectingWorktreeBase: boolean;
   readonly project: EnvironmentProject | null;
   readonly branches: readonly VcsRef[];
   readonly selectedBranchName: string | null;
@@ -475,10 +482,29 @@ export function BranchPickerScreen(props: {
     compactToolbar: true,
   };
   const searchToolbarInset = useSearchToolbarInset(search);
+  const gitStatus = useEnvironmentQuery(
+    !props.isSelectingWorktreeBase && props.project
+      ? vcsEnvironment.status({
+          environmentId: props.project.environmentId,
+          input: { cwd: props.project.workspaceRoot },
+        })
+      : null,
+  );
+  const currentRefName =
+    gitStatus.data?.refName ?? props.branches.find((branch) => branch.current)?.name ?? null;
+  const isGitButlerWorkspace =
+    !props.isSelectingWorktreeBase &&
+    currentRefName !== null &&
+    isGitButlerWorkspaceRef(currentRefName);
+  const branches = filterBranchPickerRefs(props.branches, {
+    currentRefName,
+    workspace: gitStatus.data?.workspace,
+    isSelectingWorktreeBase: props.isSelectingWorktreeBase,
+  });
   const selectedBranchName =
     props.selectedBranchName ??
-    props.branches.find((branch) => branch.current)?.name ??
-    props.branches.find((branch) => branch.isDefault)?.name ??
+    branches.find((branch) => branch.current)?.name ??
+    branches.find((branch) => branch.isDefault)?.name ??
     null;
   const branchListContentStyle = {
     paddingBottom: searchToolbarInset
@@ -493,9 +519,9 @@ export function BranchPickerScreen(props: {
   const renderBranch = ({ item, index }: { readonly item: VcsRef; readonly index: number }) => (
     <SelectionRow
       icon="arrow.triangle.branch"
-      disabled={props.selectionDisabled ?? false}
+      disabled={props.selectionDisabled === true || (isGitButlerWorkspace && !item.worktreePath)}
       isFirst={index === 0}
-      isLast={index === props.branches.length - 1}
+      isLast={index === branches.length - 1}
       onPress={() => props.onSelect(item)}
       selected={selectedBranchName === item.name}
       subtitle={branchBadgeLabel({ branch: item, project: props.project }, m)?.toUpperCase()}
@@ -516,10 +542,15 @@ export function BranchPickerScreen(props: {
         value={props.worktree.startFromOrigin}
       />
     </View>
+  ) : isGitButlerWorkspace ? (
+    <Text className="mb-3 text-sm text-foreground-muted">
+      Start in the GitButler workspace, then apply branches from the thread's branch picker, or
+      create a new worktree.
+    </Text>
   ) : null;
 
   const branchContent =
-    props.branches.length === 0 ? (
+    branches.length === 0 ? (
       <ScrollView
         className="flex-1 bg-sheet android:bg-sheet-solid"
         contentInsetAdjustmentBehavior="automatic"
@@ -560,7 +591,7 @@ export function BranchPickerScreen(props: {
         className="flex-1 bg-sheet android:bg-sheet-solid"
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={branchListContentStyle}
-        data={props.branches}
+        data={branches}
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         keyboardShouldPersistTaps="handled"
         keyExtractor={(branch) =>

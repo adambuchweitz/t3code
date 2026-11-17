@@ -148,6 +148,8 @@ import {
 import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
+  GitButlerBranchInput,
+  GitButlerBranchResult,
   VcsSwitchRefResult,
   GitCommandError,
   VcsCreateRefInput,
@@ -158,6 +160,12 @@ import {
   VcsListRefsInput,
   VcsListRefsResult,
   GitManagerServiceError,
+  GitButlerBranchChangeRequestResult,
+  GitButlerCommitChangesInput,
+  GitButlerCommitChangesResult,
+  GitButlerHoldsInput,
+  GitButlerHoldsResult,
+  GitButlerResolveHoldsInput,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   VcsPullInput,
@@ -524,6 +532,13 @@ export const WS_METHODS = {
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
+  vcsGitButlerApply: "vcs.gitButlerApply",
+  vcsGitButlerUnapply: "vcs.gitButlerUnapply",
+  vcsGitButlerCreateBranch: "vcs.gitButlerCreateBranch",
+  vcsGitButlerBranchChangeRequest: "vcs.gitButlerBranchChangeRequest",
+  vcsGitButlerCommitChanges: "vcs.gitButlerCommitChanges",
+  vcsGitButlerHolds: "vcs.gitButlerHolds",
+  vcsGitButlerResolveHolds: "vcs.gitButlerResolveHolds",
   vcsInit: "vcs.init",
 
   gitRunStackedAction: "git.runStackedAction",
@@ -1875,6 +1890,46 @@ const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsVcsGitButlerApplyRpc = Rpc.make(WS_METHODS.vcsGitButlerApply, {
+  payload: GitButlerBranchInput,
+  success: GitButlerBranchResult,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerUnapplyRpc = Rpc.make(WS_METHODS.vcsGitButlerUnapply, {
+  payload: GitButlerBranchInput,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerCreateBranchRpc = Rpc.make(WS_METHODS.vcsGitButlerCreateBranch, {
+  payload: GitButlerBranchInput,
+  success: GitButlerBranchResult,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerBranchChangeRequestRpc = Rpc.make(WS_METHODS.vcsGitButlerBranchChangeRequest, {
+  payload: GitButlerBranchInput,
+  success: GitButlerBranchChangeRequestResult,
+  error: Schema.Union([GitManagerServiceError, VcsError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerCommitChangesRpc = Rpc.make(WS_METHODS.vcsGitButlerCommitChanges, {
+  payload: GitButlerCommitChangesInput,
+  success: GitButlerCommitChangesResult,
+  error: Schema.Union([GitManagerServiceError, VcsError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerHoldsRpc = Rpc.make(WS_METHODS.vcsGitButlerHolds, {
+  payload: GitButlerHoldsInput,
+  success: GitButlerHoldsResult,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsVcsGitButlerResolveHoldsRpc = Rpc.make(WS_METHODS.vcsGitButlerResolveHolds, {
+  payload: GitButlerResolveHoldsInput,
+  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+});
+
 const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
   payload: VcsInitInput,
   error: Schema.Union([VcsError, EnvironmentAuthorizationError]),
@@ -2557,6 +2612,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
+  WsVcsGitButlerApplyRpc,
+  WsVcsGitButlerUnapplyRpc,
+  WsVcsGitButlerCreateBranchRpc,
+  WsVcsGitButlerBranchChangeRequestRpc,
+  WsVcsGitButlerCommitChangesRpc,
+  WsVcsGitButlerHoldsRpc,
+  WsVcsGitButlerResolveHoldsRpc,
   WsVcsInitRpc,
   WsReviewGetBranchCommitsRpc,
   WsReviewGetDiffPreviewRpc,

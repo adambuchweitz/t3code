@@ -217,6 +217,7 @@ export function useThreadActionMenu(input: {
           const result = await settlePromise(() =>
             handleNewThread(scopeProjectRef(threadRef.environmentId, thread.projectId), {
               branch: thread.branch,
+              gitbutlerBranch: thread.gitbutlerBranch ?? null,
               worktreePath: thread.worktreePath,
               envMode: thread.worktreePath ? "worktree" : "local",
               startFromOrigin: false,

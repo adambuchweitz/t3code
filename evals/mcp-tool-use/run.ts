@@ -54,6 +54,7 @@ import { buildCodexAdditionalContext } from "../../apps/server/src/provider/Code
 import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { t3GitButlerPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
@@ -275,6 +276,9 @@ const McpToolUseWorld = Schema.StructWithRest(
     /** The branch has commits but no upstream: T3's pull_request_create refuses until a push. */
     unpushed: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.String),
+    cwd: Schema.optional(Schema.String),
+    worktreePath: Schema.optional(Schema.NullOr(Schema.String)),
+    gitbutlerBranch: Schema.optional(Schema.NullOr(Schema.String)),
     /** `git status --short` lines. */
     status: Schema.optional(Schema.String),
     /** Newest first. On a branch other than main, these are the commits main lacks. */
@@ -1226,7 +1230,18 @@ export const buildMessages = (sample: Sample) => {
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+    push(
+      "user",
+      text(
+        t3GitButlerPrompt({
+          prompt: role === "delegated-child" ? childPrompt() : prompt,
+          cwd: testCase.setup.world?.cwd ?? base.environment.cwd,
+          refName: testCase.setup.world?.branch ?? "main",
+          worktreePath: testCase.setup.world?.worktreePath ?? null,
+          gitbutlerBranch: testCase.setup.world?.gitbutlerBranch ?? null,
+        }),
+      ),
+    );
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));

@@ -98,6 +98,7 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly branch: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly worktreePath: string | null;
 }
 
@@ -153,6 +154,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly worktreePath?: string | null;
   readonly regenerateTitle?: boolean;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
@@ -175,6 +177,7 @@ interface StartThreadBootstrap {
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
     readonly branch: string | null;
+    readonly gitbutlerBranch?: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
   };
@@ -504,6 +507,7 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
     branch: input.branch,
+    gitbutlerBranch: input.gitbutlerBranch ?? null,
     worktreePath: input.worktreePath,
   });
 });
@@ -712,6 +716,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
     if (
       input.title !== undefined ||
       input.branch !== undefined ||
+      input.gitbutlerBranch !== undefined ||
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
       input.linkedPullRequest !== undefined ||
@@ -724,6 +729,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         threadId: input.threadId,
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
+        ...(input.gitbutlerBranch === undefined ? {} : { gitbutlerBranch: input.gitbutlerBranch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),
         ...(input.regenerateTitle === undefined ? {} : { regenerateTitle: input.regenerateTitle }),
@@ -827,6 +833,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
       workspaceStrategy,
+      ...(bootstrap === undefined ? {} : { gitbutlerBranch: bootstrap.gitbutlerBranch ?? null }),
       initialMessage: {
         messageId: input.message.messageId,
         text: input.message.text,

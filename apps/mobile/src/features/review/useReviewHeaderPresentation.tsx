@@ -46,6 +46,7 @@ export function useReviewHeaderPresentation(props: {
     threadId: props.threadId,
     currentBranch: selectedThread?.branch ?? null,
     tracksRepositories: (selectedThreadProject?.trackedFolders?.length ?? 0) > 0,
+    gitbutlerBranch: selectedThread?.gitbutlerBranch ?? null,
     gitStatus: gitStatusQuery.data,
     gitOperationLabel: gitState.gitOperationLabel,
     onPull: gitActions.onPullSelectedThreadBranch,

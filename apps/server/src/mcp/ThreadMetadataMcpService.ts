@@ -72,6 +72,13 @@ function metadataCommand(input: {
         threadId: input.threadId,
         title: input.update.title!,
       };
+    case "set_gitbutler_branch":
+      return {
+        type: "thread.metadata.update",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        gitbutlerBranch: input.update.gitbutlerBranch!,
+      };
     case "regenerate_title":
       return {
         type: "thread.metadata.update",
@@ -88,7 +95,7 @@ function resultFromThread(input: {
   readonly sequence: number;
   readonly thread: Pick<
     OrchestrationV2AppThread,
-    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt"
+    "id" | "title" | "titleRegeneration" | "linkedPullRequest" | "updatedAt" | "gitbutlerBranch"
   >;
 }): ThreadMetadataMcpUpdateResult {
   return {
@@ -105,6 +112,7 @@ function resultFromThread(input: {
             startedAt: DateTime.formatIso(input.thread.titleRegeneration.startedAt),
           },
     linkedPullRequest: input.thread.linkedPullRequest ?? null,
+    gitbutlerBranch: input.thread.gitbutlerBranch ?? null,
     updatedAt: DateTime.formatIso(input.thread.updatedAt),
   };
 }

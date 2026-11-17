@@ -170,7 +170,12 @@ it("hands the draft screen the same project ref across re-renders", async () => 
     AsyncResult.success({ name: "other", current: true, isDefault: false, worktreePath: null }),
   );
   harness.set({ projects: [project], catalog: connected });
-  const draft = { environmentId: "env-1", projectId: "project-1", branch: "other" };
+  const draft = {
+    environmentId: "env-1",
+    projectId: "project-1",
+    branch: "other",
+    gitbutlerBranch: "feature/api",
+  };
   harness.route = { key: "stable-route", name: "Thread", params: { draft } };
 
   const container = document.createElement("div");
@@ -191,4 +196,5 @@ it("hands the draft screen the same project ref across re-renders", async () => 
   // A stable ref lets the compiled screen skip re-rendering the draft screen at all; an unstable
   // one re-renders it with a second ref.
   expect(new Set(harness.draftProjectRefs).size).toBe(1);
+  expect(harness.draftProjectRefs[0]).toMatchObject({ gitbutlerBranch: "feature/api" });
 });

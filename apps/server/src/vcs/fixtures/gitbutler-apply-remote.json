@@ -1,0 +1,7 @@
+{
+  "status": "applied",
+  "workspaceChanged": true,
+  "appliedBranches": ["refs/heads/remote-only"],
+  "workspaceRefCreated": false,
+  "conflictingStacks": []
+}

@@ -19,6 +19,7 @@ import {
   type QueryAnswerHandler,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { vcsRefsCacheStateAtom } from "./vcsRefInvalidation.ts";
 
 interface PreviewRevisionState {
   readonly key: string | null;
@@ -72,6 +73,7 @@ export function createReviewEnvironmentAtoms<R, E>(
       }
       return yield* request(WS_METHODS.reviewGetDiffPreview, input);
     }),
+    refreshTrigger: ({ environmentId }) => vcsRefsCacheStateAtom({ environmentId }),
     ...(options.onDiffPreviewAnswer === undefined ? {} : { onAnswer: options.onDiffPreviewAnswer }),
   });
   // A file patch is a slice of the comparison its preview generated, so a preview revision
@@ -115,6 +117,7 @@ export function createReviewEnvironmentAtoms<R, E>(
       label: "environment-data:review:branch-commits",
       tag: WS_METHODS.reviewGetBranchCommits,
       staleTimeMs: 5_000,
+      refreshTrigger: ({ environmentId }) => vcsRefsCacheStateAtom({ environmentId }),
     }),
     diffPreview,
     diffFilePatch: createEnvironmentQueryAtomFamily(runtime, {

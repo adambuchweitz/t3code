@@ -82,7 +82,11 @@ export interface RunVcsStackedActionInput {
   readonly commitMessage?: string;
   readonly featureBranch?: boolean;
   readonly filePaths?: ReadonlyArray<string>;
+  readonly gitbutlerChangeIds?: ReadonlyArray<string>;
   readonly threadId?: ThreadId;
+  readonly gitbutlerBranch?: string;
+  readonly gitbutlerForcePushApproval?: string;
+  readonly gitbutlerHoldApproval?: string;
   readonly projectId?: ProjectId;
   readonly onProgress?: (event: GitActionProgressEvent) => void;
 }
@@ -535,7 +539,19 @@ export function createVcsActionManager<R, E>(
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
           ...(input.featureBranch ? { featureBranch: true } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
+          ...(input.gitbutlerChangeIds?.length
+            ? { gitbutlerChangeIds: [...input.gitbutlerChangeIds] }
+            : {}),
           ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+          ...(input.gitbutlerBranch !== undefined
+            ? { gitbutlerBranch: input.gitbutlerBranch }
+            : {}),
+          ...(input.gitbutlerForcePushApproval !== undefined
+            ? { gitbutlerForcePushApproval: input.gitbutlerForcePushApproval }
+            : {}),
+          ...(input.gitbutlerHoldApproval !== undefined
+            ? { gitbutlerHoldApproval: input.gitbutlerHoldApproval }
+            : {}),
           ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
         };
         const clearOwnedState = Effect.sync(() => {

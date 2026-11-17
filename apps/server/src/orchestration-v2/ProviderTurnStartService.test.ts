@@ -467,6 +467,8 @@ function makeLocalCommandHarness(input: {
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly workspaceRoot?: string;
+  readonly gitbutlerBranch?: string | null;
+  readonly refName?: string | null;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
@@ -585,6 +587,7 @@ function makeLocalCommandHarness(input: {
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      gitbutlerBranch: input.gitbutlerBranch ?? null,
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -1277,6 +1280,16 @@ function makeLocalCommandHarness(input: {
   const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(() =>
     Effect.succeed({} as never),
   );
+  const localStatus = vi.fn<GitWorkflow.GitWorkflowService["Service"]["localStatus"]>(() =>
+    Effect.succeed({
+      isRepo: input.refName !== null,
+      refName: input.refName === undefined ? "main" : input.refName,
+      hasPrimaryRemote: false,
+      isDefaultRef: false,
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+    }),
+  );
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>((id) =>
     Effect.succeed(id === parentThreadId ? parentRecords : projection),
   );
@@ -1359,6 +1372,7 @@ function makeLocalCommandHarness(input: {
               pruneWorktrees: () => Effect.void,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
               createWorktree,
+              localStatus,
             })
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
         Layer.mock(ProjectService.ProjectService)({
@@ -1423,6 +1437,7 @@ function makeLocalCommandHarness(input: {
       projection = next;
     },
     resolveRuntimePolicy,
+    localStatus,
     createWorktree,
     open,
     fallbackEnsureThread,
@@ -2082,6 +2097,204 @@ effectIt.effect("leaves a managed worktree folder without .git that holds user f
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+// `gitbutler/workspace` here is a plain branch, so `but` never runs against the fixture.
+const makeGitButlerRecoveryFixture = Effect.fnUntraced(function* (input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly driver: GitVcsDriver.GitVcsDriver["Service"];
+}) {
+  const { fileSystem, path, driver } = input;
+  const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-gitbutler-" });
+  const workspaceRoot = path.join(root, "project");
+  const originRoot = path.join(root, "origin.git");
+  const worktreesDir = path.join(root, "worktrees");
+  const worktreePath = path.join(worktreesDir, "project", "restore");
+  yield* fileSystem.makeDirectory(workspaceRoot);
+  const git = (cwd: string, args: ReadonlyArray<string>) =>
+    driver
+      .execute({ operation: "test.gitButlerRecovery", cwd, args })
+      .pipe(Effect.map((result) => result.stdout.trim()));
+  yield* git(root, ["init", "--bare", "-b", "main", originRoot]);
+  yield* git(workspaceRoot, ["init", "-b", "main"]);
+  yield* git(workspaceRoot, ["config", "user.name", "Test"]);
+  yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
+  yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "base"]);
+  yield* git(workspaceRoot, ["remote", "add", "origin", originRoot]);
+  yield* git(workspaceRoot, ["push", "origin", "main"]);
+  yield* git(workspaceRoot, ["remote", "set-head", "origin", "main"]);
+  yield* git(workspaceRoot, ["switch", "-c", "develop"]);
+  yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "target"]);
+  yield* git(workspaceRoot, ["push", "origin", "develop"]);
+  yield* git(workspaceRoot, ["switch", "-c", "gitbutler/workspace", "main"]);
+  yield* fileSystem.writeFileString(path.join(workspaceRoot, "applied.txt"), "someone's work");
+  yield* git(workspaceRoot, ["add", "."]);
+  yield* git(workspaceRoot, ["commit", "-m", "GitButler Workspace Commit"]);
+  const workspaceTip = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
+  return { git, workspaceRoot, worktreePath, worktreesDir, workspaceTip };
+});
+
+const withGitButlerTarget = (
+  gitWorkflow: GitWorkflow.GitWorkflowService["Service"],
+  targetRefs: ReadonlyArray<string> | undefined,
+): GitWorkflow.GitWorkflowService["Service"] => ({
+  ...gitWorkflow,
+  localStatus: (input) =>
+    gitWorkflow.localStatus(input, { includeWorkspace: false }).pipe(
+      Effect.map((status) => ({
+        ...status,
+        workspace: {
+          _tag: "gitbutler" as const,
+          ...(targetRefs === undefined ? {} : { targetRefs }),
+          stacks: [],
+          unassignedChangeCount: 0,
+        },
+      })),
+    ),
+});
+
+effectIt.effect.each([
+  {
+    label: "GitButler's target",
+    targetRefs: ["origin/develop"],
+    base: "origin/develop",
+    t3MergeBase: "develop",
+  },
+  {
+    label: "the remote default when GitButler can't name its target",
+    targetRefs: undefined,
+    base: "origin/main",
+    t3MergeBase: "main",
+  },
+])("recreates a thread branch in a GitButler workspace from $label", (scenario) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const fixture = yield* makeGitButlerRecoveryFixture({ fileSystem, path, driver });
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      workspaceRoot: fixture.workspaceRoot,
+      worktreePath: fixture.worktreePath,
+      worktreesDir: fixture.worktreesDir,
+      fileSystem,
+      gitWorkflow: withGitButlerTarget(gitWorkflow, scenario.targetRefs),
+      failReadsAfterRunning: true,
+    });
+
+    yield* harness.start;
+
+    expect(yield* fixture.git(fixture.worktreePath, ["rev-parse", "HEAD"])).toBe(
+      yield* fixture.git(fixture.workspaceRoot, ["rev-parse", scenario.base]),
+    );
+    expect(yield* fileSystem.exists(path.join(fixture.worktreePath, "applied.txt"))).toBe(false);
+    expect(
+      yield* fixture.git(fixture.workspaceRoot, [
+        "config",
+        "--get",
+        "branch.feature/restore.t3-merge-base",
+      ]),
+    ).toBe(scenario.t3MergeBase);
+    expect(yield* fixture.git(fixture.workspaceRoot, ["symbolic-ref", "HEAD"])).toBe(
+      "refs/heads/gitbutler/workspace",
+    );
+    expect(yield* fixture.git(fixture.workspaceRoot, ["rev-parse", "HEAD"])).toBe(
+      fixture.workspaceTip,
+    );
+    expect(harness.open).toHaveBeenCalledOnce();
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+effectIt.effect("recreates a deleted pinned branch at its start commit, not at the target", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const fixture = yield* makeGitButlerRecoveryFixture({ fileSystem, path, driver });
+    yield* fixture.git(fixture.workspaceRoot, ["branch", "stack/one", fixture.workspaceTip]);
+    const pin = yield* driver.pinBranchForWorktree({
+      cwd: fixture.workspaceRoot,
+      branch: "stack/one",
+    });
+    if (pin.status !== "pinned") return yield* Effect.die(pin);
+    yield* driver.createWorktree({
+      cwd: fixture.workspaceRoot,
+      refName: pin.commitSha,
+      newRefName: "feature/restore",
+      path: fixture.worktreePath,
+    });
+    yield* fixture.git(fixture.workspaceRoot, [
+      "worktree",
+      "remove",
+      "--force",
+      fixture.worktreePath,
+    ]);
+    yield* fixture.git(fixture.workspaceRoot, ["branch", "-D", "feature/restore"]);
+    // The parent moves on; the child keeps the commit it started from.
+    yield* fixture.git(fixture.workspaceRoot, ["branch", "-f", "stack/one", "main"]);
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      workspaceRoot: fixture.workspaceRoot,
+      worktreePath: fixture.worktreePath,
+      worktreesDir: fixture.worktreesDir,
+      fileSystem,
+      gitWorkflow: withGitButlerTarget(gitWorkflow, ["origin/develop"]),
+      failReadsAfterRunning: true,
+    });
+
+    yield* harness.start;
+
+    expect(yield* fixture.git(fixture.worktreePath, ["rev-parse", "HEAD"])).toBe(pin.commitSha);
+    expect(yield* fixture.git(fixture.worktreePath, ["rev-parse", "HEAD^"])).toBe(
+      fixture.workspaceTip,
+    );
+    expect(
+      yield* driver.readConfigValue(
+        fixture.workspaceRoot,
+        "branch.feature/restore.t3-start-commit",
+      ),
+    ).toBe(pin.commitSha);
+    expect(harness.open).toHaveBeenCalledOnce();
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
+effectIt.effect("fails recovery in a GitButler workspace when no real base is available", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const gitWorkflow = yield* GitWorkflow.GitWorkflowService;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const fixture = yield* makeGitButlerRecoveryFixture({ fileSystem, path, driver });
+    yield* fixture.git(fixture.workspaceRoot, ["remote", "remove", "origin"]);
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      workspaceRoot: fixture.workspaceRoot,
+      worktreePath: fixture.worktreePath,
+      worktreesDir: fixture.worktreesDir,
+      fileSystem,
+      gitWorkflow: withGitButlerTarget(gitWorkflow, undefined),
+      failReadsAfterRunning: true,
+    });
+
+    yield* harness.start;
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: {
+          message: expect.stringContaining("GitButler workspace"),
+        },
+      },
+    ]);
+    expect(yield* fileSystem.exists(fixture.worktreePath)).toBe(false);
+    expect(yield* fixture.git(fixture.workspaceRoot, ["branch", "--list", "feature/restore"])).toBe(
+      "",
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
+);
+
 effectIt.effect(
   "preserves recreation interrupts and retries, then fails the final attempt before provider start",
   () =>
@@ -2142,6 +2355,85 @@ effectIt.effect(
       ]);
       expect(JSON.stringify(harness.events)).not.toContain("private git diagnostic");
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+effectIt.effect.each([
+  { refName: "gitbutler/workspace", gitbutlerBranch: "feature/api", guidance: true },
+  { refName: "gitbutler/workspace", gitbutlerBranch: null, guidance: true },
+  { refName: "main", gitbutlerBranch: "feature/api", guidance: false },
+  { refName: null, gitbutlerBranch: null, guidance: false },
+  {
+    refName: "gitbutler/workspace",
+    gitbutlerBranch: "feature/api",
+    worktreePath: "/tmp/isolated-worktree",
+    guidance: false,
+  },
+  { refName: "gitbutler/workspace", text: "/custom", guidance: false },
+  { refName: "gitbutler/workspace", text: "", guidance: false },
+])("scopes GitButler guidance to the turn's checkout: %j", (scenario) =>
+  Effect.gen(function* () {
+    const text = scenario.text ?? "Commit my changes";
+    const harness = makeLocalCommandHarness({
+      text,
+      refName: scenario.refName,
+      gitbutlerBranch: scenario.gitbutlerBranch ?? null,
+      ...(scenario.worktreePath === undefined ? {} : { worktreePath: scenario.worktreePath }),
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+    yield* harness.start;
+    const prompt = harness.startRootRun.mock.calls[0]?.[0].message.text;
+    if (scenario.guidance) {
+      expect(prompt).toContain("GitButler workspace");
+      expect(prompt).toContain(
+        scenario.gitbutlerBranch === null
+          ? "but commit -b <name>/<topic>"
+          : `but commit -b ${scenario.gitbutlerBranch}`,
+      );
+      expect(prompt).toContain("t3_thread_update");
+      expect(harness.localStatus).toHaveBeenCalledWith(
+        { cwd: "/tmp/native-account-command" },
+        { includeWorkspace: false },
+      );
+    } else {
+      expect(prompt).toBe(text);
+      if (scenario.worktreePath !== undefined || scenario.text !== undefined) {
+        expect(harness.localStatus).not.toHaveBeenCalled();
+      }
+    }
+  }),
+);
+
+effectIt.effect("refreshes GitButler guidance when the linked branch or cwd changes", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Commit my changes",
+      refName: "gitbutler/workspace",
+      gitbutlerBranch: "feature/api",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    const initial = harness.projection();
+    for (const [branch, worktreePath] of [
+      ["feature/api", null],
+      ["feature/cli", null],
+      [null, null],
+      ["feature/api", "/tmp/isolated-worktree"],
+      ["feature/cli", null],
+    ] as const) {
+      harness.setProjection({
+        ...initial,
+        thread: { ...initial.thread, gitbutlerBranch: branch, worktreePath },
+      });
+      yield* harness.start;
+      const prompt = harness.startRootRun.mock.lastCall?.[0].message.text;
+      if (worktreePath !== null) {
+        expect(prompt).toBe("Commit my changes");
+      } else {
+        expect(prompt).toContain(`but commit -b ${branch ?? "<name>/<topic>"}`);
+        if (branch !== "feature/api") expect(prompt).not.toContain("feature/api");
+      }
+    }
+  }),
 );
 
 effectIt.effect("recovers an abandoned failed turn before continuing its native conversation", () =>

@@ -1,6 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
   ContextTransferId,
@@ -2919,6 +2919,255 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.include(updateRequired.message, "v2.1.302");
         assert.include(updateRequired.message, "2.1.321");
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "starts from the parent's linked GitButler branch",
+      gitButlerBase: { commitSha: "pin-sha", branchCommitSha: "tip-sha" },
+      parentWorktreePath: null,
+      gitbutlerBranch: "stack/linked",
+      baseRef: "pin-sha",
+    },
+    {
+      label: "starts from GitButler's target instead of the workspace commit",
+      gitButlerBase: { commitSha: "target-sha" },
+      parentWorktreePath: null,
+      baseRef: "target-sha",
+    },
+    {
+      label: "keeps the root commit in any other checkout",
+      gitButlerBase: null,
+      parentWorktreePath: null,
+      baseRef: "head-sha",
+    },
+    {
+      label: "starts from GitButler's target for a parent bound to the project root",
+      gitButlerBase: { commitSha: "target-sha" },
+      parentWorktreePath: "/repo",
+      baseRef: "target-sha",
+    },
+    {
+      label: "keeps the parent worktree's commit",
+      gitButlerBase: null,
+      parentWorktreePath: "/worktrees/parent",
+      baseRef: "head-sha",
+    },
+  ])(
+    "worktree isolation $label",
+    ({ gitButlerBase, parentWorktreePath, gitbutlerBranch, baseRef }) =>
+      Effect.gen(function* () {
+        const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const resolveGitButlerWorktreeBase = vi.fn((_cwd: string, _linkedBranch?: string | null) =>
+          Effect.succeed(gitButlerBase),
+        );
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Summarize the diff.",
+          title: null,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+          startedAt: null,
+          completedAt: null,
+        };
+        const parent = (tasks: ReadonlyArray<unknown>) => {
+          const projection = parentProjection(tasks);
+          return {
+            ...projection,
+            thread: {
+              ...projection.thread,
+              worktreePath: parentWorktreePath,
+              gitbutlerBranch: gitbutlerBranch ?? null,
+            },
+          } as typeof projection;
+        };
+        let delegated = false;
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId ? parent(delegated ? [task] : []) : childProjection,
+              ),
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            assertProviderInstanceEnabled: () => Effect.void,
+            dispatch: (command) =>
+              Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    delegated = true;
+                  }),
+                ),
+                Effect.as({
+                  sequence: 1,
+                  storedEvents: [
+                    {
+                      sequence: 1,
+                      commandId: null,
+                      event: { type: "subagent.updated", payload: task },
+                    },
+                  ],
+                } as never),
+              ),
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeedSome({
+                id: parentProjection([]).thread.projectId,
+                title: "Project",
+                workspaceRoot: "/repo",
+              } as never),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const result = yield* service.delegateTask(scope, {
+            task: "Summarize the diff.",
+            isolation: "worktree",
+            mode: "async",
+            clientRequestId: "delegate-gitbutler-base",
+          });
+          if (gitbutlerBranch === undefined) assert.isUndefined(result.note);
+          else assert.include(result.note ?? "", "tip-sha");
+          const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
+            readonly workspaceStrategy: unknown;
+          }>;
+          assert.deepEqual(request?.workspaceStrategy, {
+            type: "worktree",
+            baseRef,
+            startFromOrigin: false,
+          });
+          assert.deepEqual(resolveGitButlerWorktreeBase.mock.calls, [
+            [parentWorktreePath ?? "/repo", gitbutlerBranch ?? null],
+          ]);
+        }).pipe(
+          Effect.provide(
+            OrchestratorMcpService.layer.pipe(
+              Layer.provide(
+                Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                  resolveGitButlerWorktreeBase,
+                }),
+              ),
+              Layer.provide(
+                Layer.mock(GitVcsDriver.GitVcsDriver)({
+                  resolveCommit: ({ revision }) =>
+                    Effect.succeed({ commitSha: revision === "HEAD" ? "head-sha" : revision }),
+                }),
+              ),
+              Layer.provide(layerDependencies),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect.each([
+    {
+      label: "a GitButler root with no real base",
+      error: new ThreadLaunchService.ThreadLaunchGitButlerNoBaseError({ cwd: "/repo" }),
+      expected: "GitButler workspace",
+    },
+    {
+      label: "a linked branch that is gone",
+      error: new ThreadLaunchService.ThreadLaunchGitButlerLinkedBranchError({
+        cwd: "/repo",
+        branch: "stack/gone",
+        reason: "missing",
+      }),
+      expected: "stack/gone",
+    },
+  ])("worktree isolation refuses $label", ({ error: refusal, expected }) =>
+    Effect.gen(function* () {
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: () => {
+            const projection = parentProjection([]);
+            return Effect.succeed({
+              ...projection,
+              thread: { ...projection.thread, worktreePath: null },
+            } as typeof projection);
+          },
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          assertProviderInstanceEnabled: () => Effect.void,
+          dispatch: () => Effect.die("nothing may be dispatched"),
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({
+          getById: () =>
+            Effect.succeedSome({
+              id: parentProjection([]).thread.projectId,
+              title: "Project",
+              workspaceRoot: "/repo",
+            } as never),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ServerSettings.layerTest(),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const error = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            isolation: "worktree",
+            mode: "async",
+            clientRequestId: "delegate-gitbutler-no-base",
+          })
+          .pipe(Effect.flip);
+        assert.equal(error.code, "invalid_request");
+        assert.include(error.message, expected);
+        assert.include(error.message, 'isolation "shared"');
+      }).pipe(
+        Effect.provide(
+          OrchestratorMcpService.layer.pipe(
+            Layer.provide(
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                resolveGitButlerWorktreeBase: () => Effect.fail(refusal),
+              }),
+            ),
+            Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+            Layer.provide(layerDependencies),
+          ),
+        ),
+      );
     }),
   );
 

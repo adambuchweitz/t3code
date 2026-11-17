@@ -109,6 +109,12 @@ export interface GitRemoteStatusDetails {
   aheadOfDefaultCount: number;
 }
 
+export interface WorktreeStartDetails {
+  readonly commitSha: string;
+  readonly parentSha: string;
+  readonly parentRef: string | null;
+}
+
 export interface GitPreparedCommitContext {
   stagedSummary: string;
   stagedPatch: string;
@@ -154,6 +160,8 @@ export interface CreateWorktreeOptions {
   readonly worktreesDirectory?: string;
   /** Clone the checkout from the macOS worktree checkout cache. */
   readonly fastCheckout?: boolean;
+  /** A new branch from a commit on an applied GitButler stack starts one empty commit above it. */
+  readonly startAboveAppliedStack?: boolean;
 }
 
 export interface GitCommitProgress {
@@ -334,6 +342,11 @@ export const BackgroundGitWork = Context.Reference<boolean>("t3/vcs/BackgroundGi
   defaultValue: () => false,
 });
 
+export type GitWorktreeBranchPin =
+  | { readonly status: "pinned"; readonly commitSha: string; readonly branchCommitSha: string }
+  | { readonly status: "conflicted"; readonly branchCommitSha: string }
+  | { readonly status: "refused"; readonly detail: string; readonly branchCommitSha: string }
+  | { readonly status: "missing" };
 export class GitVcsDriver extends Context.Service<
   GitVcsDriver,
   {
@@ -440,6 +453,87 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveWorktreeBaseRemote: (
       input: GitFetchWorktreeBaseCommitInput,
     ) => Effect.Effect<GitWorktreeBaseRemote | null, GitCommandError>;
+    /** Whether a worktree base means GitButler's workspace commit; a real ref at that commit does not. */
+    readonly isGitButlerWorkspaceBase: (input: {
+      readonly cwd: string;
+      readonly refName: string;
+    }) => Effect.Effect<boolean, GitCommandError>;
+    /**
+     * Pins a local branch's tip for a new worktree without moving any ref. The result is an
+     * unreferenced empty commit above the tip: GitButler adopts a branch that points at a stack's
+     * commit into that stack, then moves it under the worktree that has it checked out. Commit hooks
+     * and signing apply; one that fails or changes the commit makes the result `refused`.
+     */
+    readonly pinBranchForWorktree: (input: {
+      readonly cwd: string;
+      readonly branch: string;
+    }) => Effect.Effect<GitWorktreeBranchPin, GitCommandError>;
+    /**
+     * The same pin for a worktree base someone named, when it is a commit on an applied stack in a
+     * GitButler workspace; null for any other base, which GitButler leaves alone. `baseRefName` is
+     * the branch to name as its parent when `refName` is a commit taken from that branch.
+     */
+    readonly pinAppliedStackWorktreeBase: (input: {
+      readonly cwd: string;
+      readonly refName: string;
+      readonly baseRefName?: string | undefined;
+    }) => Effect.Effect<
+      { readonly commitSha: string; readonly parentCommitSha: string } | null,
+      GitCommandError
+    >;
+    /** The start commit recorded for a branch name, which survives the branch being deleted. */
+    readonly readWorktreeStartCommit: (input: {
+      readonly cwd: string;
+      readonly branch: string;
+    }) => Effect.Effect<string | null, GitCommandError>;
+    /**
+     * Start commits by history alone, since a clone has no records. `builtOn` is the nearest on the
+     * first-parent line, skipping one naming `branch`; without it nothing here applies. A base has to
+     * hold all of `parents`, `governing`'s holds the rest, and `starts` aren't on the target or `above`.
+     */
+    readonly readHistoryStarts: (input: {
+      readonly cwd: string;
+      readonly revision: string;
+      readonly above?: string;
+      readonly branch?: string;
+    }) => Effect.Effect<
+      {
+        readonly builtOn: WorktreeStartDetails | null;
+        readonly starts: ReadonlyArray<WorktreeStartDetails>;
+        readonly governing: WorktreeStartDetails | null;
+        readonly parents: ReadonlyArray<string>;
+      },
+      GitCommandError
+    >;
+    /**
+     * The start commit a branch still descends from, with its parent's id and the ref that parent
+     * was pinned from, or null for any branch not, or no longer, built on one. `parentRef` is what
+     * the pin was asked for, so it may be a commit id, and that ref may have moved or gone since.
+     */
+    readonly readWorktreeStart: (input: {
+      readonly cwd: string;
+      readonly branch: string;
+    }) => Effect.Effect<
+      {
+        readonly commitSha: string;
+        readonly parentSha: string;
+        readonly parentRef: string | null;
+      } | null,
+      GitCommandError
+    >;
+    /**
+     * Asks the primary remote, not a tracking ref, whether its `branch` holds a commit. A tip this
+     * repository doesn't have yet is fetched without moving any ref.
+     */
+    readonly readRemoteBranchContains: (input: {
+      readonly cwd: string;
+      readonly branch: string;
+      readonly commitSha: string;
+    }) => Effect.Effect<
+      | { readonly status: "contains" | "lacks"; readonly tipSha: string }
+      | { readonly status: "missing" },
+      GitCommandError
+    >;
     /**
      * Fetches the configured upstream, explicit remote ref, or origin; null uses the local base.
      * A caller that already ran `resolveWorktreeBaseRemote` passes its result as `remote`.

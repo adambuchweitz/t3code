@@ -12,6 +12,7 @@ import {
   pickedQuery,
   rankMessageMatches,
 } from "@t3tools/shared/paletteSearch";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -152,7 +153,7 @@ export function useCommandPaletteThreadItems(input: {
               projectEnvironmentLocationById.get(thread.environmentId)?.label ??
               gt("Remote", { $context: "machine location" })
             }
-            branch={thread.branch}
+            branch={resolveVcsRefDisplayName(thread.branch, null, thread.gitbutlerBranch)}
             worktreePath={thread.worktreePath}
             isCurrent={
               thread.id === activeThread?.id && thread.environmentId === activeThread.environmentId

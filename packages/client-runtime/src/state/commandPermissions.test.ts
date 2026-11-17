@@ -316,6 +316,18 @@ it.effect(
       const registry = yield* setup;
       registry.set(sessions(env), AsyncResult.success(grant(true)));
       const git = createCommandPermissions(runtime, WS_METHODS.vcsInit);
+      const gitButlerCommands = [
+        WS_METHODS.vcsGitButlerApply,
+        WS_METHODS.vcsGitButlerUnapply,
+        WS_METHODS.vcsGitButlerCreateBranch,
+        WS_METHODS.vcsGitButlerResolveHolds,
+      ].map((tag) => createCommandPermissions(runtime, tag));
+      for (const command of gitButlerCommands) {
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* command.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
+          AuthSourceControlWriteScope,
+        );
+      }
       expect((yield* git.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
         AuthSourceControlWriteScope,
       );
@@ -328,6 +340,13 @@ it.effect(
         }),
       );
       yield* git.authorize(registry, env);
+      for (const command of gitButlerCommands) {
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        yield* command.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
+        yield* command.authorize(registry, other).pipe(Effect.flip);
+      }
       const prepare = createCommandPermissions(runtime, WS_METHODS.gitPreparePullRequestThread);
       const input = {
         cwd: "/repo",

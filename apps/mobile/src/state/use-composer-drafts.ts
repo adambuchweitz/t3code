@@ -470,6 +470,7 @@ export interface ComposerDraftContent {
 export interface ComposerDraftWorkspaceSelection {
   readonly mode: "local" | "worktree";
   readonly branch: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
   readonly pullRequestReference?: string;
@@ -499,6 +500,7 @@ export type ComposerDraftSettingsUpdate = Pick<
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   mode: Schema.Literals(["local", "worktree"]),
   branch: Schema.NullOr(Schema.String),
+  gitbutlerBranch: Schema.optional(Schema.NullOr(Schema.String)),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
   pullRequestReference: Schema.optional(Schema.String),
@@ -1287,6 +1289,8 @@ export async function removeDeliveredCloudQueuedMessage(
         (editor.workspaceSelection !== undefined &&
           (editor.workspaceSelection.mode !== message.creation?.workspaceMode ||
             editor.workspaceSelection.branch !== message.creation?.branch ||
+            (editor.workspaceSelection.gitbutlerBranch ?? null) !==
+              (message.creation?.gitbutlerBranch ?? null) ||
             editor.workspaceSelection.worktreePath !== message.creation?.worktreePath ||
             editor.workspaceSelection.pullRequestReference !==
               message.creation?.pullRequestReference ||

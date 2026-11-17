@@ -53,6 +53,10 @@ import {
   windowsLongPathConfigEnv,
 } from "./GitVcsDriverCore.ts";
 import { autoPullProjects } from "../serverRuntimeStartup.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as GitManager from "../git/GitManager.ts";
+import * as GitButlerWorkspace from "./GitButlerWorkspace.ts";
+import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import { gitConfigEnv } from "./VcsProcess.ts";
@@ -420,6 +424,1482 @@ const commitInitialRepo = (cwd: string, initArgs: ReadonlyArray<string> = []) =>
 let repoTemplate: string | undefined;
 afterAll(() => {
   if (repoTemplate) NodeFS.rmSync(repoTemplate, { recursive: true, force: true });
+});
+
+// gitConfig.setup.ts turns signing off from the environment, which outranks a repository's config.
+function requestSigning(): () => void {
+  // Git applies these in index order, so the highest entry is the effective one.
+  const index = Object.keys(process.env)
+    .filter((key) => key.startsWith("GIT_CONFIG_KEY_") && process.env[key] === "commit.gpgsign")
+    .map((key) => Number(key.slice("GIT_CONFIG_KEY_".length)))
+    .reduce((highest, candidate) => Math.max(highest, candidate), -1);
+  const name = `GIT_CONFIG_VALUE_${index}`;
+  const previous = process.env[name];
+  process.env[name] = "true";
+  return () => {
+    process.env[name] = previous;
+  };
+}
+
+// `gitbutler/workspace` here is a plain branch; only its name and merge commit matter to Git.
+const initGitButlerRepo = Effect.fnUntraced(function* () {
+  const cwd = yield* makeTmpDir("git-gitbutler-");
+  const { initialBranch } = yield* initRepoWithCommit(cwd);
+  yield* git(cwd, ["switch", "-c", "stack/one"]);
+  yield* writeTextFile(cwd, "applied.txt", "another stack's work\n");
+  yield* git(cwd, ["add", "."]);
+  yield* git(cwd, ["commit", "-m", "applied work"]);
+  yield* git(cwd, ["switch", "-c", "gitbutler/workspace", initialBranch]);
+  yield* git(cwd, ["merge", "--no-ff", "-m", "GitButler Workspace Commit", "stack/one"]);
+  const workspaceTip = yield* git(cwd, ["rev-parse", "HEAD"]);
+  return { cwd, initialBranch, workspaceTip };
+});
+
+describe("GitButler workspace worktree bases", () => {
+  it.effect("pins a branch one empty commit above its tip without touching any ref", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const refs = () => git(cwd, ["for-each-ref", "--format=%(refname) %(objectname)"]);
+      const tip = yield* git(cwd, ["rev-parse", "stack/one"]);
+      const before = yield* refs();
+
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      assert.equal(pin.branchCommitSha, tip);
+      assert.notEqual(pin.commitSha, tip);
+      assert.equal(yield* refs(), before);
+      assert.equal(yield* git(cwd, ["rev-parse", `${pin.commitSha}^`]), tip);
+      assert.equal(
+        yield* git(cwd, ["rev-parse", `${pin.commitSha}^{tree}`]),
+        yield* git(cwd, ["rev-parse", `${tip}^{tree}`]),
+      );
+      const message = yield* git(cwd, ["log", "-1", "--format=%B", pin.commitSha]);
+      assert.include(message, "stack/one");
+      assert.include(message, tip);
+
+      // The parent moves on between the pin and the worktree; the child keeps the pinned tip.
+      yield* writeTextFile(cwd, "parent-uncommitted.txt", "another agent's edit\n");
+      yield* git(cwd, ["update-ref", "refs/heads/stack/one", `${tip}^`]);
+      const worktreePath = path.join(cwd, "..", `pinned-${path.basename(cwd)}`);
+      const created = yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        path: worktreePath,
+      });
+      assert.equal(created.worktree.refName, "child");
+      assert.equal(yield* git(worktreePath, ["rev-parse", "HEAD^"]), tip);
+      assert.isFalse(
+        yield* FileSystem.FileSystem.pipe(
+          Effect.flatMap((fs) => fs.exists(path.join(worktreePath, "parent-uncommitted.txt"))),
+        ),
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    { label: "a branch that does not exist", branch: "stack/gone", status: "missing" },
+    { label: "a name only a remote has", branch: "remote/only", status: "missing" },
+    { label: "the workspace itself", branch: "gitbutler/workspace", status: "missing" },
+    { label: "an ancestry expression", branch: "stack/one~1", status: "missing" },
+    { label: "a workspace expression", branch: "gitbutler/workspace^0", status: "missing" },
+    { label: "a conflicted tip", branch: "stack/conflicted", status: "conflicted" },
+    {
+      label: "a conflicted tip from a subdirectory",
+      branch: "stack/conflicted",
+      status: "conflicted",
+      subdirectory: "nested",
+    },
+  ])("will not pin $label", ({ branch, status, subdirectory }) =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const head = yield* git(cwd, ["rev-parse", "stack/one"]);
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/remote/only", head]);
+      // GitButler keeps a conflicted commit's sides in its tree.
+      yield* git(cwd, ["switch", "-c", "stack/conflicted", "stack/one"]);
+      yield* writeTextFile(cwd, ".conflict-files", "ancestorEntries = []\n");
+      yield* writeTextFile(cwd, ".conflict-side-0", "ours\n");
+      yield* writeTextFile(cwd, "nested/kept.txt", "tracked\n");
+      yield* git(cwd, ["add", "."]);
+      yield* git(cwd, ["commit", "-m", "[conflict] applied work"]);
+      const objects = () => git(cwd, ["count-objects"]);
+      const before = yield* objects();
+
+      const pin = yield* driver.pinBranchForWorktree({
+        cwd: subdirectory === undefined ? cwd : `${cwd}/${subdirectory}`,
+        branch,
+      });
+      assert.equal(pin.status, status);
+      assert.equal(yield* objects(), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  const installHook = Effect.fnUntraced(function* (cwd: string, name: string, script: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* writeTextFile(cwd, `.git/hooks/${name}`, `#!/bin/sh\n${script}\n`);
+    yield* fs.chmod(path.join(cwd, ".git/hooks", name), 0o755);
+  });
+  const repositoryState = (cwd: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      return [
+        yield* git(cwd, ["for-each-ref", "--format=%(refname) %(objectname)"]),
+        yield* git(cwd, ["worktree", "list", "--porcelain"]),
+        (yield* fs.readDirectory(path.join(cwd, ".git")))
+          .filter((name) => name.startsWith("t3-start-commit-"))
+          .join(),
+      ];
+    });
+  const fakeSigner = Effect.fnUntraced(function* (cwd: string, script: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const program = path.join(cwd, ".git", "fake-signer");
+    yield* fs.writeFileString(program, `#!/bin/sh\n${script}\n`);
+    yield* fs.chmod(program, 0o755);
+    yield* git(cwd, ["config", "gpg.format", "openpgp"]);
+    yield* git(cwd, ["config", "user.signingkey", "fake"]);
+    yield* git(cwd, ["config", "gpg.program", program]);
+  });
+  const withSigningRequested = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(requestSigning),
+      () => effect,
+      (restore) => Effect.sync(restore),
+    );
+  const signatureHeaders = (cwd: string, commit: string) =>
+    git(cwd, ["cat-file", "-p", commit]).pipe(
+      Effect.map((raw) => raw.split("\n").filter((line) => line.startsWith("gpgsig")).length),
+    );
+  const validSigner =
+    'cat >/dev/null; echo "[GNUPG:] SIG_CREATED " >&2; printf -- "-----BEGIN PGP SIGNATURE-----\\nfake\\n-----END PGP SIGNATURE-----\\n"';
+
+  it.effect("signs the start commit under commit.gpgsign", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, validSigner);
+      const pin = yield* withSigningRequested(
+        driver.pinBranchForWorktree({ cwd, branch: "stack/one" }),
+      );
+      assert(pin.status === "pinned");
+      assert.equal(yield* signatureHeaders(cwd, pin.commitSha), 1);
+      assert.equal(yield* git(cwd, ["log", "-1", "--format=%an", pin.commitSha]), "Test");
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("signs the start commit under GitButler's own signing switch", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, validSigner);
+      yield* git(cwd, ["config", "gitbutler.signcommits", "true"]);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      assert.equal(yield* signatureHeaders(cwd, pin.commitSha), 1);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  const includeOnWorkspaceBranch = Effect.fnUntraced(function* (cwd: string, config: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const file = path.join(cwd, ".git", "workspace-only.config");
+    yield* fs.writeFileString(file, config);
+    yield* git(cwd, ["config", "includeIf.onbranch:gitbutler/workspace.path", file]);
+  });
+
+  it.effect("keeps signing that is configured only on the workspace branch", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, validSigner);
+      yield* includeOnWorkspaceBranch(cwd, "[gitbutler]\n\tsigncommits = true\n");
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      assert.equal(yield* signatureHeaders(cwd, pin.commitSha), 1);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses a start commit a hook replaced with an unsigned one", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, validSigner);
+      yield* git(cwd, ["config", "gitbutler.signcommits", "true"]);
+      yield* installHook(
+        cwd,
+        "post-commit",
+        '[ -n "$AMENDED" ] || AMENDED=1 git commit --quiet --amend --no-gpg-sign --allow-empty -m unsigned',
+      );
+      const before = yield* repositoryState(cwd);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "refused");
+      assert.include(pin.detail, "unsigned");
+      assert.deepEqual(yield* repositoryState(cwd), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses when a signing setting can't be read, rather than treating it as off", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* git(cwd, ["config", "gitbutler.signcommits", "always"]);
+      const before = yield* repositoryState(cwd);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "refused");
+      assert.include(pin.detail, "always");
+      assert.deepEqual(yield* repositoryState(cwd), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses when hooks are configured only on the workspace branch", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* includeOnWorkspaceBranch(cwd, "[core]\n\thooksPath = /nonexistent/hooks\n");
+      const before = yield* repositoryState(cwd);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "refused");
+      assert.include(pin.detail, "core.hooksPath");
+      assert.deepEqual(yield* repositoryState(cwd), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses rather than leaving the start commit unsigned", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, 'echo "no key here" >&2; exit 2');
+      const before = yield* repositoryState(cwd);
+      const pin = yield* withSigningRequested(
+        driver.pinBranchForWorktree({ cwd, branch: "stack/one" }),
+      );
+      assert(pin.status === "refused");
+      assert.include(pin.detail, "no key here");
+      assert.deepEqual(yield* repositoryState(cwd), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    {
+      label: "a rejecting pre-commit hook",
+      hook: "pre-commit",
+      script: 'echo "rejected by policy" >&2; exit 7',
+      detail: "rejected by policy",
+    },
+    {
+      label: "a rejecting post-checkout hook",
+      hook: "post-checkout",
+      script: 'echo "missing dependency" >&2; exit 1',
+      detail: "missing dependency",
+    },
+    {
+      label: "a rejecting commit-msg hook",
+      hook: "commit-msg",
+      script: 'echo "needs a ticket" >&2; exit 1',
+      detail: "needs a ticket",
+    },
+    {
+      label: "a hook that stages a file",
+      hook: "pre-commit",
+      script: "echo injected > injected.txt; git add injected.txt",
+      detail: "hook changed",
+    },
+    {
+      label: "a hook that moves the commit",
+      hook: "post-commit",
+      script: 'git update-ref --no-deref HEAD "$(git rev-parse HEAD^)"',
+      detail: "hook changed",
+    },
+  ])("refuses a start commit stopped by $label and cleans up", ({ hook, script, detail }) =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* installHook(cwd, hook, script);
+      const before = yield* repositoryState(cwd);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "refused");
+      assert.include(pin.detail, detail);
+      assert.deepEqual(yield* repositoryState(cwd), before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("runs commit hooks once for the start commit, and pins the tip they saw", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const log = path.join(cwd, ".git", "hook-log");
+      const tip = yield* git(cwd, ["rev-parse", "stack/one"]);
+      for (const hook of ["pre-commit", "commit-msg", "post-commit"]) {
+        yield* installHook(cwd, hook, `echo ${hook} >> "${log}"`);
+      }
+      // A parent rewritten while the hooks run must not change what the child starts from.
+      yield* installHook(
+        cwd,
+        "prepare-commit-msg",
+        `git update-ref refs/heads/stack/one ${tip}^; echo prepare >> "${log}"`,
+      );
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      assert.equal(pin.branchCommitSha, tip);
+      assert.equal(yield* git(cwd, ["rev-parse", `${pin.commitSha}^`]), tip);
+      assert.deepEqual((yield* fs.readFileString(log)).trim().split("\n"), [
+        "pre-commit",
+        "prepare",
+        "commit-msg",
+        "post-commit",
+      ]);
+      assert.notEqual(yield* git(cwd, ["rev-parse", "stack/one"]), tip);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    { label: "a delegated child, which names no base", baseRefName: undefined, prBase: "" },
+    {
+      label: "a handoff, which names the linked branch",
+      baseRefName: "refs/heads/stack/one",
+      prBase: "stack/one",
+    },
+  ])("compares $label with its start commit, whatever later happens to the parent", (scenario) =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktreePath = path.join(cwd, "..", `child-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "t3/temporary",
+        path: worktreePath,
+        ...(scenario.baseRefName === undefined ? {} : { baseRefName: scenario.baseRefName }),
+      });
+      const changes = (expected: { readonly ahead: number; readonly files: Array<string> }) =>
+        Effect.gen(function* () {
+          const status = yield* driver.statusDetailsLocal(worktreePath, {
+            includeBranchChanges: true,
+          });
+          assert.equal(status.aheadCount, expected.ahead);
+          assert.equal(status.aheadOfDefaultCount, expected.ahead);
+          assert.deepEqual(status.branchChanges, {
+            baseRef: pin.commitSha.slice(0, 12),
+            insertions: expected.files.length,
+            deletions: 0,
+          });
+          const preview = yield* driver.getReviewDiffPreview({ cwd: worktreePath });
+          const range = preview.sources.find((source) => source.kind === "branch-range")!;
+          assert.deepEqual(range.files?.map((file) => file.path) ?? [], expected.files);
+          // Clients send the source's base back to read a file or the commit list.
+          const commits = yield* driver.getReviewBranchCommits({
+            cwd: worktreePath,
+            baseRef: range.baseRef!,
+          });
+          assert.equal(commits.commits.length, expected.ahead);
+        });
+
+      // Nothing of its own yet, so the empty commit doesn't read as work to publish.
+      yield* changes({ ahead: 0, files: [] });
+
+      yield* writeTextFile(worktreePath, "child.txt", "child work\n");
+      yield* git(worktreePath, ["add", "."]);
+      yield* git(worktreePath, ["commit", "-m", "child work"]);
+      yield* changes({ ahead: 1, files: ["child.txt"] });
+
+      const rewritten = yield* git(cwd, [
+        "commit-tree",
+        "stack/one^{tree}",
+        "-p",
+        "stack/one^",
+        "-m",
+        "applied work, rewritten",
+      ]);
+      yield* git(cwd, ["update-ref", "refs/heads/stack/one", rewritten]);
+      yield* changes({ ahead: 1, files: ["child.txt"] });
+
+      const renamed = yield* driver.renameBranch({
+        cwd: worktreePath,
+        oldBranch: "t3/temporary",
+        newBranch: "feature/child",
+        exactName: true,
+      });
+      assert.equal(renamed.branch, "feature/child");
+      yield* changes({ ahead: 1, files: ["child.txt"] });
+      assert.equal(
+        yield* driver.readWorktreeStartCommit({ cwd, branch: "feature/child" }),
+        pin.commitSha,
+      );
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "t3/temporary" }));
+
+      yield* git(worktreePath, ["rebase", "--onto", `${pin.commitSha}^`, pin.commitSha]);
+      yield* changes({ ahead: 1, files: ["child.txt"] });
+
+      // A PR still targets whatever it did before.
+      assert.equal(
+        (yield* driver.readConfigValue(cwd, "branch.feature/child.t3-merge-base")) ?? "",
+        scenario.prBase,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("doesn't publish a child that has only its start commit", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const remote = yield* makeTmpDir("git-start-commit-origin-");
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktreePath = path.join(cwd, "..", `publish-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        path: worktreePath,
+      });
+
+      assert.deepInclude(yield* driver.pushCurrentBranch(worktreePath, null), {
+        status: "skipped_up_to_date",
+        branch: "child",
+      });
+      assert.equal(yield* git(cwd, ["ls-remote", "origin"]), "");
+
+      yield* writeTextFile(worktreePath, "child.txt", "child work\n");
+      yield* git(worktreePath, ["add", "."]);
+      yield* git(worktreePath, ["commit", "-m", "child work"]);
+      assert.deepInclude(yield* driver.pushCurrentBranch(worktreePath, null), {
+        status: "pushed",
+        branch: "child",
+      });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps a start commit for a branch only while the branch can descend from it", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const startCommitKey = "branch.child.t3-start-commit";
+      const add = (name: string, refName: string) =>
+        driver.createWorktree({
+          cwd,
+          refName,
+          newRefName: "child",
+          path: path.join(cwd, "..", `${name}-${path.basename(cwd)}`),
+        });
+      const remove = (name: string) =>
+        git(cwd, [
+          "worktree",
+          "remove",
+          "--force",
+          path.join(cwd, "..", `${name}-${path.basename(cwd)}`),
+        ]);
+
+      yield* add("first", pin.commitSha);
+      assert.equal(yield* driver.readConfigValue(cwd, startCommitKey), pin.commitSha);
+
+      // Deleting a branch outside T3 Code takes its config with it, but not the recovery record.
+      yield* remove("first");
+      yield* git(cwd, ["branch", "-D", "child"]);
+      assert.isNull(yield* driver.readConfigValue(cwd, startCommitKey));
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }), pin.commitSha);
+      assert.equal(yield* git(cwd, ["cat-file", "-t", pin.commitSha]), "commit");
+
+      // The branch came back from a pushed copy of itself, so it's still the same child.
+      const pushedCopy = yield* git(cwd, [
+        "commit-tree",
+        `${pin.commitSha}^{tree}`,
+        "-p",
+        pin.commitSha,
+        "-m",
+        "child work",
+      ]);
+      yield* add("restored", pushedCopy);
+      assert.equal(yield* driver.readConfigValue(cwd, startCommitKey), pin.commitSha);
+
+      // The same name on unrelated history is a different branch.
+      yield* remove("restored");
+      yield* git(cwd, ["branch", "-D", "child"]);
+      yield* add("unrelated", initialBranch);
+      assert.isNull(yield* driver.readConfigValue(cwd, startCommitKey));
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }));
+
+      // Removing the branch through T3 Code discards the child, so the record goes with it.
+      yield* remove("unrelated");
+      yield* driver.deleteLocalBranch({ cwd, refName: "child", force: true });
+      yield* add("discarded", pin.commitSha);
+      yield* remove("discarded");
+      yield* driver.deleteLocalBranch({ cwd, refName: "child", force: true });
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps a start commit's records when creating the worktree fails", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const first = path.join(cwd, "..", `recorded-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        path: first,
+      });
+      yield* git(cwd, ["worktree", "remove", "--force", first]);
+      yield* git(cwd, ["branch", "-D", "child"]);
+
+      // The name's taken for something else, but that never materializes: the record stays.
+      const occupied = path.join(cwd, "..", `occupied-${path.basename(cwd)}`);
+      yield* fileSystem.makeDirectory(occupied);
+      yield* writeTextFile(occupied, "in-the-way.txt", "\n");
+      const blocked = yield* driver
+        .createWorktree({ cwd, refName: initialBranch, newRefName: "child", path: occupied })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(blocked));
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }), pin.commitSha);
+
+      // A new start commit failing at that name leaves the earlier record too.
+      const nextOnStack = yield* git(cwd, [
+        "commit-tree",
+        "stack/one^{tree}",
+        "-p",
+        "stack/one",
+        "-m",
+        "more",
+      ]);
+      yield* git(cwd, ["update-ref", "refs/heads/stack/one", nextOnStack]);
+      const otherPin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(otherPin.status === "pinned");
+      assert.notEqual(otherPin.commitSha, pin.commitSha);
+      const replacing = yield* driver
+        .createWorktree({ cwd, refName: otherPin.commitSha, newRefName: "child", path: occupied })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(replacing));
+      assert.equal(yield* git(cwd, ["branch", "--list", "child"]), "");
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }), pin.commitSha);
+      const firstTime = yield* driver
+        .createWorktree({ cwd, refName: otherPin.commitSha, newRefName: "fresh", path: occupied })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(firstTime));
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "fresh" }));
+
+      // A branch of that name T3 Code didn't start owns no record, so deleting it leaves this one.
+      yield* git(cwd, ["branch", "child", initialBranch]);
+      yield* driver.deleteLocalBranch({ cwd, refName: "child", force: true });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }), pin.commitSha);
+
+      // A failing post-checkout hook fails the command but leaves a usable worktree behind.
+      const hook = path.join(yield* git(cwd, ["rev-parse", "--git-path", "hooks/post-checkout"]));
+      yield* writeTextFile(cwd, hook, "#!/bin/sh\nexit 1\n");
+      yield* fileSystem.chmod(path.join(cwd, hook), 0o755);
+      const survivor = path.join(cwd, "..", `survivor-${path.basename(cwd)}`);
+      const hooked = yield* driver
+        .createWorktree({ cwd, refName: pin.commitSha, newRefName: "survivor", path: survivor })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(hooked));
+      assert.equal(yield* git(survivor, ["rev-parse", "HEAD"]), pin.commitSha);
+      assert.equal(
+        yield* driver.readConfigValue(cwd, "branch.survivor.t3-start-commit"),
+        pin.commitSha,
+      );
+      assert.equal(
+        yield* driver.readWorktreeStartCommit({ cwd, branch: "survivor" }),
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("gives a branch cut from a started branch its own copy of the records", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktree = path.join(cwd, "..", `inherit-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        baseRefName: "stack/one",
+        path: worktree,
+      });
+      yield* git(worktree, ["config", "branch.child.t3-merge-base-ref", "refs/heads/stack/one"]);
+
+      yield* driver.createRef({ cwd: worktree, refName: "cut" });
+      assert.deepEqual(
+        yield* driver.readWorktreeStart({ cwd, branch: "cut" }),
+        yield* driver.readWorktreeStart({ cwd, branch: "child" }),
+      );
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }), pin.commitSha);
+      assert.equal(yield* driver.readBranchBase(cwd, "cut"), "stack/one");
+      assert.equal(
+        yield* driver.readConfigValue(cwd, "branch.cut.t3-merge-base-ref"),
+        "refs/heads/stack/one",
+      );
+
+      // Each branch owns its copy: losing either name leaves the other's record in place.
+      yield* driver.renameBranch({ cwd, oldBranch: "cut", newBranch: "moved" });
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }));
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "moved" }), pin.commitSha);
+      yield* driver.deleteLocalBranch({ cwd, refName: "moved", force: true });
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "moved" }));
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "child" }), pin.commitSha);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("gives a worktree cut from a started branch its own copy of the records", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        baseRefName: "stack/one",
+        path: path.join(cwd, "..", `cut-wt-a-${path.basename(cwd)}`),
+      });
+      yield* driver.createWorktree({
+        cwd,
+        refName: "child",
+        newRefName: "cut",
+        path: path.join(cwd, "..", `cut-wt-b-${path.basename(cwd)}`),
+      });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }), pin.commitSha);
+      assert.equal(yield* driver.readBranchBase(cwd, "cut"), "stack/one");
+      assert.deepEqual(
+        yield* driver.readWorktreeStart({ cwd, branch: "cut" }),
+        yield* driver.readWorktreeStart({ cwd, branch: "child" }),
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("prefers a source's start commit over an older recovery record", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktree = (name: string) => path.join(cwd, "..", `${name}-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "old",
+        path: worktree("older"),
+      });
+      const newer = yield* git(cwd, [
+        "commit-tree",
+        `${pin.commitSha}^{tree}`,
+        "-p",
+        pin.commitSha,
+        "-m",
+        `T3 Code starts this branch one empty commit above ${pin.commitSha} so that GitButler keeps it out of the old stack.`,
+      ]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: newer,
+        newRefName: "source",
+        path: worktree("source"),
+      });
+      // `old` is gone by plain git, which leaves its record behind for recovery.
+      yield* git(cwd, ["worktree", "remove", "--force", worktree("older")]);
+      yield* git(cwd, ["branch", "-D", "old"]);
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "old" }), pin.commitSha);
+
+      yield* driver.createWorktree({
+        cwd,
+        refName: "source",
+        newRefName: "old",
+        path: worktree("reused"),
+      });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "old" }), newer);
+      assert.equal(yield* driver.readConfigValue(cwd, "branch.old.t3-start-commit"), newer);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("removes a cut branch whose inherited records can't be written", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktree = path.join(cwd, "..", `inherit-fail-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        path: worktree,
+      });
+      const recordDir = path.join(cwd, ".git", "refs", "t3", "worktree-starts");
+      yield* fileSystem.makeDirectory(recordDir, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(recordDir, "cut.lock"), "");
+
+      yield* driver.createRef({ cwd: worktree, refName: "cut" }).pipe(Effect.flip);
+      assert.equal(yield* git(cwd, ["branch", "--list", "cut"]), "");
+      assert.equal(yield* driver.readConfigValue(cwd, "branch.cut.t3-start-commit"), null);
+      assert.equal(yield* git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"]), "child");
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("finds the start commit for a branch cut from a detached child", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const worktree = path.join(cwd, "..", `detached-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "child",
+        path: worktree,
+      });
+      yield* git(worktree, ["switch", "--detach"]);
+      yield* driver.createRef({ cwd: worktree, refName: "cut" });
+      assert.equal(
+        (yield* driver.readWorktreeStart({ cwd, branch: "cut" }))?.commitSha,
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("finds a start commit under ordinary commits that mention the same words", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const above = yield* git(cwd, [
+        "commit-tree",
+        `${pin.commitSha}^{tree}`,
+        "-p",
+        pin.commitSha,
+        "-m",
+        "fix: T3 Code starts note handling",
+      ]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: above,
+        newRefName: "cut",
+        path: path.join(cwd, "..", `words-${path.basename(cwd)}`),
+      });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }), pin.commitSha);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("finds a start commit under many commits that mention it, with a stale target", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["config", "gitbutler.project.targetref", "refs/remotes/gone/main"]);
+      let above = pin.commitSha;
+      for (let index = 0; index < 60; index++) {
+        above = yield* git(cwd, [
+          "commit-tree",
+          `${pin.commitSha}^{tree}`,
+          "-p",
+          above,
+          "-m",
+          `T3 Code note ${index}`,
+        ]);
+      }
+      yield* driver.createWorktree({
+        cwd,
+        refName: above,
+        newRefName: "cut",
+        path: path.join(cwd, "..", `many-${path.basename(cwd)}`),
+      });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }), pin.commitSha);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps a start commit that only another remote's main holds", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["remote", "add", "origin", path.join(cwd, "..", "no-such-origin")]);
+      yield* git(cwd, ["remote", "add", "fork", path.join(cwd, "..", "no-such-fork")]);
+      yield* git(cwd, ["update-ref", "refs/remotes/fork/main", pin.commitSha]);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: pin.commitSha })).governing?.commitSha,
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("cuts from a branch that shares its name with a directory", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* fileSystem.makeDirectory(path.join(cwd, "docs"));
+      yield* git(cwd, ["branch", "docs", "stack/one"]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: "docs",
+        newRefName: "docs-wt",
+        path: path.join(cwd, "..", `docs-${path.basename(cwd)}`),
+      });
+      assert.equal(
+        yield* git(cwd, ["rev-parse", "docs-wt"]),
+        yield* git(cwd, ["rev-parse", "docs"]),
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("won't take an older start commit for a dropped one's replay", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      const commit = (parent: string, message: string) =>
+        git(cwd, ["commit-tree", `${pin.commitSha}^{tree}`, "-p", parent, "-m", message]);
+      const above = yield* commit(pin.commitSha, "work on the first child");
+      const dropped = yield* commit(
+        above,
+        `T3 Code starts this branch one empty commit above ${above} so that GitButler keeps it out of the a stack.`,
+      );
+      const tip = yield* commit(above, "the second child's work, with its start commit dropped");
+      yield* git(cwd, ["branch", "second", tip]);
+      yield* git(cwd, ["config", "branch.second.t3-start-commit", dropped]);
+      assert.isNull(yield* driver.readWorktreeStart({ cwd, branch: "second" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps a start commit that an unpushed local main holds", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["remote", "add", "origin", path.join(cwd, "..", "no-such-origin")]);
+      yield* git(cwd, ["branch", "-f", "main", pin.commitSha]);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: pin.commitSha })).governing?.commitSha,
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("reads which start commit governs a history with several", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const sha = (ref: string) =>
+        git(cwd, ["rev-parse", ref]).pipe(Effect.map((stdout) => stdout.trim()));
+      const startAbove = Effect.fn("startAbove")(function* (parent: string, branch: string) {
+        yield* git(cwd, ["branch", branch, parent]);
+        yield* git(cwd, ["switch", branch]);
+        yield* git(cwd, [
+          "commit",
+          "--allow-empty",
+          "-m",
+          `Start\n\nT3 Code starts this branch one empty commit above ${yield* sha(parent)} so that GitButler keeps it out of the ${parent} stack.`,
+        ]);
+        return yield* sha("HEAD");
+      });
+      const parentBranch = Effect.fn("parentBranch")(function* (branch: string, from: string) {
+        yield* git(cwd, ["branch", branch, from]);
+        yield* git(cwd, ["switch", branch]);
+        yield* git(cwd, ["commit", "--allow-empty", "-m", branch]);
+      });
+      const merged = Effect.fn("merged")(function* (branch: string, into: string, other: string) {
+        yield* git(cwd, ["branch", branch, into]);
+        yield* git(cwd, ["switch", branch]);
+        yield* git(cwd, ["merge", "--no-ff", "-m", `Merge ${other}`, other]);
+        return branch;
+      });
+      const read = (revision: string, above?: string) =>
+        driver.readHistoryStarts({ cwd, revision, ...(above ? { above } : {}) });
+
+      yield* parentBranch("p1", "main");
+      yield* parentBranch("p2", "main");
+      yield* parentBranch("p1-next", "p1");
+      const a = yield* startAbove("p1", "a");
+      yield* startAbove("p1", "same");
+      const other = yield* startAbove("p2", "other");
+      const later = yield* startAbove("p1-next", "later");
+      const onMain = yield* startAbove("main", "on-main");
+
+      const single = yield* read("a");
+      assert.equal(single.governing?.commitSha, a);
+      assert.deepEqual(
+        single.starts.map((start) => start.commitSha),
+        [a],
+      );
+
+      const diverged = yield* read(yield* merged("m-diverged", "a", "other"));
+      assert.isNull(diverged.governing);
+      assert.sameMembers(
+        diverged.starts.map((start) => start.commitSha),
+        [a, other],
+      );
+
+      const sameParent = yield* read(yield* merged("m-same", "a", "same"));
+      assert.equal(sameParent.governing?.parentSha, yield* sha("p1"));
+
+      // Either way round: the parent holding the other's decides, not which side is first.
+      const heldParent = yield* read(yield* merged("m-held", "a", "later"));
+      assert.equal(heldParent.governing?.commitSha, later);
+      const heldParentFlipped = yield* read(yield* merged("m-flipped", "later", "a"));
+      assert.equal(heldParentFlipped.governing?.commitSha, later);
+
+      // A parent already on the target holds nothing to keep out.
+      const landedParent = yield* read(yield* merged("m-landed", "a", "on-main"));
+      assert.equal(landedParent.governing?.commitSha, a);
+      assert.deepEqual(
+        landedParent.starts.map((start) => start.commitSha),
+        [a],
+      );
+      const onlyLanded = yield* read("on-main");
+      assert.equal(onlyLanded.governing?.commitSha, onMain);
+      assert.deepEqual(onlyLanded.starts, []);
+
+      // Landed doesn't excuse a parent from a base that lacks it.
+      yield* git(cwd, ["switch", "main"]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "main moved"]);
+      yield* startAbove("main", "on-moved");
+      const movedParent = yield* read(yield* merged("m-moved", "a", "on-moved"));
+      assert.isNull(movedParent.governing);
+      assert.deepEqual(
+        movedParent.starts.map((start) => start.commitSha),
+        [a],
+      );
+      assert.sameMembers([...movedParent.parents], [yield* sha("p1"), yield* sha("main")]);
+
+      // Only merged in, a start isn't what the branch was built on, whatever its label says.
+      yield* parentBranch("plain", "main");
+      const plain = yield* read(yield* merged("m-plain", "plain", "other"));
+      assert.isNull(plain.builtOn);
+      assert.deepEqual(plain.parents, []);
+
+      // A squash that quotes a start's message isn't one. A start squashed with its own work is.
+      yield* git(cwd, ["switch", "-c", "with-file", "other"]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "before file"]);
+      yield* writeTextFile(cwd, "squashed.txt", "work\n");
+      yield* git(cwd, ["add", "squashed.txt"]);
+      yield* git(cwd, ["commit", "-m", "file"]);
+      yield* git(cwd, ["switch", "-c", "plain-squash", "plain"]);
+      yield* git(cwd, ["merge", "--squash", "with-file"]);
+      yield* git(cwd, ["commit", "--no-edit"]);
+      assert.isNull((yield* read("plain-squash")).builtOn);
+      yield* git(cwd, ["switch", "-c", "start-squash", "other"]);
+      yield* writeTextFile(cwd, "squashed.txt", "work\n");
+      yield* git(cwd, ["add", "squashed.txt"]);
+      yield* git(cwd, ["commit", "--amend", "--no-edit"]);
+      assert.isNotNull((yield* read("start-squash")).builtOn);
+
+      const kept = (yield* git(cwd, ["log", "-1", "--format=%B"])).trim();
+      yield* git(cwd, ["commit", "--amend", "-m", `feat: my own subject\n\n${kept}`]);
+      assert.isNotNull((yield* read("start-squash")).builtOn);
+
+      // A merged start above work that isn't this line's or a child's brings that work with it.
+      yield* startAbove("p2", "s-foreign");
+      yield* git(cwd, ["switch", "-c", "foreign", "s-foreign"]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "foreign work"]);
+      const aboveForeign = yield* startAbove("foreign", "m-foreign");
+      const foreign = yield* read(yield* merged("s-foreign-merged", "s-foreign", "m-foreign"));
+      assert.equal(foreign.governing?.commitSha, aboveForeign);
+
+      // A sibling's child is no child of this branch, though the sibling shares its parent.
+      yield* startAbove("p1", "s-sibling");
+      yield* startAbove("p1", "sibling");
+      // Same parent, message and second would make these one commit.
+      const startMessage = (yield* git(cwd, ["log", "-1", "--format=%B"])).trim();
+      yield* git(cwd, ["commit", "--amend", "--allow-empty", "-m", `Sibling ${startMessage}`]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "sibling work"]);
+      const aboveSibling = yield* startAbove("sibling", "m-sibling");
+      const sibling = yield* read(yield* merged("s-sibling-merged", "s-sibling", "m-sibling"));
+      assert.equal(sibling.governing?.commitSha, aboveSibling);
+
+      // A rebase onto the moved parent leaves a child above the old line, where only the name it gives says whose it is.
+      yield* startAbove("p1", "s-moved");
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "s-moved work"]);
+      yield* startAbove("s-moved", "c-moved");
+      yield* git(cwd, ["switch", "s-moved"]);
+      yield* git(cwd, ["rebase", "--quiet", "--onto", "p1-next", "p1", "s-moved"]);
+      const moved = yield* sha("HEAD~1");
+      yield* git(cwd, ["merge", "--no-ff", "-m", "Merge c-moved", "c-moved"]);
+      const rebased = yield* driver.readHistoryStarts({
+        cwd,
+        revision: "s-moved",
+        branch: "s-moved",
+      });
+      assert.equal(rebased.governing?.commitSha, moved);
+      assert.deepEqual(rebased.parents, [yield* sha("p1-next")]);
+
+      // Fast-forwarded back, a child's start is in the parent's own line, but names the parent.
+      yield* git(cwd, ["switch", "plain"]);
+      const plainWork = yield* sha("plain");
+      yield* git(cwd, [
+        "commit",
+        "--allow-empty",
+        "-m",
+        `Start\n\nT3 Code starts this branch one empty commit above ${plainWork} so that GitButler keeps it out of the plain stack.`,
+      ]);
+      const forwarded = yield* driver.readHistoryStarts({
+        cwd,
+        revision: "plain",
+        branch: "plain",
+      });
+      assert.isNull(forwarded.builtOn);
+
+      // A child merged back into its own parent brings that branch's commits, not another's.
+      const back = yield* startAbove("a", "back");
+      assert.equal((yield* read("back")).governing?.commitSha, back);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: "back", branch: "a" })).governing
+          ?.commitSha,
+        a,
+      );
+      // By position too, for a name the note no longer has.
+      yield* git(cwd, ["branch", "renamed", "a"]);
+      yield* git(cwd, ["switch", "renamed"]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "renamed work"]);
+      yield* git(cwd, ["merge", "--no-ff", "-m", "Merge back", "back"]);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: "renamed", branch: "renamed" })).governing
+          ?.commitSha,
+        a,
+      );
+
+      // `above` is the base the branch is measured against: a start over it inherits nothing more.
+      assert.deepEqual((yield* read("a", "refs/heads/p1")).starts, []);
+      assert.deepEqual(
+        (yield* read("m-diverged", "refs/heads/p1")).starts.map((start) => start.commitSha),
+        [other],
+      );
+      assert.equal((yield* read("a", "refs/heads/no-such-branch")).governing?.commitSha, a);
+
+      assert.deepEqual(yield* read("refs/heads/no-such-branch"), {
+        builtOn: null,
+        starts: [],
+        governing: null,
+        parents: [],
+      });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("reads a signed start commit under log.showSignature", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* fakeSigner(cwd, validSigner);
+      const pin = yield* withSigningRequested(
+        driver.pinBranchForWorktree({ cwd, branch: "stack/one" }),
+      );
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["config", "log.showSignature", "true"]);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: pin.commitSha })).governing?.commitSha,
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("inherits from the previous checkout when a worktree starts from -", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["branch", "child", pin.commitSha]);
+      yield* git(cwd, ["config", "branch.child.t3-start-commit", pin.commitSha]);
+      yield* git(cwd, ["switch", "child"]);
+      yield* git(cwd, ["switch", "--detach", "stack/one^"]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: "-",
+        newRefName: "cut",
+        path: path.join(cwd, "..", `previous-${path.basename(cwd)}`),
+      });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "cut" }), pin.commitSha);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("names the parent of a pin from - by its branch, for a clone to find", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* git(cwd, ["config", "gitbutler.project.targetref", `refs/heads/${initialBranch}`]);
+      yield* git(cwd, ["switch", "stack/one"]);
+      yield* git(cwd, ["switch", "gitbutler/workspace"]);
+      const pin = yield* driver.pinAppliedStackWorktreeBase({ cwd, refName: "-" });
+      assert(pin !== null);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: pin.commitSha })).governing?.parentRef,
+        "stack/one",
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("trusts the primary remote's HEAD over a branch merely named master", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["remote", "add", "origin", path.join(cwd, "..", "no-such-origin")]);
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/main", "stack/one^"]);
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/master", pin.commitSha]);
+      yield* git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+      assert.equal(
+        (yield* driver.readHistoryStarts({ cwd, revision: pin.commitSha })).governing?.commitSha,
+        pin.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("ignores a start commit that already landed on main", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["branch", "-f", "main", pin.commitSha]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: "main",
+        newRefName: "plain",
+        path: path.join(cwd, "..", `landed-${path.basename(cwd)}`),
+      });
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "plain" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("records no base for a started branch whose source's name looks like a full ref", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+      yield* git(cwd, ["branch", "refs/heads/odd", "stack/one"]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "cut",
+        baseRefName: "refs/heads/refs/heads/odd",
+        path: path.join(cwd, "..", `odd-${path.basename(cwd)}`),
+      });
+      assert.isNull(yield* driver.readBranchBase(cwd, "cut"));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("records nothing for a branch cut from an ordinary branch", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      yield* git(cwd, ["switch", "stack/one"]);
+      yield* driver.createRef({ cwd, refName: "plain" });
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "plain" }));
+      assert.isNull(yield* driver.readConfigValue(cwd, "branch.plain.t3-start-commit"));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("moves only its own start commit record when a branch is renamed", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      const nextOnStack = yield* git(cwd, [
+        "commit-tree",
+        "stack/one^{tree}",
+        "-p",
+        "stack/one",
+        "-m",
+        "more",
+      ]);
+      yield* git(cwd, ["update-ref", "refs/heads/stack/one", nextOnStack]);
+      const other = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned" && other.status === "pinned");
+      assert.notEqual(other.commitSha, pin.commitSha);
+      const worktreePath = path.join(cwd, "..", `renamed-${path.basename(cwd)}`);
+      yield* driver.createWorktree({
+        cwd,
+        refName: pin.commitSha,
+        newRefName: "old",
+        path: worktreePath,
+      });
+
+      // Another thread claimed the old name's record while this rename was in flight.
+      yield* git(cwd, ["update-ref", `refs/t3/worktree-starts/old`, other.commitSha]);
+      yield* driver.renameBranch({ cwd: worktreePath, oldBranch: "old", newBranch: "new" });
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "new" }), pin.commitSha);
+      assert.equal(yield* driver.readWorktreeStartCommit({ cwd, branch: "old" }), other.commitSha);
+      assert.deepEqual(yield* driver.readWorktreeStart({ cwd, branch: "new" }), {
+        commitSha: pin.commitSha,
+        parentSha: pin.branchCommitSha,
+        parentRef: "stack/one",
+      });
+
+      // Rebased off its start commit, it no longer holds the parent's work.
+      yield* git(worktreePath, ["reset", "--hard", pin.branchCommitSha]);
+      assert.isNull(yield* driver.readWorktreeStart({ cwd, branch: "new" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses a worktree whose start commit it can't record or later recognize", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pin = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(pin.status === "pinned");
+
+      const refsDirectory = path.join(cwd, ".git/refs/t3/worktree-starts");
+      yield* fileSystem.makeDirectory(refsDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(refsDirectory, "locked.lock"), "");
+      const worktreePath = path.join(cwd, "..", `locked-${path.basename(cwd)}`);
+      const locked = yield* driver
+        .createWorktree({
+          cwd,
+          refName: pin.commitSha,
+          newRefName: "locked",
+          path: worktreePath,
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(locked));
+      assert.isFalse(yield* fileSystem.exists(worktreePath));
+      assert.equal(yield* git(cwd, ["branch", "--list", "locked"]), "");
+
+      yield* installHook(cwd, "commit-msg", `echo "replaced by a hook" > "$1"`);
+      const before = yield* repositoryState(cwd);
+      const replaced = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(replaced.status === "refused");
+      assert.include(replaced.detail, "message");
+      assert.deepEqual(yield* repositoryState(cwd), before);
+
+      // A hook that only adds to the message or rewraps it leaves the commit recognizable.
+      yield* installHook(
+        cwd,
+        "commit-msg",
+        `fold -s -w 40 "$1" > "$1.tmp" && mv "$1.tmp" "$1" && printf '\\nChange-Id: I1\\n' >> "$1"`,
+      );
+      const appended = yield* driver.pinBranchForWorktree({ cwd, branch: "stack/one" });
+      assert(appended.status === "pinned");
+      yield* driver.createWorktree({
+        cwd,
+        refName: appended.commitSha,
+        newRefName: "appended",
+        path: path.join(cwd, "..", `appended-${path.basename(cwd)}`),
+      });
+      assert.equal(
+        yield* driver.readConfigValue(cwd, "branch.appended.t3-start-commit"),
+        appended.commitSha,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("records no start commit for a worktree from an ordinary commit", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const path = yield* Path.Path;
+      const empty = yield* git(cwd, [
+        "commit-tree",
+        `${initialBranch}^{tree}`,
+        "-p",
+        initialBranch,
+        "-m",
+        "an empty commit of someone's own",
+      ]);
+      yield* driver.createWorktree({
+        cwd,
+        refName: empty,
+        newRefName: "plain",
+        path: path.join(cwd, "..", `plain-${path.basename(cwd)}`),
+      });
+      assert.isNull(yield* driver.readConfigValue(cwd, "branch.plain.t3-start-commit"));
+      assert.isNull(yield* driver.readWorktreeStartCommit({ cwd, branch: "plain" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("pins a named base only when it is a commit on an applied stack", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const pinOf = (refName: string) => driver.pinAppliedStackWorktreeBase({ cwd, refName });
+      // Without a target there's no telling a stack's commits from the target's.
+      assert.isNull(yield* pinOf("stack/one"));
+      yield* git(cwd, ["config", "gitbutler.project.targetref", `refs/heads/${initialBranch}`]);
+      assert.isNull(yield* pinOf(initialBranch));
+      assert.isNull(yield* pinOf("no/such/branch"));
+      assert.isNull(yield* pinOf("HEAD"));
+      assert.isNull(yield* pinOf("gitbutler/workspace"));
+      const before = yield* repositoryState(cwd);
+      const tip = yield* git(cwd, ["rev-parse", "stack/one"]);
+      const pin = yield* pinOf("stack/one");
+      assert.equal(pin?.parentCommitSha, tip);
+      assert.equal(yield* git(cwd, ["rev-parse", `${pin?.commitSha}^`]), tip);
+      assert.deepEqual(yield* repositoryState(cwd), before);
+      // Its own pin isn't on the stack, so a linked base never gets a second one.
+      assert.isNull(yield* pinOf(pin?.commitSha ?? ""));
+      // A target that can't be compared must not read as "safe".
+      yield* git(cwd, ["config", "gitbutler.project.targetref", "refs/heads/no/such/target"]);
+      const stale = yield* Effect.flip(pinOf("stack/one"));
+      assert.include(stale.detail, "refs/heads/no/such/target");
+      yield* git(cwd, ["config", "gitbutler.project.targetref", `refs/heads/${initialBranch}`]);
+      // Off the workspace, T3 Code treats the checkout as plain Git, even with GitButler's config.
+      yield* git(cwd, ["switch", initialBranch]);
+      assert.isNull(yield* pinOf("stack/one"));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each(["gitbutler/workspace", "refs/heads/gitbutler/workspace", "HEAD", "@"] as const)(
+    "%s is the workspace",
+    (refName) =>
+      Effect.gen(function* () {
+        const { cwd } = yield* initGitButlerRepo();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        assert.isTrue(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }));
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("recognizes other spellings of the workspace commit", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch, workspaceTip } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      for (const refName of [
+        workspaceTip,
+        workspaceTip.slice(0, 12),
+        "gitbutler/workspace^0",
+        ":/GitButler Workspace Commit",
+      ]) {
+        assert.isTrue(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }), refName);
+      }
+      yield* git(cwd, ["switch", "--detach", workspaceTip]);
+      assert.isTrue(yield* driver.isGitButlerWorkspaceBase({ cwd, refName: "HEAD" }));
+      yield* git(cwd, ["switch", "gitbutler/workspace"]);
+      yield* git(cwd, ["switch", initialBranch]);
+      assert.isTrue(yield* driver.isGitButlerWorkspaceBase({ cwd, refName: "-" }));
+      assert.isFalse(yield* driver.isGitButlerWorkspaceBase({ cwd, refName: "HEAD" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("leaves real refs alone, including one at the workspace commit", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch, workspaceTip } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      for (const refName of [initialBranch, "stack/one", "gitbutler/workspace~1", "missing"]) {
+        assert.isFalse(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }), refName);
+      }
+      yield* git(cwd, ["branch", "independent", workspaceTip]);
+      yield* git(cwd, ["tag", "v1", workspaceTip]);
+      for (const refName of ["independent", "refs/heads/independent", "v1", workspaceTip]) {
+        assert.isFalse(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }), refName);
+      }
+      for (const refName of [
+        "gitbutler/workspace",
+        "gitbutler/workspace^0",
+        "gitbutler/workspace@{0}",
+        "HEAD^0",
+        "@~0",
+      ]) {
+        assert.isTrue(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }), refName);
+      }
+      assert.isFalse(yield* driver.isGitButlerWorkspaceBase({ cwd, refName: "independent^0" }));
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("never matches in an ordinary repository", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir("git-ordinary-");
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      for (const refName of ["HEAD", initialBranch, "gitbutler/workspace"]) {
+        assert.isFalse(yield* driver.isGitButlerWorkspaceBase({ cwd, refName }), refName);
+      }
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    { label: "a named new branch", refName: "gitbutler/workspace", newRefName: "feature/combined" },
+    { label: "a new branch from HEAD", refName: "HEAD", newRefName: "feature/combined" },
+    { label: "a detached checkout", refName: "HEAD", newRefName: undefined },
+  ] as const)("createWorktree refuses the workspace for $label", ({ refName, newRefName }) =>
+    Effect.gen(function* () {
+      const { cwd } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "combined");
+
+      const error = yield* driver
+        .createWorktree({
+          cwd,
+          path: worktreePath,
+          refName,
+          ...(newRefName === undefined ? {} : { newRefName }),
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error.operation, "GitVcsDriver.createWorktree");
+      assert.include(error.detail, "GitButler");
+      assert.isFalse(yield* fs.exists(worktreePath));
+      assert.equal(yield* git(cwd, ["branch", "--list", "feature/combined"]), "");
+      assert.equal(yield* git(cwd, ["symbolic-ref", "HEAD"]), "refs/heads/gitbutler/workspace");
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("createWorktree starts from a real branch without the applied work", () =>
+    Effect.gen(function* () {
+      const { cwd, initialBranch } = yield* initGitButlerRepo();
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "clean");
+
+      yield* driver.createWorktree({
+        cwd,
+        path: worktreePath,
+        refName: initialBranch,
+        newRefName: "feature/clean",
+      });
+
+      assert.equal(
+        yield* git(worktreePath, ["rev-parse", "HEAD"]),
+        yield* git(cwd, ["rev-parse", initialBranch]),
+      );
+      assert.isFalse(yield* fs.exists(path.join(worktreePath, "applied.txt")));
+    }).pipe(Effect.provide(layerTest)),
+  );
 });
 
 it.effect.each(["root", "nested", "worktree"] as const)(
@@ -1397,7 +2877,19 @@ describe("pullCurrentBranch", () => {
         const startup = yield* autoPullProjects(
           [{ id: ProjectId.make("behind"), workspaceRoot: cwd, autoPull: true }],
           { ...DEFAULT_SERVER_SETTINGS, defaultAutoPull: true },
-        ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, driver), Effect.forkChild);
+        ).pipe(
+          Effect.provide(
+            GitWorkflowService.layer.pipe(
+              Layer.provide(Layer.succeed(GitVcsDriver.GitVcsDriver, driver)),
+              Layer.provide(
+                Layer.mock(GitManager.GitManager)({ invalidateStatus: () => Effect.void }),
+              ),
+              Layer.provide(Layer.mock(GitButlerWorkspace.GitButlerWorkspace)({})),
+              Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+            ),
+          ),
+          Effect.forkChild,
+        );
         yield* Deferred.await(fetchHeld);
         yield* TestClock.adjust("6 seconds");
         yield* Deferred.succeed(release, undefined);
@@ -6498,6 +7990,50 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         assert.match(error.detail, /local changes/i);
         assert.match(error.detail, /commit|stash|discard/i);
         assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+      }),
+    );
+
+    it.effect("keeps GitButler workspace checkouts in workspace mode", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "feature/applied"]);
+        yield* git(cwd, ["checkout", "-b", "gitbutler/workspace"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        for (const refName of [initialBranch, "feature/applied", "-"]) {
+          const result = yield* driver.switchRef({ cwd, refName }).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (Result.isFailure(result)) {
+            assert.include(result.failure.message, "Use GitButler or create a new worktree");
+          }
+          assert.equal(yield* git(cwd, ["branch", "--show-current"]), "gitbutler/workspace");
+        }
+
+        const createResult = yield* driver
+          .createRef({ cwd, refName: "feature/new", switchRef: true })
+          .pipe(Effect.result);
+        assert.equal(createResult._tag, "Failure");
+        assert.notInclude(yield* driver.listLocalBranchNames(cwd), "feature/new");
+        assert.equal(
+          (yield* driver.switchRef({ cwd, refName: "gitbutler/workspace" })).refName,
+          "gitbutler/workspace",
+        );
+
+        const path = yield* Path.Path;
+        const worktreeRoot = yield* makeTmpDir("git-worktrees-");
+        const worktree = yield* driver.createWorktree({
+          cwd,
+          path: path.join(worktreeRoot, "new"),
+          refName: "feature/applied",
+          newRefName: "feature/worktree",
+        });
+        assert.equal(
+          (yield* driver.switchRef({ cwd: worktree.worktree.path, refName: initialBranch }))
+            .refName,
+          initialBranch,
+        );
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "gitbutler/workspace");
       }),
     );
 

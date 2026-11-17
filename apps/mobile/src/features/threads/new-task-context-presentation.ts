@@ -1,4 +1,4 @@
-import { sanitizeNewRefName } from "@t3tools/shared/git";
+import { filterBranchPickerRefs, sanitizeNewRefName } from "@t3tools/shared/git";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { changeRequestTermKind } from "../../lib/changeRequestTerm";
 import { resolveSendEnvMode } from "@t3tools/shared/projectSettings";
@@ -166,10 +166,15 @@ export function fillNewTaskWorkspaceBranch(input: {
   const { selection } = input;
   if (selection.branch !== null) return selection;
   if (selection.mode === "worktree") {
+    const branches = filterBranchPickerRefs(input.branches, {
+      currentRefName: null,
+      workspace: undefined,
+      isSelectingWorktreeBase: true,
+    });
     // The default may only exist as origin/<default>, so search remote refs too.
     const base =
-      input.branches.find((branch) => branch.isDefault) ??
-      input.branches.find((branch) => !branch.isRemote && branch.current) ??
+      branches.find((branch) => branch.isDefault) ??
+      branches.find((branch) => !branch.isRemote && branch.current) ??
       null;
     return input.worktreeDefaultSettled && base
       ? { ...selection, branch: base.name, worktreePath: null }

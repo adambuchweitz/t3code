@@ -137,7 +137,28 @@ export const GitRunStackedActionInput = Schema.Struct({
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
   featureBranch: Schema.optional(Schema.Boolean),
   filePaths: Schema.optional(Schema.Array(GitFilePath).check(Schema.isMinLength(1))),
+  /**
+   * GitButler hunk IDs a person chose from `vcs.gitButlerCommitChanges`. Commits in a GitButler
+   * workspace require them: an ID names exact content, so later edits are refused, not swept in.
+   */
+  gitbutlerChangeIds: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+  ),
   threadId: Schema.optional(ThreadId),
+  /** Draft threads have no threadId; persisted thread metadata takes precedence. */
+  gitbutlerBranch: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The `approval` of a GitButlerForcePushConfirmationError, sent once a person has confirmed it. */
+  gitbutlerForcePushApproval: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(65_536)),
+  ),
+  /**
+   * The `approval` of a GitButlerPublicationHoldError, for a client to send once its user has
+   * reviewed the hold. Anything with source-control write access can send it, so it isn't proof
+   * that a person looked.
+   */
+  gitbutlerHoldApproval: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(65_536)),
+  ),
   projectId: Schema.optional(ProjectId),
 });
 export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
@@ -203,6 +224,15 @@ export const VcsSwitchRefInput = Schema.Struct({
 });
 export type VcsSwitchRefInput = typeof VcsSwitchRefInput.Type;
 
+export const GitButlerBranchInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  branch: TrimmedNonEmptyStringSchema,
+});
+export type GitButlerBranchInput = typeof GitButlerBranchInput.Type;
+
+export const GitButlerBranchResult = Schema.Struct({ branch: TrimmedNonEmptyStringSchema });
+export type GitButlerBranchResult = typeof GitButlerBranchResult.Type;
+
 export const VcsInitInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   kind: Schema.optional(VcsDriverKind),
@@ -220,9 +250,84 @@ const VcsStatusChangeRequest = Schema.Struct({
   updatedAt: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
+// Lookups match by branch name, which another author's branch can share. "confirmed" means the
+// change request's head is one of this branch's commits or its upstream tip.
+export const GitButlerChangeRequestAssociation = Schema.Literals(["confirmed", "candidate"]);
+export type GitButlerChangeRequestAssociation = typeof GitButlerChangeRequestAssociation.Type;
+
+export const GitButlerBranchChangeRequestResult = Schema.Struct({
+  pr: Schema.NullOr(VcsStatusChangeRequest),
+  association: Schema.NullOr(GitButlerChangeRequestAssociation),
+});
+export type GitButlerBranchChangeRequestResult = typeof GitButlerBranchChangeRequestResult.Type;
+
+export const GitButlerCommitChangesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  /** The thread's applied branch. Without one, every assigned change belongs to another stack. */
+  branch: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type GitButlerCommitChangesInput = typeof GitButlerCommitChangesInput.Type;
+
+// "shared" has no assigned branch, so it may be anyone's. "mixed" holds both this branch's changes
+// and unassigned ones, which `but status` cannot tell apart by hunk. "locked" cannot be committed.
+export const GitButlerCommitFileScope = Schema.Literals(["target", "shared", "mixed", "locked"]);
+export type GitButlerCommitFileScope = typeof GitButlerCommitFileScope.Type;
+
+export const GitButlerCommitFile = Schema.Struct({
+  path: GitFilePath,
+  scope: GitButlerCommitFileScope,
+  /** Set when `locked` because another stack holds part of the file. */
+  assignedBranch: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Set when `locked` because the branch holds another version, so a commit couldn't be checked. */
+  changedElsewhere: Schema.optional(Schema.Literal(true)),
+  changeIds: Schema.Array(TrimmedNonEmptyStringSchema),
+  insertions: NonNegativeInt,
+  deletions: NonNegativeInt,
+});
+export type GitButlerCommitFile = typeof GitButlerCommitFile.Type;
+
+export const GitButlerCommitChangesResult = Schema.Struct({
+  files: Schema.Array(GitButlerCommitFile),
+});
+export type GitButlerCommitChangesResult = typeof GitButlerCommitChangesResult.Type;
+
+// What pushing a branch would do, per `but status`. A branch with no entry is unknown.
+export const GitButlerBranchPublication = Schema.Literals([
+  "empty",
+  "unpublished",
+  "ahead",
+  "force_required",
+  "up_to_date",
+  "integrated",
+]);
+export type GitButlerBranchPublication = typeof GitButlerBranchPublication.Type;
+
+// GitButler checks out a synthetic `gitbutler/workspace` ref that merges every
+// applied branch, so the git ref alone hides which branches are in play.
+export const GitButlerWorkspaceStatus = Schema.TaggedStruct("gitbutler", {
+  targetRefs: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema)),
+  /** Where an unpublished branch would go; a published branch keeps its own upstream. */
+  pushRemote: Schema.optional(TrimmedNonEmptyStringSchema),
+  publications: Schema.optional(Schema.Record(Schema.String, GitButlerBranchPublication)),
+  /** Commits T3 Code couldn't confirm, which it asks about before publishing. Absent when none. */
+  heldCommitCount: Schema.optional(NonNegativeInt),
+  stacks: Schema.Array(
+    Schema.Struct({
+      branches: Schema.Array(TrimmedNonEmptyStringSchema),
+      assignedChangeCount: NonNegativeInt,
+    }),
+  ),
+  unassignedChangeCount: NonNegativeInt,
+});
+export type GitButlerWorkspaceStatus = typeof GitButlerWorkspaceStatus.Type;
+
+export const VcsWorkspaceStatus = Schema.Union([GitButlerWorkspaceStatus]);
+export type VcsWorkspaceStatus = typeof VcsWorkspaceStatus.Type;
+
 const VcsStatusLocalShape = {
   isRepo: Schema.Boolean,
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
+  workspace: Schema.optional(VcsWorkspaceStatus),
   hasPrimaryRemote: Schema.Boolean,
   isDefaultRef: Schema.Boolean,
   refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
@@ -323,6 +428,8 @@ export const GitRunStackedActionResult = Schema.Struct({
   branch: Schema.Struct({
     status: GitBranchStepStatus,
     name: Schema.optional(TrimmedNonEmptyStringSchema),
+    /** Associates a branch without replacing the checkout's synthetic workspace ref. */
+    gitbutler: Schema.optional(Schema.Boolean),
   }),
   commit: Schema.Struct({
     status: GitCommitStepStatus,
@@ -433,8 +540,99 @@ export class GitPullRequestMaterializationError extends Schema.TaggedError<GitPu
   }
 }
 
+export const GitButlerForcePushTarget = Schema.Struct({
+  branch: TrimmedNonEmptyStringSchema,
+  remote: TrimmedNonEmptyStringSchema,
+  remoteSha: TrimmedNonEmptyStringSchema,
+  /** Remote commits missing from the local branch. Empty for a plain rewrite of pushed commits. */
+  overwrittenCommits: Schema.Array(Schema.Struct({ sha: Schema.String, message: Schema.String })),
+});
+export type GitButlerForcePushTarget = typeof GitButlerForcePushTarget.Type;
+
+/**
+ * `but push` always forces, so nothing short of this stops it replacing a remote branch.
+ * `approval` names what was checked, so it acknowledges that state and grants nothing else.
+ */
+export class GitButlerForcePushConfirmationError extends Schema.TaggedError<GitButlerForcePushConfirmationError>()(
+  "GitButlerForcePushConfirmationError",
+  {
+    cwd: Schema.String,
+    branch: TrimmedNonEmptyStringSchema,
+    targets: Schema.Array(GitButlerForcePushTarget),
+    approval: TrimmedNonEmptyStringSchema,
+    staleApproval: Schema.Boolean,
+  },
+) {
+  override get message(): string {
+    const refs = this.targets.map((target) => `${target.remote}/${target.branch}`).join(", ");
+    return `${this.staleApproval ? "The remote changed after this was confirmed. " : ""}Pushing ${this.branch} would overwrite ${refs}, so nothing was pushed. Have a person review this, then retry with gitbutlerForcePushApproval set to this error's approval.`;
+  }
+}
+
+export const GitButlerPublicationHold = Schema.Struct({
+  /** Where the commit is now, or the branch it was committed to if it can't be found. */
+  branch: TrimmedNonEmptyStringSchema,
+  /** `unverified` compared differently from what was chosen; `interrupted` was never compared. */
+  state: Schema.Literals(["unverified", "interrupted"]),
+  /** Null when the commit was never identified. */
+  commitSha: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  /** False when T3 Code can't locate the commit, so any branch might now hold its changes. */
+  found: Schema.Boolean,
+  /** Ends just this hold, publishing nothing, while it's still what was shown. */
+  resolution: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type GitButlerPublicationHold = typeof GitButlerPublicationHold.Type;
+
+/** Ends a hold from a terminal. Branch names can hold shell metacharacters, so the ref is quoted. */
+export const gitButlerEndHoldCommand = (ref: string) =>
+  `git update-ref -d '${ref.replaceAll("'", `'\\''`)}'`;
+
+export const GitButlerHoldsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type GitButlerHoldsInput = typeof GitButlerHoldsInput.Type;
+
+export const GitButlerHeldCommit = Schema.Struct({
+  ...GitButlerPublicationHold.fields,
+  /** Set in place of `resolution` when the commit isn't known to have ended, whoever started it. */
+  possiblyRunningRef: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type GitButlerHeldCommit = typeof GitButlerHeldCommit.Type;
+
+export const GitButlerHoldsResult = Schema.Struct({
+  holds: Schema.Array(GitButlerHeldCommit),
+});
+export type GitButlerHoldsResult = typeof GitButlerHoldsResult.Type;
+
+export const GitButlerResolveHoldsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  resolutions: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+export type GitButlerResolveHoldsInput = typeof GitButlerResolveHoldsInput.Type;
+
+/** A push or PR would send commits T3 Code couldn't confirm. `approval` covers just these. */
+export class GitButlerPublicationHoldError extends Schema.TaggedError<GitButlerPublicationHoldError>()(
+  "GitButlerPublicationHoldError",
+  {
+    cwd: Schema.String,
+    branch: TrimmedNonEmptyStringSchema,
+    holds: Schema.Array(GitButlerPublicationHold),
+    approval: TrimmedNonEmptyStringSchema,
+    staleApproval: Schema.Boolean,
+  },
+) {
+  override get message(): string {
+    const holds = this.holds
+      .map((hold) => hold.commitSha?.slice(0, 12) ?? `an unidentified commit on ${hold.branch}`)
+      .join(", ");
+    return `${this.staleApproval ? "What was reviewed has changed. " : ""}T3 Code could not confirm ${holds}, so nothing was pushed from ${this.branch}. Have a person review this, then retry with gitbutlerHoldApproval set to this error's approval.`;
+  }
+}
+
 export const GitManagerServiceError = Schema.Union([
   GitManagerError,
+  GitButlerForcePushConfirmationError,
+  GitButlerPublicationHoldError,
   GitPullRequestMaterializationError,
   GitCommandError,
   SourceControlProviderError,

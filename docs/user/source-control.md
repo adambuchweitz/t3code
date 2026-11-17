@@ -35,6 +35,130 @@ commit links follow your **Open links in** setting; on web, when that opens a ne
 shows an **Open link** button. Command/Ctrl+Click always opens the link in your browser. Commit links follow the **Open pull requests in T3 Code**
 setting in **Settings → Diffs**.
 
+### GitButler workspaces
+
+When a project uses GitButler's `gitbutler/workspace`, threads show their associated branch. Otherwise they show the
+only applied branch, or **GitButler workspace** when several are applied, once Git status loads. To
+associate a thread with an applied branch, choose it under **GitButler branches** in the web or
+desktop branch picker, or the mobile branch sheet. **Whole GitButler workspace** clears the association.
+Choose a branch under **Not applied** to apply it and link the thread, or enter a new name to
+create an applied branch. Remote-only branches become local branches when applied.
+**Unapply** asks you to confirm removing the branch's whole stack for every thread and agent
+sharing the checkout. Thread links are kept and become active again when the branch is applied.
+Keep at least one stack applied; use GitButler directly if you want to leave the workspace.
+Associated threads show that branch's name and open review on it while it remains applied.
+Agents in the shared workspace are told to use `but` for version-control writes and commit only
+their own changes to the associated branch, or create and associate a branch if none is set.
+
+Commit, push, create PR, and pull work through the `but` CLI on the server. Commits target the
+thread's associated applied branch. With no association, or when committing on a new branch,
+T3 Code creates a branch and associates it with the thread.
+
+Uncommitted changes in a shared checkout may belong to another agent or person, so **Commit** always
+opens a list with nothing selected. Changes assigned to the branch appear apart from shared changes,
+which have no branch and may be anyone's. Files that are conflicted, that also have changes on
+another stack, or that another branch has changed since this one, are shown as unavailable; commit
+those from GitButler. **Commit on a new branch** can only take shared files, and refuses a file
+already changed on any applied branch.
+
+T3 Code commits whole files, with all of a file's current changes. If a change you chose is edited
+or committed before the commit runs, nothing is committed and you choose again. To commit only part
+of a file, use `but commit` with hunk IDs from `but diff`; T3 Code doesn't check commits made that way.
+
+GitButler can't commit a specific version of a file, so an edit landing in the final moment can
+still be included. T3 Code compares the finished commit to what you chose: if a chosen file differs,
+another file changed, or the commit can't be read, it names the commit and stops before any push or
+PR, leaving the commit in place for you to review or `but uncommit`. T3 Code keeps that commit held
+in the repository, including across restarts and if a commit was cut off before it could be checked.
+A later push or PR that would send one, including from a branch above it in a stack, stops and asks
+you to review it first. Confirming ends the hold and publishes. To end a hold without publishing,
+choose **End hold, don't publish** there, or review everything held from the Git menu, which also
+works before a repository has a remote. Outside GitButler's workspace the menu doesn't list holds, so
+use `git for-each-ref refs/t3/gitbutler-holds/` and `git update-ref -d <ref>` there. Ending a hold changes no commit, and T3 Code won't ask about
+that commit again. If a held commit can no longer be found, such as after an uncommit, squash, or
+deleted branch, or T3 Code was cut off before it could identify the commit, its changes could be
+anywhere, so every push, PR, and new repository from the checkout stops until the hold ends.
+
+While a commit is being made, its hold can't be ended from T3 Code. If the server making it crashes
+or loses power, nothing records how it ended, and its `but commit` can keep running and still land
+a commit nobody checked. T3 Code can't tell that apart from a commit still in progress, on any
+machine, so the hold stays until you end it. The same goes for a commit T3 Code had to stop on
+Windows, where it can't confirm the commit ended. Make sure no `but commit` is still running in that
+checkout, review the branch for anything that landed, then run the `git update-ref -d` command T3
+Code shows, in Git Bash on Windows.
+
+Holds guard what T3 Code publishes and can't guarantee more. `but push` and `git push` run directly
+don't see holds, including ones agents run, and `git update-ref -d` ends one without asking. Any
+connection with source control access can confirm or end a hold, including an agent using one, so
+confirming doesn't prove a person looked. A copy of a held commit's changes under a new identity,
+such as a cherry-pick, isn't held. If two T3 Code servers share a checkout, a commit landing on one
+the moment the other starts pushing can still go out, and so can one a crashed server's `but commit`
+finishes after you end its hold in a terminal.
+
+A change T3 Code can't check this way, such as one of two identical files renamed together, is listed
+as unavailable.
+
+PR creation also opens
+missing ancestor PRs and uses each branch below as its base. GitButler uses commit messages and
+its PR template for the content; authenticate it with `but config forge auth` in a terminal first.
+
+The push action follows the associated branch: **Publish to** names the remote a new branch will go
+to, **Push** sends new commits, and **Force push** replaces commits on the remote after you rewrote
+them. When the branch already has an open PR, the action opens it unless there are commits to send.
+A PR that only shares the branch's name is listed as **Possible PR (unconfirmed)** and never replaces
+publishing, because it may be someone else's.
+
+GitButler replaces the remote branch whenever it pushes, even when you did not ask it to force. So
+before every push or PR, T3 Code checks the remote for the branch and the stacked branches below it.
+If anything there would be overwritten, it shows what would be lost and asks you to confirm. Agents
+and scripts using the action get an error instead. This check narrows the risk but cannot close it:
+a push that lands right after it can still be overwritten, unless you turn on force push protection
+in GitButler's project settings. Agents running `but push` directly do not go through this check.
+
+Pull updates every applied branch onto the latest target. Resolve any resulting conflicted
+commits in GitButler. **Automatically pull** works in these workspaces too, but skips when there
+are uncommitted changes or GitButler's update check reports conflicts.
+
+T3 Code keeps the shared checkout in GitButler workspace mode. You can also create a new
+worktree from a real branch. Picking that worktree's base does not apply or unapply anything.
+
+A branch that points at a commit on an applied stack gets pulled into that stack, and later rewrites
+then move it under the worktree that has it checked out. So when a worktree starts from such a commit,
+or from the thread's linked branch, T3 Code first makes one empty commit above it, named
+`chore(worktree): start from <base>`, and the new branch starts there. It stays in the branch's
+history and any PR opened from it. Once the branch has commits of its own you can drop it when
+rebasing; dropping it sooner lets GitButler take the branch back into the stack. T3 Code never removes
+it for you.
+
+Changes and ahead counts for such a branch compare against that commit, so they show only the
+branch's own work, even after the parent is rewritten. A branch with nothing else on it has nothing to
+publish. A PR opened from T3 Code targets the parent branch, or the default branch once the parent has
+landed there. If the parent isn't published, was rewritten, or can't be checked, T3 Code pushes nothing
+for that PR, creates none, and says why. For a worktree PR, it checks again before creating the PR, so
+a parent that changes
+during the push can leave the branch pushed without a PR, which T3 Code reports. A base you set by short name gets the same check. To choose one that doesn't hold the parent, name it in full: `git config branch.<branch>.t3-merge-base refs/heads/<base>`. A branch you cut from this one in T3 Code keeps the same parent. These checks read the commits themselves, so they also hold in a fresh clone. A branch built on a start commit that also merged another such branch must have a base holding both parents: if one parent holds the other, the PR targets that one; if neither does, T3 Code refuses until you set a base that holds it all or name one in full (`refs/heads/<base>`, or `refs/remotes/<remote>/<base>` for one you only have from a remote), and the PR will show whatever a base named in full lacks. A branch that only merged such a branch into its own history, with no start commit of its own, is an ordinary branch: its PR shows what it merged. A squash can hide or imitate a start commit: `git merge --squash` output is treated as ordinary work, and one that keeps the start note at the beginning of a line counts as a start commit. In a clone, a branch whose start note was reworded or dropped by a rewrite gets no check. If
+the branch is deleted while its thread still needs it, T3 Code
+recreates it at that same commit. To drop that record once you no longer need it, find it with
+`git for-each-ref refs/t3/worktree-starts/` and remove it with `git update-ref -d <ref>`.
+
+That commit is a normal `git commit` under your identity, made in a temporary checkout. Your signing
+configuration and commit hooks apply, and hooks run in that fresh checkout, so a hook that needs
+installed dependencies or an untracked file sees none. An untracked folder named by a relative
+`core.hooksPath` isn't there, so its hooks don't run. If signing fails, a hook rejects the commit or
+removes T3 Code's note from its message, or either doesn't finish in time, no worktree is created and
+the error says why; signing and hooks get two minutes, and the temporary checkout ten. Git ignores a
+post-commit hook's exit status. Signing here says nothing about a remote's rules for protected
+branches. With exactly one stack applied, GitButler leaves workspace mode, so only a linked thread
+gets this protection.
+
+The diff selector on every client lists applied branches under **GitButler branches**. Each shows
+that branch's commits and assigned uncommitted changes. Branch diffs always show whitespace
+changes and cannot expand unchanged lines. On web and desktop, the **Changes** row in thread
+details totals the same commits and assigned changes for an associated applied branch, so
+unassigned changes count only once GitButler assigns them to it. Without an applied association it
+reads **Workspace changes** and combines every applied branch. Install the `but` CLI on the machine running T3 Code
+to use these features; without it, review shows only the combined workspace changes.
+
 ## Connect an account
 
 Install Git and configure authentication on the machine running your T3 Code server. For a remote

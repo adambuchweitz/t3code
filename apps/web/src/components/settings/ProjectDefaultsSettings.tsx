@@ -450,10 +450,10 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             description={
               isProjectScope
                 ? gt(
-                    "Keeps this project's default branch current when the checkout has no local changes or commits.",
+                    "Keeps this project's default branch current, or updates applied GitButler branches after a clean conflict check. Skips uncommitted changes.",
                   )
                 : gt(
-                    "Keeps the default branch current when the checkout has no local changes or commits. Projects can override it.",
+                    "Keeps default branches current, or updates applied GitButler branches after a clean conflict check. Skips uncommitted changes. Projects can override it.",
                   )
             }
             resetAction={

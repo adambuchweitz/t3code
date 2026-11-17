@@ -11,9 +11,12 @@ import { msg } from "gt-react-native";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 
-export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
-export type ReviewGitSectionKind = Exclude<ReviewSectionKind, "turn">;
-type ReviewGitSource = ReviewDiffPreviewSource & { readonly kind: ReviewGitSectionKind };
+export type ReviewSectionKind = "turn" | "working-tree" | "branch-range" | "gitbutler-branch";
+// GitButler branches are diffed on demand, so only these kinds have fixed sections.
+export type ReviewGitSectionKind = Exclude<ReviewSectionKind, "turn" | "gitbutler-branch">;
+type ReviewGitSource = ReviewDiffPreviewSource & {
+  readonly kind: Exclude<ReviewSectionKind, "turn">;
+};
 
 const CHANGES_SECTION_ID = "git:branch-range";
 const GIT_SECTION_KINDS = ["working-tree", "branch-range"] as const;
@@ -22,6 +25,7 @@ const GIT_PLACEHOLDER_TITLES = {
   "branch-range": msg("Changes", { $context: "diff section: branch changes" }),
 } as const satisfies Record<ReviewGitSectionKind, unknown>;
 const UNCOMMITTED_SUBTITLE = msg("Staged, unstaged, and untracked files");
+const GITBUTLER_BRANCH_SUBTITLE = msg("Commits and assigned changes");
 
 /** A folder of a turn's patch: the thread's own (`relativePath` empty) or a tracked repository. */
 export interface ReviewRepositoryGroup {
@@ -187,6 +191,9 @@ const readyCheckpointOrder = Order.make<ThreadCheckpointSummary>(
 function gitSubtitle(section: ReviewDiffPreviewSource, resolve: MessageResolver): string | null {
   if (section.kind === "working-tree") {
     return resolve(UNCOMMITTED_SUBTITLE);
+  }
+  if (section.kind === "gitbutler-branch") {
+    return resolve(GITBUTLER_BRANCH_SUBTITLE);
   }
   if (section.baseRef) {
     return `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
@@ -569,10 +576,16 @@ export function reviewTurnDiffsBySectionId(
     ]),
   );
 }
+export function getGitButlerBranchSectionId(branch: string): string {
+  return `git:gitbutler-branch:${branch}`;
+}
 
 export function buildReviewSectionItems(input: {
   readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
   readonly gitSections: ReadonlyArray<ReviewDiffPreviewSource>;
+  /** Applied GitButler branches; only a selected one has its diff in `gitSections`. */
+  readonly gitButlerBranches?: ReadonlyArray<string>;
+  readonly loadingGitButlerBranch?: string | null;
   readonly turnDiffById: Readonly<Record<string, string | undefined>>;
   readonly gitSectionStates: Readonly<Record<ReviewGitSectionKind, "loading" | "failed" | null>>;
   /** Names the thread folder's own files beside its repositories. */
@@ -634,12 +647,44 @@ export function buildReviewSectionItems(input: {
         ];
   });
 
-  return [...turnItems, ...gitItems];
+  // Branches keep GitButler's order whether or not their diff is loaded yet.
+  const branchItems = (input.gitButlerBranches ?? []).map<ReviewSectionItem>((branch) => {
+    const id = getGitButlerBranchSectionId(branch);
+    const loaded = input.gitSections.find(
+      (section): section is ReviewGitSource =>
+        section.kind === "gitbutler-branch" && `git:${section.id}` === id,
+    );
+    return loaded
+      ? {
+          id,
+          kind: "gitbutler-branch",
+          title: loaded.title,
+          subtitle: gitSubtitle(loaded, resolve),
+          diff: loaded.diff,
+          source: loaded,
+          ...(loaded.files ? { files: loaded.files } : {}),
+          truncated: loaded.truncated,
+          isLoading: false,
+        }
+      : {
+          id,
+          kind: "gitbutler-branch",
+          title: branch,
+          subtitle: resolve(GITBUTLER_BRANCH_SUBTITLE),
+          diff: null,
+          isLoading: input.loadingGitButlerBranch === branch,
+        };
+  });
+
+  return [...turnItems, ...gitItems, ...branchItems];
 }
 
 export function getDefaultReviewSectionId(
   sections: ReadonlyArray<ReviewSectionItem>,
+  gitbutlerBranch?: string | null,
 ): string | null {
+  const associated = gitbutlerBranch ? getGitButlerBranchSectionId(gitbutlerBranch) : null;
+  if (associated && sections.some((section) => section.id === associated)) return associated;
   return (sections.find((section) => section.id === CHANGES_SECTION_ID) ?? sections[0])?.id ?? null;
 }
 
@@ -651,10 +696,11 @@ export function getDefaultReviewSectionId(
 export function resolveReviewSelectedSectionId(
   sections: ReadonlyArray<ReviewSectionItem>,
   storedSectionId: string | null,
+  gitbutlerBranch?: string | null,
 ): string | null {
   return storedSectionId !== null && sections.some((section) => section.id === storedSectionId)
     ? storedSectionId
-    : getDefaultReviewSectionId(sections);
+    : getDefaultReviewSectionId(sections, storedSectionId === null ? gitbutlerBranch : null);
 }
 
 export function buildReviewParsedDiff(

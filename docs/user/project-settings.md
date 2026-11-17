@@ -7,7 +7,8 @@ and stay selected as you move between categories or search for a setting.
 
 Preferences saved on this device, such as appearance, confirmations and browser profiles, ignore
 the environment selection. On the Browser page they are read-only while a project is selected,
-though profiles can still be added, renamed and removed. Everything else is stored on a server.
+though profiles can still be added, renamed and removed. Project sidebar visibility is also saved
+on this device, but applies to the selected checkouts. Everything else is stored on a server.
 Choose one environment to edit its settings, or leave **All environments** to edit every connected
 environment at once. Offline environments keep their current values; this is a bulk edit, not a
 synced global default.

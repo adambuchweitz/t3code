@@ -30,8 +30,12 @@ vi.mock("../../../components/ui/ListChoiceRow", () => ({
   ),
 }));
 vi.mock("./gitSheetComponents", () => ({ SheetActionButton: () => null }));
+vi.mock("../../../components/ui/Button", () => ({ Button: () => null }));
+vi.mock("../../../components/ui/Dialog", () => ({ confirm: () => {} }));
+vi.mock("../../../state/session", () => ({ useEnvironmentScope: () => true }));
+vi.mock("../../../state/use-atom-command", () => ({ useAtomCommand: () => () => {} }));
 vi.mock("../../../state/entities", () => ({}));
-vi.mock("../../../state/threads", () => ({}));
+vi.mock("../../../state/threads", () => ({ threadEnvironment: { updateMetadata: {} } }));
 vi.mock("../../../state/use-thread-selection", () => ({
   useThreadSelection: () => ({
     selectedThread: { environmentId: "environment-1", worktreePath: checkout.worktreePath },
@@ -44,6 +48,7 @@ vi.mock("../../../state/use-thread-detail", () => ({
 vi.mock("../../../state/use-selected-thread-git-state", () => ({
   useSelectedThreadGitState: () => ({
     selectedThreadBranches: checkout.branches,
+    selectedThreadRefs: checkout.branches,
     selectedThreadBranchesLoading: false,
     gitOperationLabel: null,
   }),
@@ -52,7 +57,9 @@ vi.mock("../../../state/use-selected-thread-git-actions", () => ({
   useSelectedThreadGitActions: () => ({ canChangeThreadBranch: true }),
 }));
 vi.mock("../../../state/query", () => ({ useEnvironmentQuery: () => ({ data: null }) }));
-vi.mock("../../../state/vcs", () => ({ vcsEnvironment: { branch: () => null } }));
+vi.mock("../../../state/vcs", () => ({
+  vcsEnvironment: { branch: () => null, status: () => null },
+}));
 
 import { GitBranchesSheet } from "./GitBranchesSheet";
 

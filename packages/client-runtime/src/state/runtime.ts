@@ -128,7 +128,7 @@ export type QueryAnswerHandler<Input, A> = (
 interface EnvironmentSubscriptionAtomOptions<Input, A, E, R> {
   readonly sensitiveInput?: boolean;
   readonly label: string;
-  readonly subscribe: (input: Input) => Stream.Stream<A, E, R>;
+  readonly subscribe: (input: Input, registry: AtomRegistry.AtomRegistry) => Stream.Stream<A, E, R>;
   readonly completeWhen?: (value: A) => boolean;
   readonly idleTtlMs?: number;
   /** Keeps a completed value this long after its last reader leaves, so reopening skips a resubscribe. */
@@ -954,9 +954,12 @@ export function createEnvironmentSubscriptionAtomFamily<R, ER, Input, A, E>(
   const live = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
     return runtime
-      .atom(
+      .atom((get) =>
         Stream.suspend(() =>
-          followStreamInEnvironment(target.environmentId, options.subscribe(target.input)),
+          followStreamInEnvironment(
+            target.environmentId,
+            options.subscribe(target.input, get.registry),
+          ),
         ).pipe(options.completeWhen ? Stream.takeUntil(options.completeWhen) : (stream) => stream),
       )
       .pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(label(key)));

@@ -1,13 +1,16 @@
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, RunId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   resolveToolCallDiffTarget,
+  selectThreadDiffPanelSelection,
   useDiffPanelSessionStore,
   useDiffPanelStore,
 } from "./diffPanelStore";
+
+const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
 describe("diffPanelStore", () => {
   beforeEach(() => {
@@ -84,6 +87,123 @@ describe("diffPanelStore", () => {
     ).toBe(target);
     expect(resolveToolCallDiffTarget(target, [])).toBe(target);
   });
+  it("returns from a GitButler branch to the branch comparison the thread had chosen", () => {
+    const store = useDiffPanelStore.getState();
+    store.selectBranchBaseRef(THREAD_REF, "origin/release");
+    store.selectGitButlerBranch(THREAD_REF, "feature/api");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({
+      kind: "gitbutler-branch",
+      branch: "feature/api",
+    });
+
+    store.selectGitScope(THREAD_REF, "branch");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({
+      kind: "branch",
+      baseRef: "origin/release",
+    });
+  });
+
+  it("defaults to an applied association while preserving explicit scopes and unavailable picks", () => {
+    const defaults = { gitbutlerBranch: "feature/api", appliedBranches: ["feature/api"] };
+    expect(selectThreadDiffPanelSelection({}, THREAD_REF, defaults)).toEqual({
+      kind: "gitbutler-branch",
+      branch: "feature/api",
+    });
+    expect(
+      selectThreadDiffPanelSelection({}, THREAD_REF, { ...defaults, appliedBranches: [] }),
+    ).toEqual({
+      kind: "branch",
+      baseRef: null,
+    });
+    for (const scope of ["branch", "unstaged"] as const) {
+      useDiffPanelStore.getState().selectGitScope(THREAD_REF, scope);
+      expect(
+        selectThreadDiffPanelSelection(
+          useDiffPanelStore.getState().byThreadKey,
+          THREAD_REF,
+          defaults,
+        ).kind,
+      ).toBe(scope);
+    }
+    useDiffPanelStore.getState().selectGitButlerBranch(THREAD_REF, "feature/removed");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF, {
+        ...defaults,
+        baseRef: "origin/release",
+      }),
+    ).toEqual({ kind: "branch", baseRef: "origin/release" });
+    expect(
+      selectThreadDiffPanelSelection(
+        useDiffPanelStore.getState().byThreadKey,
+        THREAD_REF,
+        defaults,
+      ),
+    ).toEqual({ kind: "branch", baseRef: null });
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF, {
+        ...defaults,
+        appliedBranches: ["feature/removed"],
+      }),
+    ).toEqual({ kind: "gitbutler-branch", branch: "feature/removed" });
+  });
+
+  it.each(["branch", "unstaged", "turn", "gitbutler-branch", "tool-call"] as const)(
+    "resets a remembered %s scope to the thread default without losing the branch base",
+    (scope) => {
+      const store = useDiffPanelStore.getState();
+      store.selectBranchBaseRef(THREAD_REF, "origin/release");
+      if (scope === "turn") store.selectTurn(THREAD_REF, RunId.make("turn-1"), "src/app.ts");
+      else if (scope === "gitbutler-branch")
+        store.selectGitButlerBranch(THREAD_REF, "feature/other");
+      else if (scope === "tool-call")
+        store.selectToolCall(THREAD_REF, {
+          threadId: ThreadId.make("child"),
+          itemId: TurnItemId.make("edit"),
+          revision: "1",
+        });
+      else store.selectGitScope(THREAD_REF, scope);
+      expect(
+        selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF).kind,
+      ).toBe(scope);
+
+      store.resetSelection(THREAD_REF);
+      const { byThreadKey, branchBaseRefByThreadKey } = useDiffPanelStore.getState();
+      const baseRef = branchBaseRefByThreadKey[scopedThreadKey(THREAD_REF)] ?? null;
+      const defaults = {
+        gitbutlerBranch: "feature/api",
+        appliedBranches: ["feature/api"],
+        baseRef,
+      };
+      expect(selectThreadDiffPanelSelection(byThreadKey, THREAD_REF, defaults)).toEqual({
+        kind: "gitbutler-branch",
+        branch: "feature/api",
+      });
+      expect(
+        selectThreadDiffPanelSelection(byThreadKey, THREAD_REF, {
+          ...defaults,
+          appliedBranches: [],
+        }),
+      ).toEqual({ kind: "branch", baseRef: "origin/release" });
+      expect(
+        selectThreadDiffPanelSelection(byThreadKey, THREAD_REF, {
+          ...defaults,
+          gitbutlerBranch: null,
+        }),
+      ).toEqual({ kind: "branch", baseRef: "origin/release" });
+      expect(selectThreadDiffPanelSelection(byThreadKey, THREAD_REF)).toEqual({
+        kind: "branch",
+        baseRef: null,
+      });
+      store.selectGitScope(THREAD_REF, "branch");
+      expect(
+        selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+      ).toEqual({ kind: "branch", baseRef: "origin/release" });
+    },
+  );
 
   it("retains fold choices when a panel consumer returns with fresh defaults", () => {
     const scopeKey = "environment-1:thread-1:branch";

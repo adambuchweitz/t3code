@@ -87,6 +87,7 @@ export function HomeRouteScreen() {
         environmentId: String(thread.environmentId),
         projectId: String(thread.projectId),
         branch: thread.branch,
+        gitbutlerBranch: thread.gitbutlerBranch ?? null,
         worktreePath: thread.worktreePath,
       },
     });

@@ -1,4 +1,8 @@
-import { SourceControlProviderKind, type VcsStatusResult } from "@t3tools/contracts";
+import {
+  type ReviewDiffPreviewResult,
+  SourceControlProviderKind,
+  type VcsStatusResult,
+} from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveAutoFeatureBranchName } from "@t3tools/shared/git";
 import { assert, describe, it } from "vite-plus/test";
@@ -6,7 +10,9 @@ import {
   buildMenuItems,
   type DefaultBranchConfirmableAction,
   hasUsableGitMenuContent,
+  gitButlerChangesRevision,
   requiresDefaultBranchConfirmation,
+  resolveChangesSummary,
   resolveChangesTotals,
   resolveDefaultBranchActionDialogCopy,
   resolveFeatureBranchUnavailableReason,
@@ -400,5 +406,113 @@ describe("resolveChangesTotals", () => {
       ),
       { insertions: 2, deletions: 0 },
     );
+  });
+});
+
+describe("gitButlerChangesRevision", () => {
+  it("changes when lines move between files without changing the workspace totals", () => {
+    const withCounts = (a: number, b: number) =>
+      status({
+        workingTree: {
+          files: [
+            { path: "a.ts", insertions: a, deletions: 0 },
+            { path: "b.ts", insertions: b, deletions: 0 },
+          ],
+          insertions: a + b,
+          deletions: 0,
+        },
+      });
+    assert.notEqual(
+      gitButlerChangesRevision(withCounts(3, 7), null),
+      gitButlerChangesRevision(withCounts(4, 6), null),
+    );
+  });
+
+  it("changes when a run ends, since a moved commit leaves status identical", () => {
+    const run = (runStatus: string) => ({ runId: "run-1", status: runStatus });
+    assert.notEqual(
+      gitButlerChangesRevision(status(), run("running")),
+      gitButlerChangesRevision(status(), run("completed")),
+    );
+  });
+});
+
+describe("resolveChangesSummary", () => {
+  const workspaceStatus = (unassignedChangeCount = 0) =>
+    status({
+      refName: "gitbutler/workspace",
+      branchChanges: { baseRef: "main", insertions: 90, deletions: 40 },
+      workspace: {
+        _tag: "gitbutler",
+        targetRefs: ["origin/main"],
+        stacks: [{ branches: ["feature/api"], assignedChangeCount: 0 }],
+        unassignedChangeCount,
+      },
+    });
+  const noPreview = { data: null, error: null };
+  const previewOf = (files: ReadonlyArray<{ additions: number; deletions: number }>) => ({
+    error: null,
+    data: {
+      sources: [{ files: files.map((file) => ({ path: "a", previousPath: null, ...file })) }],
+    } as unknown as ReviewDiffPreviewResult,
+  });
+
+  it("totals only the linked branch and names unassigned changes it leaves out", () => {
+    const summary = resolveChangesSummary({
+      status: workspaceStatus(2),
+      linkedBranch: "feature/api",
+      branchPreview: previewOf([
+        { additions: 5, deletions: 1 },
+        { additions: 2, deletions: 0 },
+      ]),
+    });
+    assert.deepInclude(summary.totals, { insertions: 7, deletions: 1 });
+    assert.equal(summary.label, "Changes");
+    assert.include(summary.title, "2 unassigned changes are not included");
+  });
+
+  it("reports a clean branch as zero, not the workspace totals", () => {
+    const summary = resolveChangesSummary({
+      status: workspaceStatus(),
+      linkedBranch: "feature/api",
+      branchPreview: previewOf([]),
+    });
+    assert.deepInclude(summary.totals, { insertions: 0, deletions: 0 });
+  });
+
+  it("shows no totals while loading or after a failed read", () => {
+    const base = { status: workspaceStatus(), linkedBranch: "feature/api" };
+    const loading = resolveChangesSummary({ ...base, branchPreview: noPreview });
+    assert.isNull(loading.totals);
+    assert.equal(loading.placeholder, "…");
+    const failed = resolveChangesSummary({
+      ...base,
+      branchPreview: { ...previewOf([{ additions: 1, deletions: 1 }]), error: "but failed" },
+    });
+    assert.isNull(failed.totals);
+    assert.equal(failed.placeholder, "Unavailable");
+    assert.include(failed.title, "but failed");
+  });
+
+  it("labels combined totals as the workspace without an applied linked branch", () => {
+    for (const linkedBranch of [null, "feature/gone"]) {
+      const summary = resolveChangesSummary({
+        status: workspaceStatus(),
+        linkedBranch,
+        branchPreview: noPreview,
+      });
+      assert.equal(summary.label, "Workspace changes");
+      assert.deepInclude(summary.totals, { insertions: 90, deletions: 40, baseRef: "main" });
+    }
+  });
+
+  it("leaves an ordinary branch unchanged", () => {
+    const summary = resolveChangesSummary({
+      status: status({ branchChanges: { baseRef: "main", insertions: 3, deletions: 2 } }),
+      linkedBranch: "feature/api",
+      branchPreview: noPreview,
+    });
+    assert.deepInclude(summary, { label: "Changes", placeholder: null, title: undefined });
+    assert.deepInclude(summary.totals, { insertions: 3, deletions: 2, baseRef: "main" });
   });
 });

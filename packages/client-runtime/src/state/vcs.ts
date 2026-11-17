@@ -17,6 +17,7 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
 } from "./runtime.ts";
@@ -59,6 +60,18 @@ function canUseVcsRefsCache(input: VcsListRefsInput): boolean {
     input.refKind === undefined &&
     input.limit === OFFLINE_BRANCH_LIST_LIMIT
   );
+}
+
+function workspaceBranchesKey(status: VcsStatusResult | null): string | null {
+  const workspace = status?.workspace;
+  return workspace?._tag === "gitbutler"
+    ? // Publishing creates a remote ref and may change which change request a branch has.
+      JSON.stringify([
+        workspace.targetRefs,
+        workspace.stacks.map((stack) => stack.branches),
+        workspace.publications,
+      ])
+    : null;
 }
 
 export const commitVcsRefsRefresh = Effect.fn("CachedVcsRefsState.commitRefresh")(function* (
@@ -316,14 +329,28 @@ export function createVcsEnvironmentAtoms<R, E>(
     status: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:vcs:status",
       idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
-      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.subscribeVcsStatus>) =>
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.subscribeVcsStatus>, registry) =>
         subscribe(WS_METHODS.subscribeVcsStatus, input).pipe(
           Stream.mapAccum(
             () => null as VcsStatusResult | null,
             (current, event) => {
               const next = applyGitStatusStreamEvent(current, event);
-              return [next, [next]] as const;
+              const workspaceChanged =
+                current !== null && workspaceBranchesKey(current) !== workspaceBranchesKey(next);
+              return [next, [{ status: next, workspaceChanged }]] as const;
             },
+          ),
+          Stream.mapEffect(
+            Effect.fn("VcsStatus.refreshWorkspaceRefs")(function* ({ status, workspaceChanged }) {
+              if (workspaceChanged) {
+                const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+                yield* invalidateCachedVcsRefs(registry, {
+                  environmentId: supervisor.target.environmentId,
+                  cwd: input.cwd,
+                });
+              }
+              return status;
+            }),
           ),
         ),
     }),
@@ -381,6 +408,51 @@ export function createVcsEnvironmentAtoms<R, E>(
     switchRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:switch-ref",
       tag: WS_METHODS.vcsSwitchRef,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+      onSettled: invalidateRefs,
+    }),
+    gitButlerBranchChangeRequest: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:vcs:gitbutler-branch-change-request",
+      tag: WS_METHODS.vcsGitButlerBranchChangeRequest,
+      staleTimeMs: 5_000,
+      // Matches the server's lookup cache, so an idle poll usually reads no forge.
+      refreshIntervalMs: 60_000,
+      refreshTrigger: ({ environmentId }) => vcsRefsCacheStateAtom({ environmentId }),
+    }),
+    // Mounted only while a commit dialog is open. The CLI refuses a stale ID, so this only has to
+    // keep the list close enough that people rarely see that refusal.
+    gitButlerCommitChanges: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:vcs:gitbutler-commit-changes",
+      tag: WS_METHODS.vcsGitButlerCommitChanges,
+      staleTimeMs: 0,
+      refreshIntervalMs: 5_000,
+    }),
+    gitButlerHolds: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:gitbutler-holds",
+      tag: WS_METHODS.vcsGitButlerHolds,
+    }),
+    gitButlerResolveHolds: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:gitbutler-resolve-holds",
+      tag: WS_METHODS.vcsGitButlerResolveHolds,
+    }),
+    gitButlerApply: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:gitbutler-apply",
+      tag: WS_METHODS.vcsGitButlerApply,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+      onSettled: invalidateRefs,
+    }),
+    gitButlerUnapply: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:gitbutler-unapply",
+      tag: WS_METHODS.vcsGitButlerUnapply,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+      onSettled: invalidateRefs,
+    }),
+    gitButlerCreateBranch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:gitbutler-create-branch",
+      tag: WS_METHODS.vcsGitButlerCreateBranch,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,

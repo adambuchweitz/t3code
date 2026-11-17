@@ -1,3 +1,4 @@
+import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -1783,7 +1784,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {(close) => (
           <Menu
             accessibilityLabel={rowAccessibilityLabel}
-            actions={menuActions}
+            actions={menuActions.map((action) =>
+              action.id === "new-thread-on-branch" && thread.branch
+                ? {
+                    ...action,
+                    title: getThreadListV2NewBranchMenuTitle(
+                      resolveVcsRefDisplayName(thread.branch, null, thread.gitbutlerBranch) ??
+                        thread.branch,
+                    ),
+                  }
+                : action,
+            )}
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress
           >

@@ -42,6 +42,10 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import {
   buildTemporaryWorktreeBranchName,
+  gitButlerLinkedBranchMessage,
+  gitButlerStartCommitRefusedMessage,
+  gitButlerWorkspaceBaseMessage,
+  isGitButlerWorkspaceRef,
   flattenTemporaryWorktreeBranchName,
   formatGeneratedBranchName,
   isTemporaryWorktreeBranch,
@@ -97,6 +101,7 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly gitbutlerBranch?: string | null;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -226,6 +231,46 @@ export class ThreadLaunchNotRepositoryError extends Schema.TaggedError<ThreadLau
   }
 }
 
+export class ThreadLaunchGitButlerBaseError extends Schema.TaggedError<ThreadLaunchGitButlerBaseError>()(
+  "ThreadLaunchGitButlerBaseError",
+  { projectId: ProjectId, baseRef: Schema.String },
+) {
+  override get message(): string {
+    return gitButlerWorkspaceBaseMessage(this.baseRef);
+  }
+}
+
+export class ThreadLaunchGitButlerNoBaseError extends Schema.TaggedError<ThreadLaunchGitButlerNoBaseError>()(
+  "ThreadLaunchGitButlerNoBaseError",
+  { cwd: Schema.String },
+) {
+  override get message(): string {
+    return `${this.cwd} is a GitButler workspace and neither its target branch nor a remote default branch is available to start a worktree from.`;
+  }
+}
+
+export class ThreadLaunchGitButlerLinkedBranchError extends Schema.TaggedError<ThreadLaunchGitButlerLinkedBranchError>()(
+  "ThreadLaunchGitButlerLinkedBranchError",
+  {
+    cwd: Schema.String,
+    branch: Schema.String,
+    reason: Schema.Literals(["missing", "conflicted", "unreadable"]),
+  },
+) {
+  override get message(): string {
+    return gitButlerLinkedBranchMessage(this.branch, this.reason);
+  }
+}
+
+export class ThreadLaunchGitButlerStartCommitError extends Schema.TaggedError<ThreadLaunchGitButlerStartCommitError>()(
+  "ThreadLaunchGitButlerStartCommitError",
+  { cwd: Schema.String, branch: Schema.String, detail: Schema.String },
+) {
+  override get message(): string {
+    return gitButlerStartCommitRefusedMessage(this.branch, this.detail);
+  }
+}
+
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
@@ -248,6 +293,20 @@ export class ThreadLaunchService extends Context.Service<
       | ThreadLaunchBranchConflictError
       | ThreadLaunchNotRepositoryError
       | TaskFolderError
+      | ThreadLaunchGitButlerBaseError
+    >;
+    /**
+     * The base for a worktree nobody named: the thread's linked branch, pinned; otherwise a remote
+     * base in a GitButler checkout, and null in any other checkout. A declared link never falls back.
+     */
+    readonly resolveGitButlerWorktreeBase: (
+      cwd: string,
+      linkedBranch?: string | null,
+    ) => Effect.Effect<
+      { readonly commitSha: string; readonly branchCommitSha?: string } | null,
+      | ThreadLaunchGitButlerNoBaseError
+      | ThreadLaunchGitButlerLinkedBranchError
+      | ThreadLaunchGitButlerStartCommitError
     >;
     /** True only when the project's folder is known not to be a Git repository. */
     readonly isNonGitProject: (projectId: ProjectId) => Effect.Effect<boolean>;
@@ -433,6 +492,12 @@ const make = Effect.gen(function* () {
         projectTitle: project.title,
         workspaceRoot: cwd,
       });
+    if (
+      yield* git
+        .isGitButlerWorkspaceBase({ cwd, refName: baseRef })
+        .pipe(Effect.orElseSucceed(() => false))
+    )
+      return yield* new ThreadLaunchGitButlerBaseError({ projectId: project.id, baseRef });
     const baseResolves =
       hasBaseCommit ||
       (yield* Effect.gen(function* () {
@@ -539,6 +604,35 @@ const make = Effect.gen(function* () {
       ? { startRef: "HEAD", baseRefName: "HEAD" }
       : null;
   });
+
+  const resolveGitButlerWorktreeBase: ThreadLaunchService["Service"]["resolveGitButlerWorktreeBase"] =
+    Effect.fn("ThreadLaunchService.resolveGitButlerWorktreeBase")(function* (cwd, linkedBranch) {
+      if (linkedBranch != null) {
+        const refuse = (reason: "missing" | "conflicted" | "unreadable") =>
+          new ThreadLaunchGitButlerLinkedBranchError({ cwd, branch: linkedBranch, reason });
+        const pin = yield* git
+          .pinBranchForWorktree({ cwd, branch: linkedBranch })
+          .pipe(Effect.mapError(() => refuse("unreadable")));
+        if (pin.status === "refused") {
+          return yield* new ThreadLaunchGitButlerStartCommitError({
+            cwd,
+            branch: linkedBranch,
+            detail: pin.detail,
+          });
+        }
+        if (pin.status !== "pinned") return yield* refuse(pin.status);
+        return { commitSha: pin.commitSha, branchCommitSha: pin.branchCommitSha };
+      }
+      yield* git.invalidateLocalStatus(cwd);
+      // A failed read leaves this to createWorktree, which refuses the workspace commit itself.
+      const status = yield* git.localStatus({ cwd }).pipe(Effect.orElseSucceed(() => null));
+      if (status?.refName == null || !isGitButlerWorkspaceRef(status.refName)) return null;
+      const base = yield* GitWorkflow.resolveRemoteWorktreeBase(git, {
+        cwd,
+        workspace: status.workspace,
+      }).pipe(Effect.orElseSucceed(() => null));
+      return base ?? (yield* new ThreadLaunchGitButlerNoBaseError({ cwd }));
+    });
 
   const prepareInBackground = Effect.fn("ThreadLaunchService.prepareInBackground")(function* (
     input: PreparationInput,
@@ -677,6 +771,18 @@ const make = Effect.gen(function* () {
         const requestedBaseRef = input.workspaceStrategy.baseRef;
         let startRef = requestedBaseRef;
         let baseRefName = requestedBaseRef;
+        if (
+          projectIsRepository &&
+          (yield* git
+            .isGitButlerWorkspaceBase({ cwd: project.workspaceRoot, refName: startRef })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))))
+        ) {
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )(new ThreadLaunchGitButlerBaseError({ projectId: project.id, baseRef: startRef }));
+        }
         const remote =
           input.workspaceStrategy.startFromOrigin === true && projectIsRepository
             ? yield* git
@@ -809,7 +915,7 @@ const make = Effect.gen(function* () {
                     baseRefName,
                     path: null,
                   },
-                  { progress },
+                  { progress, startAboveAppliedStack: true },
                 )
                 .pipe(
                   Effect.catchIf(
@@ -1462,6 +1568,8 @@ const make = Effect.gen(function* () {
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
+                gitbutlerBranch:
+                  workspaceStrategy.type === "worktree" ? null : (input.gitbutlerBranch ?? null),
                 worktreePath: initialWorktreePath,
                 ...(input.importedNativeThread === undefined
                   ? {}
@@ -1696,6 +1804,7 @@ const make = Effect.gen(function* () {
     launch,
     checkWorktreeBase,
     isNonGitProject,
+    resolveGitButlerWorktreeBase,
     retryPreparation,
     prepareRun,
   });

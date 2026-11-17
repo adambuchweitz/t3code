@@ -25,7 +25,7 @@ import type {
   VcsStatusSubscriptionInput,
 } from "@t3tools/contracts";
 import { DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL } from "@t3tools/contracts";
-import { mergeGitStatusParts } from "@t3tools/shared/git";
+import { isGitButlerWorkspaceRef, mergeGitStatusParts } from "@t3tools/shared/git";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
@@ -618,28 +618,26 @@ export const make = Effect.gen(function* () {
       const autoPullEnabled = (yield* Effect.forEach(policyCwds, autoPullPolicy.isEnabled, {
         concurrency: "unbounded",
       })).some(Boolean);
-      if (
-        remote === null ||
-        !remote.hasUpstream ||
-        remote.aheadCount > 0 ||
-        remote.behindCount <= 0 ||
-        !autoPullEnabled
-      ) {
-        return null;
-      }
+      if (!autoPullEnabled) return null;
 
       yield* workflow.invalidateLocalStatus(cwd);
       const local = yield* workflow.localStatus({ cwd });
+      if (!local.isRepo || local.refName !== remoteRead?.branch) return null;
+      const isGitButler = local.refName !== null && isGitButlerWorkspaceRef(local.refName);
       if (
-        !local.isRepo ||
-        !local.isDefaultRef ||
-        local.hasWorkingTreeChanges ||
-        local.refName !== remoteRead?.branch
+        !isGitButler &&
+        (!local.isDefaultRef ||
+          local.hasWorkingTreeChanges ||
+          remote === null ||
+          !remote.hasUpstream ||
+          remote.aheadCount > 0 ||
+          remote.behindCount <= 0)
       )
         return null;
 
       pullAttempted = true;
-      yield* workflow.pullCurrentBranch(cwd);
+      const result = yield* workflow.autoPullCurrentBranch(cwd);
+      if (result === null) return null;
       yield* workflow.invalidateStatus(cwd);
       yield* refreshLocalStatusCore(cwd);
       const refreshedRemote = yield* readRemoteStatus(cwd, { refreshUpstream: false });

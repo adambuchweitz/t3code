@@ -40,6 +40,7 @@ import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManag
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
+import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
@@ -189,7 +190,7 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   projects: ReadonlyArray<Pick<Project, "id" | "workspaceRoot" | "autoPull">>,
   settings = DEFAULT_SERVER_SETTINGS,
 ) {
-  const git = yield* GitVcsDriver.GitVcsDriver;
+  const git = yield* GitWorkflowService.GitWorkflowService;
   const workspaceRoots = [
     ...new Set(
       projects
@@ -203,34 +204,10 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
     (cwd) =>
       Effect.gen(function* () {
         // Startup checks once, so it waits for the fetch rather than reading the old references.
-        const status = yield* git
-          .statusDetails(cwd)
+        const result = yield* git
+          .autoPullCurrentBranch(cwd)
           .pipe(Effect.provideService(GitVcsDriver.AwaitStatusFetch, true));
-        if (
-          !status.isRepo ||
-          !status.isDefaultBranch ||
-          !status.hasUpstream ||
-          status.hasWorkingTreeChanges ||
-          status.aheadCount > 0
-        ) {
-          yield* Effect.logDebug("Skipped automatic project pull", {
-            cwd,
-            reason: !status.isRepo
-              ? "not-a-repository"
-              : !status.isDefaultBranch
-                ? "not-on-default-branch"
-                : !status.hasUpstream
-                  ? "no-upstream"
-                  : status.hasWorkingTreeChanges
-                    ? "working-tree-changes"
-                    : "local-commits",
-          });
-          return;
-        }
-
-        if (status.behindCount <= 0) return;
-
-        const result = yield* git.pullCurrentBranch(cwd);
+        if (result === null) return;
         yield* Effect.logDebug("Automatic project pull completed", {
           cwd,
           status: result.status,

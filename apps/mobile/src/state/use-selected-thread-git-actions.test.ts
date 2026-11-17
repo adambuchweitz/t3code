@@ -1,4 +1,9 @@
-import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+  GitButlerForcePushConfirmationError,
+  GitButlerPublicationHoldError,
+} from "@t3tools/contracts";
 import type { VcsListRefsResult } from "@t3tools/contracts";
 import { resolveAutoFeatureBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
@@ -26,13 +31,25 @@ const state = vi.hoisted(() => ({
   statusRefreshes: 0,
   readRefs: vi.fn(),
   cachedRefs: [] as VcsListRefsResult["refs"],
+  forcePushRefusals: 0,
+  sentActions: [] as {
+    action: string;
+    gitbutlerForcePushApproval?: string;
+    gitbutlerHoldApproval?: string;
+  }[],
+  holdRefusals: 0,
+  confirmForcePush: vi.fn(),
 }));
 
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomMount: () => {} }));
+vi.mock("@effect/atom-react", () => ({
+  useAtomMount: () => {},
+  useAtomValue: (value: unknown) => value,
+}));
+vi.mock("./query", () => ({ useEnvironmentQuery: () => ({ data: { refName: state.branch } }) }));
 vi.mock("./session", () => ({
   useEnvironmentScope: (environmentId: unknown, scope: string) =>
     (environmentId === state.thread.environmentId ? state.scopes : state.primaryScopes).has(scope),
@@ -65,6 +82,9 @@ vi.mock("./use-vcs-action-state", () => ({
     state.results.push(result),
   noteRepositoryGitAction: (action: { cwd: string }) => state.repositoryActions.push(action),
 }));
+vi.mock("./confirm-gitbutler-force-push", () => ({
+  confirmGitButlerPublish: state.confirmForcePush,
+}));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "action" }));
 vi.mock("./threads", () => ({
   threadEnvironment: {
@@ -87,6 +107,10 @@ vi.mock("./threads", () => ({
 vi.mock("./vcs", () => ({
   vcsEnvironment: {
     readRefs: state.readRefs,
+    status: () => null,
+    gitButlerApply: { permissionAtom: () => state.scopes.has(AuthSourceControlWriteScope) },
+    gitButlerUnapply: { permissionAtom: () => state.scopes.has(AuthSourceControlWriteScope) },
+    gitButlerCreateBranch: { permissionAtom: () => state.scopes.has(AuthSourceControlWriteScope) },
     refreshStatus: async () => {
       state.statusRefreshes += 1;
       return AsyncResult.success({ refName: state.branch });
@@ -114,8 +138,49 @@ vi.mock("./vcs", () => ({
     track: (_registry: unknown, _target: unknown, _operation: unknown, run: () => unknown) => run(),
     runStackedAction:
       (target: { cwd: string | null }) =>
-      async (input: { action: string; featureBranch?: boolean }) => {
+      async (input: {
+        action: string;
+        featureBranch?: boolean;
+        gitbutlerForcePushApproval?: string;
+        gitbutlerHoldApproval?: string;
+      }) => {
         state.actionCwds.push(target.cwd);
+        state.sentActions.push({
+          action: input.action,
+          ...(input.gitbutlerForcePushApproval
+            ? { gitbutlerForcePushApproval: input.gitbutlerForcePushApproval }
+            : {}),
+          ...(input.gitbutlerHoldApproval
+            ? { gitbutlerHoldApproval: input.gitbutlerHoldApproval }
+            : {}),
+        });
+        if (state.holdRefusals > 0) {
+          state.holdRefusals -= 1;
+          return AsyncResult.failure(
+            Cause.fail(
+              new GitButlerPublicationHoldError({
+                cwd: "/repo",
+                branch: "api",
+                holds: [{ branch: "api", state: "unverified", commitSha: "abc", found: true }],
+                approval: "reviewed",
+                staleApproval: false,
+              }),
+            ),
+          );
+        }
+        if (state.forcePushRefusals > 0) {
+          return AsyncResult.failure(
+            Cause.fail(
+              new GitButlerForcePushConfirmationError({
+                cwd: "/repo",
+                branch: "api",
+                targets: [],
+                approval: `approval-${state.forcePushRefusals--}`,
+                staleApproval: false,
+              }),
+            ),
+          );
+        }
         if (input.featureBranch) state.branch = "feature";
         if (input.action === "commit") state.commits += 1;
         if (input.action === "push") state.pushes += 1;
@@ -148,6 +213,10 @@ describe("thread Git mutation permissions", () => {
     state.results = [];
     state.afterGitAction = undefined;
     state.statusRefreshes = 0;
+    state.forcePushRefusals = 0;
+    state.sentActions = [];
+    state.confirmForcePush.mockReset();
+    state.holdRefusals = 0;
   });
 
   it.each([false, true])(
@@ -176,6 +245,47 @@ describe("thread Git mutation permissions", () => {
     expect(state.pushes).toBe(1);
     expect(state.thread.branch).toBe("main");
     expect(state.metadataRequests).toEqual([]);
+  });
+
+  it("sends only the push again once a person confirms overwriting the remote", async () => {
+    state.forcePushRefusals = 2;
+    state.confirmForcePush.mockResolvedValue("publish");
+    expect(
+      await useSelectedThreadGitActions().onRunSelectedThreadGitAction({
+        action: "commit_push",
+        commitMessage: "Change",
+      }),
+    ).not.toBeNull();
+    // The second refusal is a remote that moved after the first confirmation.
+    expect(state.confirmForcePush).toHaveBeenCalledTimes(2);
+    expect(state.sentActions).toEqual([
+      { action: "commit_push" },
+      { action: "push", gitbutlerForcePushApproval: "approval-2" },
+      { action: "push", gitbutlerForcePushApproval: "approval-1" },
+    ]);
+    expect(state.results.map((result) => result.type)).toEqual(["success"]);
+  });
+
+  it("sends the push again with the hold's approval once a person has reviewed it", async () => {
+    state.holdRefusals = 1;
+    state.confirmForcePush.mockResolvedValue("publish");
+    expect(
+      await useSelectedThreadGitActions().onRunSelectedThreadGitAction({ action: "push" }),
+    ).not.toBeNull();
+    expect(state.sentActions).toEqual([
+      { action: "push" },
+      { action: "push", gitbutlerHoldApproval: "reviewed" },
+    ]);
+  });
+
+  it("pushes nothing and reports no error when the overwrite is declined", async () => {
+    state.forcePushRefusals = 1;
+    state.confirmForcePush.mockResolvedValue("cancel");
+    expect(
+      await useSelectedThreadGitActions().onRunSelectedThreadGitAction({ action: "push" }),
+    ).toBeNull();
+    expect(state.sentActions).toEqual([{ action: "push" }]);
+    expect(state.results).toEqual([]);
   });
 
   it.each(["create", "checkout", "worktree", "commit"] as const)(

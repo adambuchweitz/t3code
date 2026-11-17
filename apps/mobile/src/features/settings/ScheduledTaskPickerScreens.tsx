@@ -152,6 +152,7 @@ export function ScheduledTaskBranchPickerRouteScreen() {
   return (
     <BranchPickerScreen
       title={gt("Base branch")}
+      isSelectingWorktreeBase
       project={project}
       branches={visibleBranches}
       selectedBranchName={

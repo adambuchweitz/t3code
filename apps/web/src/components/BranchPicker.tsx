@@ -29,6 +29,7 @@ export function BranchPicker({
   open,
   onOpenChange,
   onSelectItem,
+  onItemSecondaryAction,
   hasNextPage,
   isFetchingNextPage,
   onLoadNext,
@@ -48,6 +49,7 @@ export function BranchPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectItem: (value: string) => void;
+  onItemSecondaryAction?: ((value: string) => void) | undefined;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   onLoadNext: () => void;
@@ -124,7 +126,11 @@ export function BranchPicker({
             event.preventDefault();
             event.stopPropagation();
             highlightedValueRef.current = null;
-            onSelectItem(highlightedValue);
+            if (event.altKey && onItemSecondaryAction) {
+              onItemSecondaryAction(highlightedValue);
+            } else {
+              onSelectItem(highlightedValue);
+            }
           }}
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

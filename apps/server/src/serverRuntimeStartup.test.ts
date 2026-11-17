@@ -23,6 +23,10 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as GitManager from "./git/GitManager.ts";
+import * as GitButlerWorkspace from "./vcs/GitButlerWorkspace.ts";
+import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 
 import * as ServerConfig from "./config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -208,7 +212,7 @@ it.effect.each([
         protocol: undefined,
         prepareTrial: () => Effect.undefined,
       }),
-      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(GitWorkflowService.GitWorkflowService)({}),
       Layer.mock(AnalyticsService.AnalyticsService)({}),
       // No provider logins or Connect link, so startup records no owners.
       FileSystem.layerNoop({}),
@@ -308,6 +312,7 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
       statusDetails: (cwd: string) =>
         Effect.succeed({
           isRepo: true,
+          branch: "main",
           isDefaultBranch: cwd !== "/feature",
           hasUpstream: true,
           hasWorkingTreeChanges: cwd === "/dirty",
@@ -324,6 +329,13 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
           };
         }),
     } as unknown as GitVcsDriver.GitVcsDriver["Service"];
+    const workflow = GitWorkflowService.layer.pipe(
+      Layer.provide(Layer.succeed(GitVcsDriver.GitVcsDriver, git)),
+      Layer.provide(Layer.mock(GitManager.GitManager)({ invalidateStatus: () => Effect.void })),
+      Layer.provide(Layer.mock(GitButlerWorkspace.GitButlerWorkspace)({})),
+      Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+      Layer.provide(FileSystem.layerNoop({})),
+    );
     const project = (workspaceRoot: string) =>
       ({ id: ProjectId.make(workspaceRoot), workspaceRoot }) as never;
     const overrides = (entries: Record<string, boolean>) => ({
@@ -353,7 +365,7 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
         "/feature": true,
         "/disabled": false,
       }),
-    ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
+    ).pipe(Effect.provide(workflow));
 
     assert.deepStrictEqual(pulled, ["/clean"]);
 
@@ -361,7 +373,7 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
     yield* ServerRuntimeStartup.autoPullProjects(
       [project("/inherited"), project("/opted-out"), project("/dirty")],
       { ...overrides({ "/opted-out": false }), defaultAutoPull: true },
-    ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
+    ).pipe(Effect.provide(workflow));
     assert.deepStrictEqual(pulled, ["/inherited"]);
   }),
 );

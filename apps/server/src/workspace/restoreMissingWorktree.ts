@@ -1,4 +1,5 @@
 import { ThreadId, type ProjectId, type TerminalCwdNotFoundError } from "@t3tools/contracts";
+import { isGitButlerWorkspaceRef } from "@t3tools/shared/git";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -32,10 +33,16 @@ export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateEr
 
 class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoBaseError>()(
   "WorktreeRecreateNoBaseError",
-  { worktreePath: Schema.String, branch: Schema.String },
+  {
+    worktreePath: Schema.String,
+    branch: Schema.String,
+    gitButlerWorkspace: Schema.optional(Schema.Boolean),
+  },
 ) {
   override get message(): string {
-    return `Could not recreate branch '${this.branch}' at ${this.worktreePath}: the project workspace has no commit to start it from.`;
+    return this.gitButlerWorkspace === true
+      ? `Could not recreate branch '${this.branch}' at ${this.worktreePath}: the project is a GitButler workspace and neither its target branch nor a remote default branch is available to start from.`
+      : `Could not recreate branch '${this.branch}' at ${this.worktreePath}: the project workspace has no commit to start it from.`;
   }
 }
 
@@ -121,7 +128,17 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
   ) {
     // Recovery can follow an external checkout, before the status cache expires.
     yield* gitWorkflow.invalidateLocalStatus(cwd);
-    const { refName: currentBranch } = yield* gitWorkflow.localStatus({ cwd });
+    const { refName: currentBranch, workspace } = yield* gitWorkflow.localStatus({ cwd });
+    // Its commit merges every applied branch, so a thread must never start from it.
+    if (currentBranch !== null && isGitButlerWorkspaceRef(currentBranch)) {
+      const remoteBase = yield* GitWorkflowService.resolveRemoteWorktreeBase(gitWorkflow, {
+        cwd,
+        workspace,
+      });
+      return remoteBase === null
+        ? ("gitbutler-no-base" as const)
+        : { refName: remoteBase.commitSha, baseRefName: remoteBase.baseRefName };
+    }
     if (currentBranch !== null) {
       const refName = `refs/heads/${currentBranch}`;
       return { refName, baseRefName: refName };
@@ -168,9 +185,24 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
       });
       return;
     }
+    // A GitButler-started branch restarts from its recorded start commit.
+    const startCommit = yield* gitWorkflow.readWorktreeStartCommit({ cwd, branch });
+    if (startCommit !== null) {
+      yield* gitWorkflow.createWorktree({
+        cwd,
+        refName: startCommit,
+        newRefName: branch,
+        path: worktreePath,
+      });
+      return;
+    }
     const base = yield* resolveRecreateBase(cwd, remoteName);
-    if (base === null) {
-      return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
+    if (base === null || base === "gitbutler-no-base") {
+      return yield* new WorktreeRecreateNoBaseError({
+        worktreePath,
+        branch,
+        ...(base === "gitbutler-no-base" ? { gitButlerWorkspace: true } : {}),
+      });
     }
     yield* gitWorkflow.createWorktree({
       cwd,

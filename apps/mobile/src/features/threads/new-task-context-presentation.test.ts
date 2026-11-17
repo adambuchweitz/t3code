@@ -155,6 +155,16 @@ describe("fillNewTaskWorkspaceBranch", () => {
         selection: { mode: "worktree", branch: null, worktreePath: null },
       }),
     ).toEqual({ mode: "worktree", branch: "origin/main", worktreePath: null });
+    expect(
+      fillNewTaskWorkspaceBranch({
+        ...base,
+        branches: [
+          { name: "gitbutler/target", current: false, isDefault: true },
+          { name: "gitbutler/workspace", current: true, isDefault: false },
+        ],
+        selection: { mode: "worktree", branch: null, worktreePath: null },
+      }),
+    ).toEqual({ mode: "worktree", branch: null, worktreePath: null });
   });
 
   it("waits for the workspace default to settle before picking a base", () => {

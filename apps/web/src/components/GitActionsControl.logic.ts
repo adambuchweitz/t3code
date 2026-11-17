@@ -3,16 +3,22 @@ import type {
   GitStackedAction,
   PullRequestChangeBreakdown,
   ReviewDiffPreviewSource,
+  ReviewDiffPreviewResult,
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { summarizeChangedFiles } from "@t3tools/shared/changedFileKind";
-import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
+import { isGitButlerWorkspaceRef, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import { msg } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { changeRequestTermKind } from "./pullRequest/changeRequestTerm";
 import type { ChangeRequestTerminology } from "@t3tools/client-runtime/source-control-clients";
 import {
   changeRequestTerminologyFor,
+  gitButlerDisabledReason,
+  gitButlerLinkedBranch,
+  gitButlerMenuItems,
+  gitButlerQuickAction,
+  type GitActionStatus,
   type DefaultBranchActionDialogCopy,
   type DefaultBranchConfirmableAction,
   type GitActionIconName,
@@ -27,18 +33,18 @@ export {
 } from "@t3tools/client-runtime/state/vcs";
 
 export interface GitActionMenuItem {
-  id: "commit" | "push" | "pr";
+  id: "commit" | "push" | "pr" | "pr_candidate" | "held";
   label: string;
   disabled: boolean;
   icon: GitActionIconName;
-  kind: "open_dialog";
+  kind: "open_dialog" | "open_pr" | "review_holds";
   dialogAction?: GitDialogAction;
 }
 
 export interface GitQuickAction {
   label: string;
   disabled: boolean;
-  kind: "run_action" | "run_pull" | "open_publish" | "show_hint";
+  kind: "run_action" | "run_pull" | "open_commit" | "open_publish" | "open_pr" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
 }
@@ -122,13 +128,21 @@ export function formatGitActionElapsed(
 }
 
 export function buildMenuItems(
-  gitStatus: VcsStatusResult | null,
+  gitStatus: GitActionStatus | null,
   isBusy: boolean,
   hasPrimaryRemote = true,
   resolve: MessageResolver = m,
 ): GitActionMenuItem[] {
   if (!gitStatus) return [];
   const terminology = changeRequestTerminologyFor(gitStatus);
+
+  if (gitStatus.workspace?._tag === "gitbutler") {
+    const items = gitButlerMenuItems(gitStatus, isBusy, hasPrimaryRemote);
+    // A hold can stop a repository being published, so it's reviewable with no remote yet.
+    return hasPrimaryRemote
+      ? items
+      : items.filter((item) => item.id === "commit" || item.id === "held");
+  }
 
   const hasBranch = gitStatus.refName !== null;
   const hasChanges = gitStatus.hasWorkingTreeChanges;
@@ -203,7 +217,7 @@ export function getMenuActionDisabledReason(
     hasPrimaryRemote,
   }: {
     item: GitActionMenuItem;
-    gitStatus: VcsStatusResult | null;
+    gitStatus: GitActionStatus | null;
     isBusy: boolean;
     hasPrimaryRemote: boolean;
   },
@@ -218,6 +232,10 @@ export function getMenuActionDisabledReason(
   const isAhead = gitStatus.aheadCount > 0;
   const isBehind = gitStatus.behindCount > 0;
   const terminology = changeRequestTerminologyFor(gitStatus);
+
+  if (gitStatus.workspace?._tag === "gitbutler" && item.id !== "commit") {
+    return gitButlerDisabledReason(item.id, gitStatus, hasPrimaryRemote);
+  }
 
   if (item.id === "commit") {
     if (!hasChanges) {
@@ -296,7 +314,7 @@ export function hasUsableGitMenuContent(input: {
 }
 
 export function resolveQuickAction(
-  gitStatus: VcsStatusResult | null,
+  gitStatus: GitActionStatus | null,
   isBusy: boolean,
   isDefaultRef = false,
   hasPrimaryRemote = true,
@@ -328,6 +346,10 @@ export function resolveQuickAction(
   const isBehind = gitStatus.behindCount > 0;
   const isDiverged = isAhead && isBehind;
   const terminology = changeRequestTerminologyFor(gitStatus);
+
+  if (gitStatus.workspace?._tag === "gitbutler") {
+    return gitButlerQuickAction(gitStatus, hasPrimaryRemote);
+  }
 
   if (!hasBranch) {
     return {
@@ -592,7 +614,7 @@ export function resolveFeatureBranchUnavailableReason(
 export function resolveThreadBranchUpdate(
   result: GitRunStackedActionResult,
 ): { branch: string } | null {
-  if (result.branch.status !== "created" || !result.branch.name) {
+  if (result.branch.gitbutler || result.branch.status !== "created" || !result.branch.name) {
     return null;
   }
 
@@ -695,5 +717,96 @@ export function resolveChangesTotals(
             })),
           )
         : null,
+  };
+}
+
+/**
+ * Changes when the workspace does. Status carries no per-branch data and cannot see a commit moved
+ * between branches on a clean tree, so a run ending also counts; focus revalidation covers the rest.
+ */
+export function gitButlerChangesRevision(
+  status: VcsStatusResult,
+  latestRun: { readonly runId: string; readonly status: string } | null | undefined,
+): string {
+  const workspace = status.workspace?._tag === "gitbutler" ? status.workspace : null;
+  return JSON.stringify([
+    latestRun?.runId,
+    latestRun?.status,
+    status.workingTree.files.map((file) => [file.path, file.insertions, file.deletions]),
+    status.branchChanges?.insertions,
+    status.branchChanges?.deletions,
+    workspace?.unassignedChangeCount,
+    workspace?.stacks.map((stack) => [stack.branches, stack.assignedChangeCount]),
+  ]);
+}
+
+export interface ChangesSummary {
+  readonly label: string;
+  readonly totals:
+    | (Omit<ChangesLineTotals, "baseRef"> & { readonly baseRef?: string | null })
+    | null;
+  /** Shown instead of totals while a branch's totals load or after reading them failed. */
+  readonly placeholder: string | null;
+  readonly title: string | undefined;
+}
+
+export function resolveChangesSummary(input: {
+  readonly status: VcsStatusResult | null;
+  readonly linkedBranch: string | null | undefined;
+  readonly branchPreview: {
+    readonly data: ReviewDiffPreviewResult | null;
+    readonly error: string | null;
+  };
+  /** The Diff panel's branch-range comparison, so the row matches the panel outside GitButler. */
+  readonly combinedPreview?: ReviewDiffPreviewSource | null | undefined;
+}): ChangesSummary {
+  const { status, linkedBranch, branchPreview } = input;
+  const combined = resolveChangesTotals(status, input.combinedPreview);
+  if (!status?.refName || !isGitButlerWorkspaceRef(status.refName)) {
+    return { label: "Changes", totals: combined, placeholder: null, title: undefined };
+  }
+  const branch = gitButlerLinkedBranch(status, linkedBranch);
+  if (branch === null) {
+    return {
+      label: "Workspace changes",
+      totals: combined,
+      placeholder: null,
+      title: linkedBranch
+        ? `${linkedBranch} is not applied. These totals combine every applied branch.`
+        : "These totals combine every applied branch.",
+    };
+  }
+  if (branchPreview.error !== null) {
+    return {
+      label: "Changes",
+      totals: null,
+      placeholder: "Unavailable",
+      title: `Could not read the changes on ${branch}: ${branchPreview.error}`,
+    };
+  }
+  const files = branchPreview.data?.sources[0]?.files;
+  if (files === undefined) {
+    return {
+      label: "Changes",
+      totals: null,
+      placeholder: "…",
+      title: `Reading the changes on ${branch}…`,
+    };
+  }
+  const unassigned =
+    status.workspace?._tag === "gitbutler" ? status.workspace.unassignedChangeCount : 0;
+  return {
+    label: "Changes",
+    totals: {
+      insertions: files.reduce((sum, file) => sum + file.additions, 0),
+      deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      breakdown: summarizeChangedFiles(files),
+    },
+    placeholder: null,
+    title:
+      `Commits and assigned changes on ${branch}.` +
+      (unassigned > 0
+        ? ` ${unassigned} unassigned ${unassigned === 1 ? "change is" : "changes are"} not included.`
+        : ""),
   };
 }

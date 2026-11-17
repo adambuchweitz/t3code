@@ -4,12 +4,14 @@ import {
   type GitActionRequestInput,
   buildMenuItems,
   getGitActionDisabledReason,
+  gitButlerChangeRequestUrl,
   requiresDefaultBranchConfirmation,
 } from "@t3tools/client-runtime/state/vcs";
 import type { ThreadRepositorySection } from "@t3tools/client-runtime/state/thread-repositories";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { changeRequestTermKind } from "../../../lib/changeRequestTerm";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
 import {
   CommonActions,
   StackActions,
@@ -41,6 +43,7 @@ import {
   unpinRepositoryFromThread,
   useThreadRepositoryPins,
 } from "../../../state/thread-repository-pins";
+import { useGitButlerActionStatus } from "../../../state/use-gitbutler-action-status";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
@@ -142,6 +145,14 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
   const listsRepositories = repository === undefined && selectedThreadProject !== null;
   const reachesTracked =
     projectRepositoryCount > 0 && (selectedThreadWorktreePath === null || taskFolder !== null);
+  // The thread's GitButler link names a branch of its own folder, not of a tracked repository.
+  const linkedGitButlerBranch = repository === undefined ? selectedThread?.gitbutlerBranch : null;
+  // Kept out of the `??` below: React Compiler bails on an optional chain inside a logical test.
+  const resolvedBranchLabel = resolveVcsRefDisplayName(
+    gitStatus.data?.refName ?? selectedThread?.branch ?? null,
+    gitStatus.data?.workspace,
+    linkedGitButlerBranch,
+  );
   const currentBranchLabel =
     repository !== undefined
       ? repository.name
@@ -150,11 +161,23 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
           ((taskFolder === null ? null : selectedThread?.branch) ??
           selectedThreadProject?.title ??
           gt("Repositories"))
-        : (gitStatus.data?.refName ?? selectedThread?.branch ?? gt("Detached HEAD"));
+        : (resolvedBranchLabel ?? gt("Detached HEAD"));
+  const currentWorktreePath = repository === undefined ? selectedThreadWorktreePath : null;
+  const gitOperationLabel = gitState.gitOperationLabel;
+  const busy = gitOperationLabel !== null;
+  const hasPrimaryRemote = gitStatus.data?.hasPrimaryRemote ?? false;
+  const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
+  const actionStatus = useGitButlerActionStatus({
+    environmentId: selectedThread?.environmentId,
+    cwd: selectedThreadCwd,
+    status: gitStatus.data,
+    linkedBranch: linkedGitButlerBranch,
+  });
+  const isGitButler = gitStatus.data?.workspace?._tag === "gitbutler";
   const currentStatusSummary =
     repository !== undefined
       ? gitStatus.data?.isRepo
-        ? `${gitStatus.data.refName ?? gt("Detached HEAD")} · ${statusSummary(gitStatus.data, m)}`
+        ? `${gitStatus.data.refName ?? gt("Detached HEAD")} · ${statusSummary(actionStatus, m)}`
         : statusSummary(gitStatus.data, m)
       : taskFolder !== null && trackedRepositoryCount > 0
         ? gt(
@@ -165,27 +188,22 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
           ? gt("{count, plural, one {{count} repository} other {{count} repositories}}", {
               count: trackedRepositoryCount,
             })
-          : statusSummary(gitStatus.data, m);
-  const currentWorktreePath = repository === undefined ? selectedThreadWorktreePath : null;
-  const gitOperationLabel = gitState.gitOperationLabel;
-  const busy = gitOperationLabel !== null;
-  const hasPrimaryRemote = gitStatus.data?.hasPrimaryRemote ?? false;
-  const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
+          : statusSummary(actionStatus, m);
 
-  const menuItems = isRepo ? buildMenuItems(gitStatus.data, busy, hasPrimaryRemote, m) : [];
+  const menuItems = isRepo ? buildMenuItems(actionStatus, busy, hasPrimaryRemote, m) : [];
 
   const sheetMenuItems = menuItems.map((item) => ({
     item: {
       ...item,
-      disabled: item.disabled || (!canWriteSourceControl && item.kind !== "open_pr"),
+      disabled: item.disabled || (!canWriteSourceControl && item.kind === "open_dialog"),
     },
     disabledReason:
-      !canWriteSourceControl && item.kind !== "open_pr"
+      !canWriteSourceControl && item.kind === "open_dialog"
         ? gt("This connection cannot change source control.")
         : getGitActionDisabledReason(
             {
               item,
-              gitStatus: gitStatus.data,
+              gitStatus: actionStatus,
               isBusy: busy,
               hasOriginRemote: hasPrimaryRemote,
             },
@@ -198,7 +216,7 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
   );
 
   const openExistingPr = async () => {
-    const prUrl = gitStatus.data?.pr?.state === "open" ? gitStatus.data.pr.url : null;
+    const prUrl = gitButlerChangeRequestUrl(actionStatus);
     if (!prUrl) {
       Dialog.alert(
         gt("{term, select, mr {No open MR} cr {No open change request} other {No open PR}}", {
@@ -268,6 +286,10 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
       await openExistingPr();
       return;
     }
+    if (item.kind === "review_holds") {
+      await gitActions.onReviewSelectedThreadHolds();
+      return;
+    }
     if (!canWriteSourceControl) return;
     if (item.dialogAction === "commit") {
       presentRoute(() =>
@@ -289,15 +311,20 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
   };
 
   const rowStatusDetail = (item: (typeof menuItems)[number]): string | undefined => {
-    const status = gitStatus.data;
+    const status = actionStatus;
     if (status == null) {
       return undefined;
     }
     if (item.dialogAction === "commit" && status.hasWorkingTreeChanges) {
       const fileCount = status.workingTree?.files.length ?? 0;
-      return gt("{count, plural, one {{count} file changed} other {{count} files changed}}", {
-        count: fileCount,
-      });
+      return status.workspace?._tag === "gitbutler"
+        ? gt(
+            "{count, plural, one {{count} file changed in workspace} other {{count} files changed in workspace}}",
+            { count: fileCount },
+          )
+        : gt("{count, plural, one {{count} file changed} other {{count} files changed}}", {
+            count: fileCount,
+          });
     }
     if (item.dialogAction === "push" && (status.aheadCount ?? 0) > 0) {
       const ahead = status.aheadCount ?? 0;
@@ -305,6 +332,7 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
         count: ahead,
       });
     }
+    if (item.id === "pr_candidate" || item.id === "held") return undefined;
     if (item.kind === "open_pr" && status.pr?.number != null) {
       return gt(
         "{term, select, mr {MR #{number} {state, select, open {open} closed {closed} merged {merged} other {{state}}}} cr {change request #{number} {state, select, open {open} closed {closed} merged {merged} other {{state}}}} other {PR #{number} {state, select, open {open} closed {closed} merged {merged} other {{state}}}}}",
@@ -359,7 +387,7 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
         <RefreshControl refreshing={isRefreshing} onRefresh={() => void handleRefresh()} />
       }
     >
-      {sheetMenuItems.length > 0 || behindCount > 0 ? (
+      {sheetMenuItems.length > 0 || behindCount > 0 || isGitButler ? (
         <ListSection>
           {sheetMenuItems.map(({ item, disabledReason }) => (
             <ListRow
@@ -371,16 +399,18 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
               onPress={() => void onPressMenuItem(item)}
             />
           ))}
-          {behindCount > 0 ? (
+          {behindCount > 0 || isGitButler ? (
             <ListRow
               icon="arrow.down.circle"
               label={gt("Pull latest")}
               description={
                 canWriteSourceControl
-                  ? gt(
-                      "{count, plural, one {{count} commit behind upstream} other {{count} commits behind upstream}}",
-                      { count: behindCount },
-                    )
+                  ? isGitButler
+                    ? gt("Rebase every applied branch onto the latest target")
+                    : gt(
+                        "{count, plural, one {{count} commit behind upstream} other {{count} commits behind upstream}}",
+                        { count: behindCount },
+                      )
                   : gt("This connection cannot change source control.")
               }
               disabled={!canWriteSourceControl || busy || !isRepo}

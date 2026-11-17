@@ -106,16 +106,28 @@ describe("resolveLocalCheckoutBranchMismatch", () => {
     });
   });
 
-  it("ignores dedicated worktrees because their checkout is already thread-scoped", () => {
-    expect(
-      resolveLocalCheckoutBranchMismatch({
-        effectiveEnvMode: "worktree",
-        activeWorktreePath: "/repo/.t3/worktrees/feature-thread",
-        activeThreadBranch: "feature/thread",
-        currentGitBranch: "feature/current",
-      }),
-    ).toBeNull();
-  });
+  it.each([
+    {
+      effectiveEnvMode: "worktree" as const,
+      activeWorktreePath: "/repo/.t3/worktrees/feature-thread",
+      currentGitBranch: "feature/current",
+    },
+    {
+      effectiveEnvMode: "local" as const,
+      activeWorktreePath: null,
+      currentGitBranch: "gitbutler/workspace",
+    },
+  ])(
+    "ignores dedicated worktrees and shared GitButler checkouts: $currentGitBranch",
+    (checkout) => {
+      expect(
+        resolveLocalCheckoutBranchMismatch({
+          ...checkout,
+          activeThreadBranch: "feature/thread",
+        }),
+      ).toBeNull();
+    },
+  );
 });
 
 describe("resolveEffectiveEnvMode", () => {

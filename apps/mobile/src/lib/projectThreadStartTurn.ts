@@ -34,6 +34,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceMode: "local" | "worktree";
   readonly branch: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
   /** Tracked repositories a new worktree takes, by path; absent leaves the choice to the server. */
@@ -70,6 +71,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
         runtimeMode: spec.runtimeMode,
         interactionMode: spec.interactionMode,
         branch: spec.branch,
+        gitbutlerBranch: isWorktree ? null : (spec.gitbutlerBranch ?? null),
         worktreePath: isWorktree ? null : spec.worktreePath,
         createdAt: spec.createdAt,
       },

@@ -2,11 +2,14 @@ import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thre
 import { CheckpointRef, CheckpointScopeId, RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { type ReviewDiffPreviewSource } from "@t3tools/contracts";
+
 import {
   applyReviewDiffMetadata,
   buildReviewParsedDiff,
   buildReviewSectionItems,
   filterReviewParsedDiffToFolder,
+  getDefaultReviewSectionId,
   resolveReviewSelectedSectionId,
   type ReviewRenderableFile,
   type ReviewSectionItem,
@@ -29,11 +32,62 @@ describe("resolveReviewSelectedSectionId", () => {
 
   it("shows Changes before anything is picked, not the first section", () => {
     expect(resolveReviewSelectedSectionId([turn, changes], null)).toBe("git:branch-range");
+    const branch = makeSection("git:gitbutler-branch:feature/api");
+    expect(resolveReviewSelectedSectionId([turn, changes, branch], null, "feature/api")).toBe(
+      branch.id,
+    );
+    expect(resolveReviewSelectedSectionId([turn, changes, branch], changes.id, "feature/api")).toBe(
+      changes.id,
+    );
+    expect(resolveReviewSelectedSectionId([turn, changes], null, "feature/api")).toBe(changes.id);
   });
 
   it("shows the default while the picked section loads and returns to the pick once it does", () => {
     expect(resolveReviewSelectedSectionId([changes], "turn:2")).toBe("git:branch-range");
     expect(resolveReviewSelectedSectionId([turn, changes], "turn:2")).toBe("turn:2");
+  });
+});
+describe("buildReviewSectionItems", () => {
+  it("lists every applied GitButler branch in order, with only the selected one loaded", () => {
+    const branch = (name: string): ReviewDiffPreviewSource => ({
+      id: `gitbutler-branch:${name}`,
+      kind: "gitbutler-branch",
+      title: name,
+      baseRef: null,
+      headRef: name,
+      diff: `diff --git a/${name}.ts b/${name}.ts`,
+      diffHash: `hash-${name}`,
+      truncated: false,
+    });
+    const items = buildReviewSectionItems({
+      checkpoints: [],
+      gitSections: [
+        {
+          id: "branch-range",
+          kind: "branch-range",
+          title: "Changes vs main",
+          baseRef: "main",
+          headRef: "gitbutler/workspace",
+          diff: "",
+          diffHash: "hash-base",
+          truncated: false,
+        },
+        branch("ui"),
+      ],
+      gitButlerBranches: ["api", "ui", "docs"],
+      loadingGitButlerBranch: "docs",
+      turnDiffById: {},
+      gitSectionStates: { "working-tree": null, "branch-range": null },
+    });
+
+    expect(items.map((item) => [item.id, item.title, item.diff !== null, item.isLoading])).toEqual([
+      ["git:branch-range", "Changes vs main", true, false],
+      ["git:gitbutler-branch:api", "api", false, false],
+      ["git:gitbutler-branch:ui", "ui", true, false],
+      ["git:gitbutler-branch:docs", "docs", false, true],
+    ]);
+    expect(items[2]?.subtitle).toBe("Commits and assigned changes");
+    expect(getDefaultReviewSectionId(items)).toBe("git:branch-range");
   });
 });
 
@@ -258,6 +312,33 @@ describe("buildReviewParsedDiff", () => {
       additions: 1,
       deletions: 1,
     });
+  });
+
+  it("reads GitButler branch envelopes with quoted paths and no file modes", () => {
+    const parsed = buildReviewParsedDiff(
+      [
+        'diff --git "a/tab\\tname.ts" "b/tab\\tname.ts"',
+        '--- "a/tab\\tname.ts"',
+        '+++ "b/tab\\tname.ts"',
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "diff --git a/new.ts b/new.ts",
+        "--- /dev/null",
+        "+++ b/new.ts",
+        "@@ -0,0 +1 @@",
+        "+hello",
+        "",
+      ].join("\n"),
+      "gitbutler",
+    );
+
+    expect(parsed.kind).toBe("files");
+    if (parsed.kind !== "files") return;
+    expect(parsed.files.map((file) => [file.path, file.additions, file.deletions])).toEqual([
+      ["tab\tname.ts", 1, 1],
+      ["new.ts", 1, 0],
+    ]);
   });
 
   it("builds renderable rows from a unified patch", () => {

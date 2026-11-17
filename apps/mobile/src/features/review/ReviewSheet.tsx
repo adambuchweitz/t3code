@@ -143,6 +143,18 @@ function ReviewHeader(
                       },
                     ],
                   },
+                  ...(props.sectionMenu.gitButlerBranches.length > 0
+                    ? [
+                        {
+                          id: "gitbutler-branches",
+                          title: "GitButler branches",
+                          inline: true,
+                          items: props.sectionMenu.gitButlerBranches.map((section) =>
+                            sectionAction(section, section.title),
+                          ),
+                        },
+                      ]
+                    : []),
                   ...(props.sectionMenu.turns.length > 0
                     ? [
                         {

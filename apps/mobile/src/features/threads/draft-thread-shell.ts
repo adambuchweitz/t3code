@@ -21,6 +21,7 @@ export function draftThreadShell(
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
     readonly branch: string | null;
+    readonly gitbutlerBranch?: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
   },
@@ -36,6 +37,7 @@ export function draftThreadShell(
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
     branch: input.branch,
+    gitbutlerBranch: input.gitbutlerBranch ?? null,
     pullRequests: [],
     worktreePath: input.worktreePath,
     linkedPullRequest: null,

@@ -1,3 +1,4 @@
+import { isGitButlerWorkspaceRef } from "@t3tools/shared/git";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -4013,6 +4014,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
       branch: command.branch,
+      gitbutlerBranch: command.gitbutlerBranch ?? null,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
       pullRequests: [],
@@ -5088,6 +5090,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ? { snoozedUntil: null, snoozedAt: null, lastSnoozeWakeAt: now }
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
+            gitbutlerBranch:
+              command.gitbutlerBranch !== undefined
+                ? command.gitbutlerBranch
+                : (command.worktreePath !== undefined &&
+                      command.worktreePath !== thread.worktreePath) ||
+                    (command.branch !== undefined &&
+                      command.branch !== thread.branch &&
+                      (command.branch === null || !isGitButlerWorkspaceRef(command.branch)))
+                  ? null
+                  : (thread.gitbutlerBranch ?? null),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
             ...(command.linkedPullRequest === undefined
               ? {}
@@ -9918,7 +9930,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
-        ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
+        ...(command.workspaceStrategy === undefined
+          ? {}
+          : { branch: null, worktreePath: null, gitbutlerBranch: null }),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,

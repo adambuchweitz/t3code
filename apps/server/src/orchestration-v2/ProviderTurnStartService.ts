@@ -1,5 +1,6 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { t3GitButlerPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import {
@@ -288,6 +289,7 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
+    const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -990,13 +992,34 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const messageText = withMessageSenderNote(
-        providerMessage,
-        projectComposerContextForProvider({
-          text: providerMessage.text,
-          records: providerMessage.context?.records ?? [],
-        }),
-      );
+      const projectedUserText = projectComposerContextForProvider({
+        text: providerMessage.text,
+        records: providerMessage.context?.records ?? [],
+      });
+      // The cached Git ref is enough; guidance must not depend on the but CLI being installed.
+      const refName =
+        projection.thread.worktreePath === null &&
+        resolvedRuntimePolicy.cwd !== null &&
+        projectedUserText.trim() !== "" &&
+        !projectedUserText.trimStart().startsWith("/")
+          ? yield* gitWorkflow
+              .localStatus({ cwd: resolvedRuntimePolicy.cwd }, { includeWorkspace: false })
+              .pipe(
+                Effect.map((status) => status.refName),
+                Effect.catch((error) =>
+                  Effect.logWarning("Could not resolve agent workspace instructions", {
+                    errorTag: error._tag,
+                  }).pipe(Effect.as(null)),
+                ),
+              )
+          : null;
+      const messageText = t3GitButlerPrompt({
+        prompt: withMessageSenderNote(providerMessage, projectedUserText),
+        cwd: resolvedRuntimePolicy.cwd,
+        worktreePath: projection.thread.worktreePath,
+        refName,
+        gitbutlerBranch: projection.thread.gitbutlerBranch ?? null,
+      });
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||

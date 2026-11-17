@@ -11,6 +11,12 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import { useEnvironmentQuery } from "../../state/query";
+import { useGitButlerActionStatus } from "../../state/use-gitbutler-action-status";
+import { confirmGitButlerPublish } from "../../state/confirm-gitbutler-force-push";
+import {
+  gitButlerForcePushRetryAction,
+  gitButlerPublishConfirmation,
+} from "@t3tools/client-runtime/state/vcs";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsActionManager, vcsEnvironment } from "../../state/vcs";
@@ -31,12 +37,21 @@ export function DraftThreadHeader(props: {
   const status = useEnvironmentQuery(
     props.cwd ? vcsEnvironment.status({ environmentId, input: { cwd: props.cwd } }) : null,
   );
+  const gitActionStatus = useGitButlerActionStatus({
+    environmentId,
+    cwd: props.cwd,
+    status: status.data,
+    linkedBranch: props.thread.gitbutlerBranch,
+  });
   const target = { environmentId, cwd: props.cwd };
   const progress = useVcsActionState(target);
   const runAction = useAtomCommand(vcsActionManager.runStackedAction(target), {
     reportFailure: false,
   });
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
+  const resolveGitButlerHolds = useAtomCommand(vcsEnvironment.gitButlerResolveHolds, {
+    reportFailure: false,
+  });
   const openFiles = () => {
     if (!props.cwd || !canReadFiles) return;
     navigation.navigate("NewTaskFiles", {
@@ -61,7 +76,8 @@ export function DraftThreadHeader(props: {
         hasThread: false,
         tracksRepositories: (props.project.trackedFolders?.length ?? 0) > 0,
         currentBranch: props.thread.branch,
-        gitStatus: status.data,
+        gitbutlerBranch: props.thread.gitbutlerBranch ?? null,
+        gitStatus: gitActionStatus,
         gitOperationLabel: vcsActionLabelText(progress, messages),
         canOpenTerminal: false,
         canOperateTerminal: false,
@@ -83,14 +99,37 @@ export function DraftThreadHeader(props: {
         },
         onRunAction: async (input) => {
           if (!canWriteGit || !props.cwd) return null;
-          const result = await runAction({
+          let result = await runAction({
             ...input,
             projectId: props.project.id,
             actionId: uuidv4(),
           });
-          if (AsyncResult.isFailure(result)) {
-            Dialog.alert(gt("Git action failed"), String(Cause.squash(result.cause)));
-            return null;
+          while (AsyncResult.isFailure(result)) {
+            const error = Cause.squash(result.cause);
+            const confirmation = gitButlerPublishConfirmation(error);
+            if (confirmation === null) {
+              Dialog.alert(gt("Git action failed"), String(error));
+              return null;
+            }
+            const decision = await confirmGitButlerPublish(confirmation);
+            if (decision === "cancel") return null;
+            if (decision === "end_holds") {
+              const ended = await resolveGitButlerHolds({
+                environmentId,
+                input: { cwd: props.cwd, resolutions: [...confirmation.resolutions] },
+              });
+              if (AsyncResult.isFailure(ended)) {
+                Dialog.alert(gt("Git action failed"), String(Cause.squash(ended.cause)));
+              }
+              return null;
+            }
+            result = await runAction({
+              action: gitButlerForcePushRetryAction(input.action),
+              gitbutlerBranch: confirmation.branch,
+              ...confirmation.approval,
+              projectId: props.project.id,
+              actionId: uuidv4(),
+            });
           }
           return result.value;
         },
