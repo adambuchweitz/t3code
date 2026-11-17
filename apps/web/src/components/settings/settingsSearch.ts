@@ -1092,6 +1092,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("allow disable enable open drive preview tools sessions project override")],
   },
   {
+    id: "read-aloud-enabled",
+    title: "Read aloud",
+    to: "/settings/devices",
+    searchTerms: [
+      "voice text to speech tts speak listen audio voicestudio omnivoice tailscale lan-party profile speed language gender age pitch accent whisper seed steps guidance preview",
+    ],
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",

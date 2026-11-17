@@ -114,6 +114,19 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface SpeechTextGenerationInput {
+  /** A directory with no project configuration; the model only needs the message. */
+  cwd: string;
+  /** Assistant response markdown to reshape for speech. */
+  message: string;
+  modelSelection: ModelSelection;
+}
+
+export interface SpeechTextGenerationResult {
+  /** Plain prose, ready for text-to-speech. */
+  speech: string;
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
@@ -138,4 +151,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateSpeechText: (
+    input: SpeechTextGenerationInput,
+  ) => Effect.Effect<SpeechTextGenerationResult, TextGenerationError>;
 }

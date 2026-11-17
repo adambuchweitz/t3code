@@ -11,11 +11,13 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
+  buildSpeechTextPrompt,
   buildThreadTitlePrompt,
 } from "./textGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
+  sanitizeSpeechText,
   sanitizeThreadTitle,
 } from "./textGenerationUtils.ts";
 
@@ -194,6 +196,18 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateSpeechText: ProviderTextGeneration["generateSpeechText"] = Effect.fn(
+    `${name}.generateSpeechText`,
+  )(function* (input) {
+    const generated = yield* run({
+      operation: "generateSpeechText",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildSpeechTextPrompt({ message: input.message }),
+    });
+    return { speech: sanitizeSpeechText(generated.speech) };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -201,5 +215,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateSpeechText,
   } satisfies ProviderTextGeneration;
 }

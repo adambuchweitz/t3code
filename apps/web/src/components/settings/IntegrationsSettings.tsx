@@ -118,6 +118,7 @@ import {
 import { useSearchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { VoiceSettings } from "./VoiceSettings";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
 import type { ImportOutcome } from "./browserImportWizard.logic";
 
@@ -1731,6 +1732,7 @@ export function BrowserSettingsPanel() {
 export function DevicesSettingsPanel() {
   return (
     <SettingsPageContainer>
+      <VoiceSettings />
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

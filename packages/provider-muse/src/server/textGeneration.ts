@@ -32,11 +32,13 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildSpeechTextPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
+  sanitizeSpeechText,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
 
@@ -394,6 +396,16 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const generateSpeechText: ProviderTextGeneration["generateSpeechText"] = Effect.fn(
+    "MuseTextGeneration.generateSpeechText",
+  )(function* (input) {
+    const generated = yield* runMuseJson({
+      operation: "generateSpeechText",
+      ...buildSpeechTextPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+    return { speech: sanitizeSpeechText(generated.speech) };
+  });
   return {
     generateCommitMessage,
     generatePrContent,
@@ -401,5 +413,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateSpeechText,
   } satisfies ProviderTextGeneration;
 });

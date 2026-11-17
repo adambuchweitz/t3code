@@ -24,6 +24,7 @@ import type {
   EnvironmentId,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2RemoteTaskChild,
+  OrchestrationV2RunStatus,
   OrchestrationV2ThreadShell,
   NodeId,
   ThreadId,
@@ -205,6 +206,32 @@ export function useThreadLastVisitedAt(ref: ScopedThreadRef | null): DateTime.Ut
 export function useThreadUpdatedAt(ref: ScopedThreadRef | null): DateTime.Utc | null {
   return useAtomValue(
     ref === null ? EMPTY_UPDATED_AT_ATOM : environmentThreadDetails.updatedAtAtom(ref),
+  );
+}
+
+const NO_RUN_STATUS_ATOM = Atom.make<OrchestrationV2RunStatus | null>(null).pipe(
+  Atom.withLabel("web-thread-run-status:none"),
+);
+
+// Keyed by thread and run. The value is a status string, so a subscriber
+// re-renders only when that run's status changes, not on every streamed item.
+const runStatusAtomFamily = Atom.family((key: string) => {
+  const [encodedThread = "", runId = ""] = key.split(/\n(.*)/s);
+  const ref = parseThreadKey(encodedThread);
+  return Atom.make(
+    (get): OrchestrationV2RunStatus | null =>
+      get(environmentThreadDetails.threadAtom(ref))?.projection.runs.find((run) => run.id === runId)
+        ?.status ?? null,
+  ).pipe(Atom.withLabel(`web-thread-run-status:${key}`));
+});
+
+/** One run's status from loaded thread detail, or null when the run is not in it. */
+export function useThreadRunStatus(
+  ref: ScopedThreadRef,
+  runId: string | null,
+): OrchestrationV2RunStatus | null {
+  return useAtomValue(
+    runId === null ? NO_RUN_STATUS_ATOM : runStatusAtomFamily(`${threadKey(ref)}\n${runId}`),
   );
 }
 

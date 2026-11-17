@@ -88,6 +88,14 @@ import {
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
 import {
+  SpeechAudioRequest,
+  SpeechInputError,
+  SpeechTextRequest,
+  SpeechTextResult,
+  SpeechUnavailableError,
+  SpeechVoiceProfiles,
+} from "./speech.ts";
+import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
   RelayEnvironmentConfigRequest,
@@ -984,6 +992,40 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+const EnvironmentSpeechErrors = [
+  SpeechInputError,
+  SpeechUnavailableError,
+  EnvironmentAuthInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+
+class EnvironmentSpeechHttpApi extends HttpApiGroup.make("speech")
+  .add(
+    // Audio streams as VoiceStudio produces it so playback starts before synthesis finishes.
+    HttpApiEndpoint.post("audio", "/api/speech/audio", {
+      headers: OptionalBearerHeaders,
+      payload: SpeechAudioRequest,
+      success: HttpApiSchema.StreamUint8Array({ contentType: "audio/mpeg" }),
+      error: EnvironmentSpeechErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("text", "/api/speech/text", {
+      headers: OptionalBearerHeaders,
+      payload: SpeechTextRequest,
+      success: SpeechTextResult,
+      error: EnvironmentSpeechErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("voices", "/api/speech/voices", {
+      headers: OptionalBearerHeaders,
+      success: SpeechVoiceProfiles,
+      error: EnvironmentSpeechErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(
     HttpApiEndpoint.post("linkProof", "/api/connect/link-proof", {
@@ -1097,6 +1139,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMcpOAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
+  .add(EnvironmentSpeechHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)

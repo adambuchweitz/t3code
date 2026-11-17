@@ -364,3 +364,141 @@ export const SpeechStreamEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
 ]);
 export type SpeechStreamEvent = typeof SpeechStreamEvent.Type;
+
+import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+
+/** Max characters sent to the speech service. Shared by client and server. */
+export const MAX_SPEECH_TEXT_CHARS = 4000;
+
+/**
+ * VoiceStudio's default voice. The OpenAI voice names are aliases VoiceStudio maps to that same
+ * default, so a preference saved with one of them still means "default"; any other id selects a
+ * saved VoiceStudio profile.
+ */
+export const DEFAULT_SPEECH_VOICE = "alloy";
+const DEFAULT_VOICE_ALIASES: ReadonlySet<string> = new Set([
+  DEFAULT_SPEECH_VOICE,
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "fable",
+  "nova",
+  "onyx",
+  "sage",
+  "shimmer",
+  "verse",
+  "marin",
+  "cedar",
+]);
+
+export function isDefaultSpeechVoice(voice: string): boolean {
+  const trimmed = voice.trim();
+  return trimmed === "" || DEFAULT_VOICE_ALIASES.has(trimmed);
+}
+
+export const SPEECH_GENDERS = ["male", "female"] as const;
+export const SPEECH_AGES = ["child", "teenager", "young adult", "middle-aged", "elderly"] as const;
+export const SPEECH_PITCHES = [
+  "very low pitch",
+  "low pitch",
+  "moderate pitch",
+  "high pitch",
+  "very high pitch",
+] as const;
+export const SPEECH_ACCENTS = [
+  "american accent",
+  "british accent",
+  "australian accent",
+  "chinese accent",
+  "canadian accent",
+  "indian accent",
+  "korean accent",
+  "portuguese accent",
+  "russian accent",
+  "japanese accent",
+] as const;
+
+export const SpeechOptions = Schema.Struct({
+  speed: Schema.Number.check(Schema.isBetween({ minimum: 0.25, maximum: 4 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(1)),
+  ),
+  language: Schema.String.check(Schema.isMaxLength(20)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  gender: Schema.Literals(["", ...SPEECH_GENDERS]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  age: Schema.Literals(["", ...SPEECH_AGES]).pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  pitch: Schema.Literals(["", ...SPEECH_PITCHES]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  accent: Schema.Literals(["", ...SPEECH_ACCENTS]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  whisper: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  seed: Schema.NullOr(Schema.Int).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  steps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 128 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(16)),
+  ),
+  guidance: Schema.Number.check(Schema.isBetween({ minimum: 0.1, maximum: 20 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(2)),
+  ),
+});
+export type SpeechOptions = typeof SpeechOptions.Type;
+export const DEFAULT_SPEECH_OPTIONS: SpeechOptions = Schema.decodeSync(SpeechOptions)({});
+
+const SpeechText = Schema.String.check(Schema.isMaxLength(MAX_SPEECH_TEXT_CHARS));
+
+export const SpeechAudioRequest = Schema.Struct({
+  text: SpeechText,
+  voice: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_SPEECH_VOICE))),
+  options: SpeechOptions.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Speaks the text as written instead of reshaping it for speech first. */
+  verbatim: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+});
+export type SpeechAudioRequest = typeof SpeechAudioRequest.Type;
+
+export const SpeechTextRequest = Schema.Struct({ text: SpeechText });
+export const SpeechTextResult = Schema.Struct({ speech: Schema.String });
+
+export const SpeechVoiceProfile = Schema.Struct({ id: Schema.String, name: Schema.String });
+export const SpeechVoiceProfiles = Schema.Array(SpeechVoiceProfile);
+export type SpeechVoiceProfiles = typeof SpeechVoiceProfiles.Type;
+
+export class SpeechInputError extends Schema.TaggedError<SpeechInputError>()(
+  "SpeechInputError",
+  { reason: Schema.Literals(["empty_text", "text_too_long"]) },
+  { httpApiStatus: 400 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(SpeechInputError)(this, { status: 400 });
+  }
+
+  override get message(): string {
+    return this.reason === "empty_text"
+      ? "There is no response text to read yet."
+      : `This text is longer than the ${MAX_SPEECH_TEXT_CHARS}-character read-aloud limit.`;
+  }
+}
+
+export class SpeechUnavailableError extends Schema.TaggedError<SpeechUnavailableError>()(
+  "SpeechUnavailableError",
+  {
+    /** Set when VoiceStudio answered with an error status; absent when it was unreachable. */
+    providerStatus: Schema.optionalKey(Schema.Int),
+    cause: Schema.optional(Schema.Defect()),
+  },
+  { httpApiStatus: 502 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(SpeechUnavailableError)(this, { status: 502 });
+  }
+
+  override get message(): string {
+    return this.providerStatus === undefined
+      ? "Could not reach VoiceStudio on lan-party. Check that this T3 server is connected to Tailscale."
+      : `VoiceStudio rejected the request (status ${this.providerStatus}).`;
+  }
+}

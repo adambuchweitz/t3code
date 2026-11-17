@@ -231,6 +231,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateTranscriptionPostProcessing(input),
         v2: v2.generateTranscriptionPostProcessing(input),
       }),
+    generateSpeechText: (input) =>
+      byOpenCodeRuntime(resolve, {
+        v1: v1.generateSpeechText(input),
+        v2: v2.generateSpeechText(input),
+      }),
   };
 }
 
