@@ -270,6 +270,7 @@ describe("V2 environment commands", () => {
 
       yield* startThreadTurn({
         commandId: CommandId.make("launch-existing-worktree"),
+        snoozeUntil: "2099-07-25T10:00:00.000Z",
         threadId: v2ThreadId,
         message: {
           messageId: MessageId.make("message-existing-worktree"),
@@ -294,6 +295,7 @@ describe("V2 environment commands", () => {
         },
       }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
+      expect(launches[0]).not.toHaveProperty("snoozeUntil");
       expect(launches[0]).toMatchObject({
         threadId: v2ThreadId,
         title: "Continue here",
@@ -305,6 +307,31 @@ describe("V2 environment commands", () => {
         },
       });
     }).pipe(Effect.provide(layerTestRandom)),
+  );
+
+  it.effect.each(["start", "auto", "queue", "steer", "restart"] as const)(
+    "sends and snoozes existing threads with %s delivery",
+    (dispatchMode) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({ commands, projects: [] });
+        const snoozeUntil = "2099-07-25T10:00:00.000Z";
+        yield* startThreadTurn({
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make(`snooze-${dispatchMode}`),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          dispatchMode,
+          snoozeUntil,
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toMatchObject({ type: "message.dispatch", snoozeUntil });
+      }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("sends title seed and delivery intent without fetching the full projection", () =>

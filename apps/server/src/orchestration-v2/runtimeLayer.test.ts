@@ -12955,6 +12955,83 @@ it.layer(layerTest)("snooze queued runs", (it) => {
         }
       }),
   );
+
+  it.effect.each([
+    { name: "awake", snoozedFirst: false, expired: false, queued: false },
+    { name: "snoozed", snoozedFirst: true, expired: false, queued: false },
+    { name: "awake with queued send", snoozedFirst: false, expired: false, queued: true },
+    { name: "snoozed with queued send", snoozedFirst: true, expired: false, queued: true },
+    { name: "awake with expired snooze", snoozedFirst: false, expired: true, queued: false },
+    { name: "snoozed with expired snooze", snoozedFirst: true, expired: true, queued: false },
+  ])("a user message applies snoozeUntil to a thread that is $name", (testCase) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make(`send-snooze:${testCase.name}`);
+      const now = yield* DateTime.now;
+      const snoozeUntil = testCase.expired
+        ? DateTime.formatIso(DateTime.add(now, { seconds: -1 }))
+        : "2099-07-25T10:00:00.000Z";
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("send-snooze-project"),
+        title: "Clear the decks",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/send-snooze",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      if (testCase.queued) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`active:${threadId}`),
+          threadId,
+          messageId: MessageId.make(`active:${threadId}`),
+          text: "Already working",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      if (testCase.snoozedFirst) {
+        yield* orchestrator.dispatch({
+          type: "thread.snooze",
+          commandId: CommandId.make(`snooze:${threadId}`),
+          threadId,
+          snoozedUntil: "2099-07-25T09:00:00.000Z",
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`send:${threadId}`),
+        threadId,
+        messageId: MessageId.make(`send:${threadId}`),
+        text: "Fix the failing test",
+        attachments: [],
+        modelSelection,
+        snoozeUntil,
+        dispatchMode: { type: testCase.queued ? "queue_after_active" : "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      if (testCase.expired) {
+        assert.isNull(projection.thread.snoozedUntil);
+        assert.isNull(projection.thread.snoozedAt);
+      } else {
+        assert.equal(DateTime.formatIso(projection.thread.snoozedUntil!), snoozeUntil);
+        assert.isNotNull(projection.thread.snoozedAt);
+      }
+      assert.equal(projection.runs.length, testCase.queued ? 2 : 1);
+      if (testCase.queued) assert.equal(projection.runs[1]?.status, "queued");
+    }),
+  );
 });
 
 const SCRATCH_ROOT = "/tmp/runtime-layer-promotion-scratch";

@@ -3642,6 +3642,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     explicitQueue: Schema.optional(Schema.Literal(true)),
+    /** Snoozes the thread until then instead of waking it, so the reply waits for the user. */
+    snoozeUntil: Schema.optional(IsoDateTime),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,

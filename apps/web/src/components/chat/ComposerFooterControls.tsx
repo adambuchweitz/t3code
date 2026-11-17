@@ -199,6 +199,7 @@ export function ComposerPermissionsSection(props: {
 
 export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   children?: React.ReactNode;
+  sendSnoozeLabel?: string | null;
   compact: boolean;
   canOperateThread: boolean;
   isPreparingWorktree: boolean;
@@ -236,6 +237,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   return (
     <>
       <ComposerPrimaryActions
+        sendSnoozeLabel={props.sendSnoozeLabel ?? null}
         compact={props.compact}
         canOperateThread={props.canOperateThread}
         pendingAction={props.pendingAction}

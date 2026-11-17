@@ -5,6 +5,9 @@ import { m } from "~/i18n/messages";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
+import { resolveClearTheDecksSnooze, useClearTheDecks } from "../../hooks/useClearTheDecks";
+import { planClearTheDecksAdvance } from "../../clearTheDecksNavigation";
+import { readEnvironmentSupportsSendAndSnooze } from "../../state/entities";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -386,6 +389,7 @@ export function useComposerSend(input: ComposerSendInput) {
     linkCheckoutPullRequest,
   } = input;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
+  const { enabled: clearTheDecksEnabled, preset: clearTheDecksPreset } = useClearTheDecks();
   const handleNewThread = useNewThreadHandler();
   const navigate = useNavigate();
   const clientSettingsHydrated = useClientSettingsHydrated();
@@ -1543,6 +1547,7 @@ export function useComposerSend(input: ComposerSendInput) {
 
     let backgroundDraftOpened = false;
     let turnStartSucceeded = false;
+    let decksAdvance: { nextThread: ReturnType<typeof planClearTheDecksAdvance> } | null = null;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
@@ -1586,6 +1591,14 @@ export function useComposerSend(input: ComposerSendInput) {
           )
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      const shouldSnooze = clearTheDecksEnabled && !isLocalDraftThread && bootstrap === undefined;
+      const supportsSendAndSnooze = readEnvironmentSupportsSendAndSnooze(environmentId);
+      const snoozeUntil =
+        shouldSnooze && supportsSendAndSnooze
+          ? resolveClearTheDecksSnooze(clearTheDecksPreset, new Date()).snoozedUntil
+          : undefined;
+      const nextAttentionThread =
+        snoozeUntil === undefined ? null : planClearTheDecksAdvance(routeThreadKey);
       const startPromise = startThreadTurn({
         environmentId,
         input: {
@@ -1607,6 +1620,7 @@ export function useComposerSend(input: ComposerSendInput) {
           interactionMode: DEFAULT_INTERACTION_MODE,
           dispatchMode: turnDispatchMode,
           ...(freshArm === undefined ? {} : { freshContext: true }),
+          ...(snoozeUntil === undefined ? {} : { snoozeUntil }),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
@@ -1655,6 +1669,16 @@ export function useComposerSend(input: ComposerSendInput) {
             checkoutPullRequestUrl,
           );
         }
+        if (snoozeUntil !== undefined) decksAdvance = { nextThread: nextAttentionThread };
+        if (shouldSnooze && !supportsSendAndSnooze) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Message sent, thread wasn't snoozed",
+              description: "Update this environment's server to use Clear the decks.",
+            }),
+          );
+        }
         setKeepFullHistory(routeThreadKey, false);
         if (freshArm !== undefined) disarmFreshSession(routeThreadKey, freshArm);
         clearUsageLimitsFor(routeThreadKey);
@@ -1688,6 +1712,7 @@ export function useComposerSend(input: ComposerSendInput) {
             });
           }
         } else if (
+          snoozeUntil === undefined &&
           submissionIntent === "background" &&
           currentRouteThreadKeyRef.current === routeThreadKey
         ) {
@@ -1801,6 +1826,23 @@ export function useComposerSend(input: ComposerSendInput) {
       }
     }
     sendInFlightRef.current = false;
+    if (decksAdvance && currentRouteThreadKeyRef.current === routeThreadKey) {
+      if (decksAdvance.nextThread) {
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(decksAdvance.nextThread),
+        });
+      } else {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Decks cleared",
+            description: "No more threads need attention in this sidebar.",
+          }),
+        );
+        void navigate({ to: "/" });
+      }
+    }
     setSetupQueueSendThreadKey((current) => (current === activeThreadKey ? null : current));
     if (!turnStartSucceeded) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>

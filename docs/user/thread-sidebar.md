@@ -61,6 +61,14 @@ Enable **Settings → Labs → Boring sidebar (group by project)** on web/deskto
 
 Customize presets in **Settings → Threads → Snooze options** (durations like `3 hours` or times like `9:00 PM tomorrow`), or pick **Snooze → Custom…** for an exact date/time or duration. **Snooze → Indefinitely** keeps a thread snoozed until you wake it (it still wakes early on approvals, questions, errors, or new messages). Choose **Wake thread** to bring a thread back early.
 
+### Clear the decks
+
+Work through your threads one at a time on web and desktop. Turn on **Clear the decks** in the sidebar's top-right corner or from the command palette, and pick a snooze duration beside the toggle (default one hour).
+
+- **Send and move on**: Sending in an existing thread starts the work, snoozes the thread, and opens the next thread needing attention. New threads send normally; snoozed threads still return early for approvals, questions, or failures.
+- **Layout**: The sidebar glows and switches to the flat layout with its Snoozed shelf. Turning the mode off restores your layout; snoozed threads keep their wake times.
+- **Older servers**: If a server needs an update, messages send without snoozing and a notice says so.
+
 ## Link a pull request
 
 The server automatically links open PRs matching an unsettled thread's branch. On web/desktop, right-click any PR link in a thread and choose **Link to thread** or **Unlink from thread** to override it. Linked PRs participate in auto-settlement.

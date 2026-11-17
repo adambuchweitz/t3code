@@ -191,6 +191,7 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly snoozeUntil?: string;
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -890,6 +891,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   return yield* dispatchMessage(
     {
       type: "message.dispatch",
+      ...(input.snoozeUntil === undefined ? {} : { snoozeUntil: input.snoozeUntil }),
       commandId,
       createdBy: "user",
       creationSource: input.creationSource ?? "web",

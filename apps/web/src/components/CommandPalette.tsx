@@ -2,6 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { useClearTheDecks } from "../hooks/useClearTheDecks";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -64,6 +65,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BugIcon,
+  BrushCleaningIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -446,6 +448,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const gt = useGT();
   const messages = useMessages();
+  const { enabled: clearTheDecksEnabled, setEnabled: setClearTheDecksEnabled } = useClearTheDecks();
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
@@ -1381,7 +1384,16 @@ function OpenCommandPaletteDialog(props: {
     if (firstOption) startNewProject(firstOption.environmentId, null);
   };
 
-  const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [
+    {
+      kind: "action",
+      value: "action:clear-the-decks",
+      searchTerms: ["clear the decks", "snooze", "focus", "toggle"],
+      title: clearTheDecksEnabled ? "Turn off Clear the decks" : "Turn on Clear the decks",
+      icon: <BrushCleaningIcon className={ITEM_ICON_CLASS} />,
+      run: async () => setClearTheDecksEnabled((value) => !value),
+    },
+  ];
 
   if (projects.length > 0) {
     const activeProjectTitle =
