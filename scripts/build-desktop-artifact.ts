@@ -4161,6 +4161,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   }
 
   if (options.platform === "win") {
+    // The limit keeps NSIS updates fast; a machine-local build installed from its ZIP may raise it.
+    const payloadFileLimit = yield* Config.Int("T3CODE_WINDOWS_PAYLOAD_FILE_LIMIT").pipe(
+      Config.option,
+    );
     yield* validateWindowsPackagedPayload({
       stageDistDir,
       appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
@@ -4170,8 +4174,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         platform: options.platform,
         runtimeArchivePath: options.wslRuntime,
       }),
-      // The limit keeps NSIS updates fast; a machine-local build installed from its ZIP may raise it.
-      fileLimit: Number(process.env.T3CODE_WINDOWS_PAYLOAD_FILE_LIMIT) || undefined,
+      ...Option.match(payloadFileLimit, {
+        onNone: () => ({}),
+        onSome: (fileLimit) => ({ fileLimit }),
+      }),
       verbose: options.verbose,
     });
   }
