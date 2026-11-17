@@ -3643,6 +3643,85 @@ const writeHtmlRenderRun = Effect.fn("test.writeHtmlRenderRun")(function* (input
 });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect(
+    "persists a GitButler association on create, update, and clear without changing refs",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = ThreadId.make("gitbutler-thread");
+        const projectId = ProjectId.make("gitbutler-project");
+        yield* seedProject({
+          projectId,
+          title: "GitButler project",
+          workspaceRoot: "/workspace/gitbutler",
+          defaultModelSelection: null,
+          createdAt: "2026-09-07T00:00:00.000Z",
+        });
+        const created = yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("gitbutler-create"),
+          threadId,
+          projectId,
+          title: "GitButler thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "gitbutler/workspace",
+          worktreePath: null,
+          gitbutlerBranch: "feature/api",
+        });
+        assert.include(created.storedEvents[0]?.event.payload, { gitbutlerBranch: "feature/api" });
+        const maintenance = yield* ProjectionReplay.ProjectionReplay;
+        assert.isTrue((yield* maintenance.rebuild).valid);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.gitbutlerBranch,
+          "feature/api",
+        );
+        for (const [index, gitbutlerBranch] of ["feature/ui", undefined, null].entries()) {
+          const updated = yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`gitbutler-update-${index}`),
+            threadId,
+            title: `GitButler thread ${index}`,
+            ...(gitbutlerBranch === undefined ? {} : { gitbutlerBranch }),
+          });
+          const expected = gitbutlerBranch === undefined ? "feature/ui" : gitbutlerBranch;
+          assert.include(updated.storedEvents[0]?.event.payload, { gitbutlerBranch: expected });
+          assert.include((yield* orchestrator.getThreadProjection(threadId)).thread, {
+            branch: "gitbutler/workspace",
+            worktreePath: null,
+            gitbutlerBranch: expected,
+          });
+          assert.equal(
+            (yield* orchestrator.getShellSnapshot()).threads.find(
+              (thread) => thread.id === threadId,
+            )?.gitbutlerBranch,
+            expected,
+          );
+        }
+        for (const [index, workspace] of [
+          { branch: "feature/ordinary" },
+          { worktreePath: "/workspace/other" },
+        ].entries()) {
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`gitbutler-reassociate-${index}`),
+            threadId,
+            gitbutlerBranch: "feature/api",
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`gitbutler-move-${index}`),
+            threadId,
+            ...workspace,
+          });
+          assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.gitbutlerBranch);
+        }
+      }),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

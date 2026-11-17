@@ -1,5 +1,38 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 import type { McpToolExposureMode } from "./mcpSession.ts";
+import { isGitButlerWorkspaceRef } from "@t3tools/shared/git";
+
+export function t3GitButlerPrompt(input: {
+  readonly prompt: string;
+  readonly cwd: string | null;
+  readonly worktreePath: string | null;
+  readonly refName: string | null;
+  readonly gitbutlerBranch: string | null;
+}): string {
+  if (
+    input.cwd === null ||
+    input.worktreePath !== null ||
+    input.refName === null ||
+    !isGitButlerWorkspaceRef(input.refName) ||
+    input.prompt.trim() === "" ||
+    input.prompt.trimStart().startsWith("/")
+  )
+    return input.prompt;
+  const branch = input.gitbutlerBranch;
+  const target =
+    branch === null
+      ? "<name>/<topic>"
+      : /^[\w./-]+$/.test(branch)
+        ? branch
+        : `'${branch.replaceAll("'", "'\\''")}'`;
+  return `<t3_code_gitbutler>
+For this turn, cwd ${JSON.stringify(input.cwd)} is a shared GitButler workspace.
+Use \`but\` for every version-control write: commit, branch, amend, squash, move, push, PR, pull. Never \`git checkout\`, \`git switch\`, \`git stash\`, \`git rebase\`, \`git reset\`, \`git commit\`, or \`git cherry-pick\`; read-only git is fine.
+${branch === null ? "No linked branch: create a new <name>/<topic> branch with" : `Linked branch: ${JSON.stringify(branch)}. Commit with`} \`but commit -b ${target} -m <msg> <file-or-hunk ids>\`. Commit only changes this thread made; other agents share the checkout.
+${branch === null ? "Then link the new branch: call" : "To change this thread's branch, call"} \`t3_thread_update\` with \`action:"set_gitbutler_branch", gitbutlerBranch:"<branch>"\`.
+Read \`but skill reference\` and \`but <cmd> --help\` for syntax. Never use \`-s\` (it means \`--switch\`).
+</t3_code_gitbutler>\n\n${input.prompt}`;
+}
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const t3CodeOrchestrationSections = (nativeSubagents = true): ReadonlyArray<string> => [

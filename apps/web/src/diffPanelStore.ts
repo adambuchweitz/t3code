@@ -18,6 +18,7 @@ export type DiffPanelSelection =
   | { kind: "branch"; baseRef: string | null }
   | { kind: "unstaged" }
   | { kind: "commit"; sha: string; baseRef: string | null }
+  | { kind: "gitbutler-branch"; branch: string }
   | {
       kind: "turn";
       turnId: RunId;
@@ -33,9 +34,11 @@ const DEFAULT_SELECTION: DiffPanelSelection = { kind: "branch", baseRef: null };
 interface DiffPanelStoreState {
   byThreadKey: Record<string, DiffPanelSelection>;
   branchBaseRefByThreadKey: Record<string, string | null>;
+  resetSelection: (ref: ScopedThreadRef) => void;
   selectGitScope: (ref: ScopedThreadRef, scope: "branch" | "unstaged") => void;
   selectBranchBaseRef: (ref: ScopedThreadRef, baseRef: string | null) => void;
   selectToolCall: (ref: ScopedThreadRef, target: ToolCallDiffTarget) => void;
+  selectGitButlerBranch: (ref: ScopedThreadRef, branch: string) => void;
   selectTurn: (ref: ScopedThreadRef, turnId: RunId, filePath?: string) => void;
   selectTurnRepository: (ref: ScopedThreadRef, turnId: RunId, repository: string | null) => void;
   selectCommit: (ref: ScopedThreadRef, sha: string) => void;
@@ -63,6 +66,13 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
     (set) => ({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      resetSelection: (ref) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          if (!(threadKey in state.byThreadKey)) return state;
+          const { [threadKey]: _removed, ...byThreadKey } = state.byThreadKey;
+          return { byThreadKey };
+        }),
       selectGitScope: (ref, scope) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
@@ -104,6 +114,21 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
             [scopedThreadKey(ref)]: { kind: "tool-call", ...target },
           },
         })),
+      selectGitButlerBranch: (ref, branch) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          const previous = state.byThreadKey[threadKey];
+          return {
+            byThreadKey: {
+              ...state.byThreadKey,
+              [threadKey]: { kind: "gitbutler-branch", branch },
+            },
+            branchBaseRefByThreadKey:
+              previous?.kind === "branch"
+                ? { ...state.branchBaseRefByThreadKey, [threadKey]: previous.baseRef }
+                : state.branchBaseRefByThreadKey,
+          };
+        }),
       selectTurn: (ref, turnId, filePath) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
@@ -234,9 +259,24 @@ export const useDiffPanelSessionStore = create<DiffPanelSessionStoreState>()((se
 export function selectThreadDiffPanelSelection(
   byThreadKey: Record<string, DiffPanelSelection>,
   ref: ScopedThreadRef | null | undefined,
+  defaults?: {
+    readonly gitbutlerBranch?: string | null;
+    readonly appliedBranches?: ReadonlyArray<string>;
+    readonly baseRef?: string | null;
+  },
 ): DiffPanelSelection {
   if (!ref) return DEFAULT_SELECTION;
-  return byThreadKey[scopedThreadKey(ref)] ?? DEFAULT_SELECTION;
+  const selected = byThreadKey[scopedThreadKey(ref)];
+  if (selected)
+    return selected.kind === "gitbutler-branch" &&
+      defaults?.appliedBranches !== undefined &&
+      !defaults.appliedBranches.includes(selected.branch)
+      ? { kind: "branch", baseRef: defaults.baseRef ?? null }
+      : selected;
+  if (defaults?.gitbutlerBranch && defaults.appliedBranches?.includes(defaults.gitbutlerBranch))
+    return { kind: "gitbutler-branch", branch: defaults.gitbutlerBranch };
+  // Callers compare selections by identity, so the plain default stays the shared object.
+  return defaults?.baseRef ? { kind: "branch", baseRef: defaults.baseRef } : DEFAULT_SELECTION;
 }
 
 export function selectThreadBranchBaseRef(

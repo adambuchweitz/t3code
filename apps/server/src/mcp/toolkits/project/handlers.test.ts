@@ -43,6 +43,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as SourceControlProviderRegistry from "../../../sourceControl/SourceControlProviderRegistry.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as GitButlerWorkspace from "../../../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -823,6 +824,46 @@ it.effect("a launch binds only an existing checkout that is one of the project's
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("a launch into a new worktree refuses a GitButler workspace base with its reason", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+      checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
+        Effect.fail(
+          new ThreadLaunch.ThreadLaunchGitButlerBaseError({
+            projectId,
+            baseRef: workspaceStrategy.type === "worktree" ? workspaceStrategy.baseRef : "",
+          }),
+        ),
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const refused = (yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        workspaceStrategy: {
+          type: "worktree",
+          baseRef: "gitbutler/workspace",
+          startFromOrigin: true,
+        },
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies))).at(-1)?.result;
+    expect(refused).toMatchObject({ code: "invalid_request" });
+    const { message } = refused as { message: string };
+    expect(message).toContain("merges every applied branch");
+    expect(message).toContain("No thread was created.");
+    expect(message).not.toContain("does not resolve");
+    expect(message).not.toContain("no usable remote");
+    expect(launched).toEqual([]);
+  }),
+);
+
 it.effect("a launch into a new worktree creates nothing when its base ref has no commit", () =>
   Effect.gen(function* () {
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
@@ -1290,6 +1331,9 @@ it.effect("an agent's clone is not cut off while git is still transferring", () 
         Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
           resolveLink: () => undefined,
         }),
+      ),
+      Layer.provide(
+        Layer.mock(GitButlerWorkspace.GitButlerWorkspace)({ invalidate: () => Effect.void }),
       ),
       Layer.provide(
         Layer.mock(GitVcsDriver.GitVcsDriver)({

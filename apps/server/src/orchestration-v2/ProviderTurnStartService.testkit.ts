@@ -2,7 +2,9 @@ import { SourceControlProviderError, SourceControlProviderKind } from "@t3tools/
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ServerConfig from "../config.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as GitManager from "../git/GitManager.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "../vcs/VcsProjectConfig.ts";
@@ -36,6 +38,7 @@ export const layer = Layer.mergeAll(
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),
+    localStatus: () => Effect.succeed({ refName: null } as never),
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () => Effect.succeedNone,
@@ -44,7 +47,12 @@ export const layer = Layer.mergeAll(
 
 // Keep repository detection, branch selection and worktree creation on the real Git path.
 export const layerRealGit = GitWorkflow.layer.pipe(
-  Layer.provide(GitManager.layer),
+  Layer.provide(
+    GitManager.layer.pipe(
+      Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
+      Layer.provide(GitButlerWorkspace.layer),
+    ),
+  ),
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
@@ -69,6 +77,7 @@ export const layerRealGit = GitWorkflow.layer.pipe(
     ),
   ),
   Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer))),
+  Layer.provide(GitButlerWorkspace.layer),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-recreate-" })),

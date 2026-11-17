@@ -1,6 +1,7 @@
 import { T, useGT, useMessages, Var } from "gt-react";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
+import { useShallow } from "zustand/react/shallow";
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
 import {
   isAtomCommandInterrupted,
@@ -8,12 +9,14 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   CHECKPOINT_DIFF_TRUNCATED_MARKER,
   type ReviewBranchCommitsResult,
   type ScopedThreadRef,
   type RunId,
 } from "@t3tools/contracts";
+import { gitButlerAppliedBranches } from "@t3tools/shared/git";
 import {
   ArrowRightIcon,
   CheckIcon,
@@ -102,8 +105,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -142,6 +148,9 @@ const ALL_REPOSITORIES = "__all_repositories__";
 const THREAD_FOLDER = "__thread_folder__";
 const NO_GIT_REPOSITORIES: ReturnType<typeof threadChangedRepositories> = Object.freeze([]);
 const NO_TURN_DIFF_SECTIONS: ReadonlyArray<TurnDiffSection> = [];
+// Matches the server's source id, so a scope value also names its review source.
+const GITBUTLER_BRANCH_SCOPE_PREFIX = "gitbutler-branch:";
+const gitButlerBranchScopeValue = (branch: string) => `${GITBUTLER_BRANCH_SCOPE_PREFIX}${branch}`;
 const DIFF_FILE_TREE_STORAGE_KEY = "t3code.diffFileTreeOpen";
 
 const EMPTY_COLLAPSED_DIFF_FILE_KEYS: ReadonlySet<string> = new Set();
@@ -311,8 +320,17 @@ export default function DiffPanel({
   const activeRepositoryRoot =
     gitStatusQuery.data?.workingTree.rootPath ??
     (activeThread?.worktreePath ? undefined : activeProject?.repositoryIdentity?.rootPath);
-  const storedDiffSelection = useDiffPanelStore((state) =>
-    selectThreadDiffPanelSelection(state.byThreadKey, panelThreadRef),
+  const appliedGitButlerBranches = gitButlerAppliedBranches(gitStatusQuery.data?.workspace);
+  const storedDiffSelection = useDiffPanelStore(
+    useShallow((state) =>
+      selectThreadDiffPanelSelection(state.byThreadKey, panelThreadRef, {
+        gitbutlerBranch: activeThread?.gitbutlerBranch ?? null,
+        baseRef: panelThreadRef
+          ? (state.branchBaseRefByThreadKey[scopedThreadKey(panelThreadRef)] ?? null)
+          : null,
+        ...(gitStatusQuery.data === null ? {} : { appliedBranches: appliedGitButlerBranches }),
+      }),
+    ),
   );
   const threadFolderIsRepo = gitStatusQuery.data?.isRepo ?? true;
   // The checkout the Git scopes read: the thread's folder, or a repository the thread changed.
@@ -383,7 +401,8 @@ export default function DiffPanel({
   const isGitSelection =
     diffSelection.kind === "branch" ||
     diffSelection.kind === "unstaged" ||
-    diffSelection.kind === "commit";
+    diffSelection.kind === "commit" ||
+    diffSelection.kind === "gitbutler-branch";
   const toolCallItems = useQuietThreadVisibleTurnItems(toolCallSelection ? routeThreadRef : null);
   const toolCallDetail = useTurnItemDetail(
     toolCallSelection && routeThreadRef
@@ -405,15 +424,24 @@ export default function DiffPanel({
   }, [storedDiffSelection, orderedTurnDiffSummaries, routeThreadRef]);
 
   const selectedRunId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
+  // GitButler branches belong to the thread folder's checkout, not a tracked repository's.
+  const selectedGitButlerBranch =
+    diffSelection.kind === "gitbutler-branch" && gitRepository === null
+      ? diffSelection.branch
+      : null;
   const selectedGitScope =
     diffSelection.kind === "unstaged" || diffSelection.kind === "commit"
       ? diffSelection.kind
-      : "branch";
+      : selectedGitButlerBranch !== null
+        ? "gitbutler-branch"
+        : "branch";
   const selectedCommitSha = diffSelection.kind === "commit" ? diffSelection.sha : null;
   const selectedBaseRef =
     diffSelection.kind === "branch" || diffSelection.kind === "commit"
       ? diffSelection.baseRef
       : null;
+  // `but diff` has no whitespace option, so a branch diff always shows it.
+  const ignoreWhitespace = selectedGitButlerBranch === null && diffIgnoreWhitespace;
   const selectedFilePath = diffSelection.kind === "turn" ? (diffSelection.filePath ?? null) : null;
   const selectedFileRevealRequestId =
     diffSelection.kind === "turn" ? diffSelection.revealRequestId : 0;
@@ -423,13 +451,17 @@ export default function DiffPanel({
       : (orderedTurnDiffSummaries.find((summary) => summary.runId === selectedRunId) ??
         orderedTurnDiffSummaries[0]);
   const selectedCheckpointTurnCount = selectedTurn?.checkpointTurnCount;
+  const gitScopeValue =
+    selectedGitButlerBranch === null
+      ? selectedGitScope
+      : gitButlerBranchScopeValue(selectedGitButlerBranch);
   const reviewSectionId = toolCallSelection
     ? `tool-call:${toolCallSelection.threadId}:${toolCallSelection.itemId}`
     : selectedTurn
       ? `turn:${selectedTurn.runId}`
       : selectedCommitSha !== null
         ? `commit:${selectedCommitSha}`
-        : selectedGitScope;
+        : gitScopeValue;
   const collapseScopeKey = panelThreadRef
     ? `${panelThreadRef.environmentId}:${panelThreadRef.threadId}:${reviewSectionId}`
     : null;
@@ -458,16 +490,20 @@ export default function DiffPanel({
           cwd: gitCwd,
           ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
           ...(selectedCommitSha !== null ? { commitSha: selectedCommitSha } : {}),
-          ignoreWhitespace: diffIgnoreWhitespace,
           metadataOnly: true,
-          ...(selectedCommitSha === null
-            ? {
-                sourceKind:
-                  selectedGitScope === "unstaged"
-                    ? ("working-tree" as const)
-                    : ("branch-range" as const),
-              }
-            : {}),
+          ...(selectedGitButlerBranch !== null
+            ? { gitbutlerBranch: selectedGitButlerBranch }
+            : {
+                ignoreWhitespace: diffIgnoreWhitespace,
+                ...(selectedCommitSha === null
+                  ? {
+                      sourceKind:
+                        selectedGitScope === "unstaged"
+                          ? ("working-tree" as const)
+                          : ("branch-range" as const),
+                    }
+                  : {}),
+              }),
         }
       : undefined;
   const canRefreshGitDiff = isGitRepo && isGitSelection && activeThread != null && gitCwd != null;
@@ -502,14 +538,15 @@ export default function DiffPanel({
     ? `${panelThreadRef.environmentId}:${panelThreadRef.threadId}`
     : null;
 
-  const selectedGitSource = branchDiffPreview.data?.sources.find(
-    (source) =>
-      source.kind ===
-      (selectedGitScope === "unstaged"
-        ? "working-tree"
-        : selectedGitScope === "commit"
-          ? "commit"
-          : "branch-range"),
+  const selectedGitSource = branchDiffPreview.data?.sources.find((source) =>
+    selectedGitScope === "gitbutler-branch"
+      ? source.id === gitScopeValue
+      : source.kind ===
+        (selectedGitScope === "unstaged"
+          ? "working-tree"
+          : selectedGitScope === "commit"
+            ? "commit"
+            : "branch-range"),
   );
   const comparisonHeadRef =
     selectedGitSource?.headRef ??
@@ -526,9 +563,8 @@ export default function DiffPanel({
   const selectedGitScopeLabel =
     selectedCommitSha !== null
       ? (selectedCommitSubject ?? gt("Commit {sha}", { sha: selectedCommitSha.slice(0, 7) }))
-      : selectedGitScope === "unstaged"
-        ? gt("Uncommitted")
-        : gt("Changes");
+      : (selectedGitButlerBranch ??
+        (selectedGitScope === "unstaged" ? gt("Uncommitted") : gt("Changes")));
   const selectedTurnLabel = gt("Turn {count}", { count: selectedCheckpointTurnCount ?? "?" });
   const selectedScopeLabel = toolCallSelection
     ? gt("Tool call")
@@ -652,8 +688,14 @@ export default function DiffPanel({
           { additions: 0, deletions: 0 },
         )
       : null;
+  // A GitButler branch has no trustworthy old or new file to expand context from.
   const currentLoadDiffFiles =
-    isGitSelection && activeThread && preview && selectedGitSource && canReadFiles
+    isGitSelection &&
+    activeThread &&
+    preview &&
+    selectedGitSource &&
+    selectedGitSource.kind !== "gitbutler-branch" &&
+    canReadFiles
       ? createGitDiffFileContentsLoader(getDiffFileContents, {
           environmentId: activeThread.environmentId,
           cwd: preview.cwd,
@@ -727,7 +769,7 @@ export default function DiffPanel({
     source: lazySource,
     baseRef:
       selectedCommitSha !== null ? selectedBaseRef : (lazySource?.baseRef ?? selectedBaseRef),
-    ignoreWhitespace: diffIgnoreWhitespace,
+    ignoreWhitespace,
     theme: resolvedTheme,
     previewInput: branchDiffPreviewInput,
     preview: renderablePatch,
@@ -1006,7 +1048,7 @@ export default function DiffPanel({
   const selectedScopeValue = toolCallSelection
     ? ""
     : selectedRunId === null
-      ? selectedCommitValue || selectedGitScope
+      ? selectedCommitValue || gitScopeValue
       : selectedTurn?.runId === latestTurn?.runId
         ? "latest"
         : selectedTurnValue;
@@ -1028,6 +1070,12 @@ export default function DiffPanel({
     } else if (value.startsWith("commit:")) {
       if (panelThreadRef) {
         useDiffPanelStore.getState().selectCommit(panelThreadRef, value.slice("commit:".length));
+      }
+    } else if (value.startsWith(GITBUTLER_BRANCH_SCOPE_PREFIX)) {
+      if (routeThreadRef) {
+        useDiffPanelStore
+          .getState()
+          .selectGitButlerBranch(routeThreadRef, value.slice(GITBUTLER_BRANCH_SCOPE_PREFIX.length));
       }
     } else if (value === "latest") {
       if (latestTurn) selectTurn(latestTurn.runId);
@@ -1101,6 +1149,29 @@ export default function DiffPanel({
                 </span>
               </DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
+            {appliedGitButlerBranches.length > 0 && gitRepository === null ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>GitButler branches</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={selectedScopeValue}
+                    onValueChange={selectScopeValue}
+                  >
+                    {appliedGitButlerBranches.map((branch) => (
+                      <DropdownMenuRadioItem
+                        key={branch}
+                        value={gitButlerBranchScopeValue(branch)}
+                        closeOnClick
+                      >
+                        <span className="max-w-64 truncate">{branch}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <T context="agent turn">Turn</T>
@@ -1543,26 +1614,28 @@ export default function DiffPanel({
         >
           <TextWrapIcon className="size-3.5" />
         </SharedTooltipTrigger>
-        <SharedTooltipTrigger
-          render={
-            <Toggle
-              aria-label={
-                diffIgnoreWhitespace ? gt("Show whitespace changes") : gt("Hide whitespace changes")
-              }
-              variant="ghost"
-              size="sm"
-              pressed={diffIgnoreWhitespace}
-              onPressedChange={(pressed) => {
-                useDiffPanelSessionStore.getState().setIgnoreWhitespace(Boolean(pressed));
-              }}
-            />
-          }
-          label={
-            diffIgnoreWhitespace ? gt("Show whitespace changes") : gt("Hide whitespace changes")
-          }
-        >
-          <PilcrowIcon className="size-3.5" />
-        </SharedTooltipTrigger>
+        {selectedGitButlerBranch === null ? (
+          <SharedTooltipTrigger
+            render={
+              <Toggle
+                aria-label={
+                  diffIgnoreWhitespace ? gt("Show whitespace changes") : gt("Hide whitespace changes")
+                }
+                variant="ghost"
+                size="sm"
+                pressed={diffIgnoreWhitespace}
+                onPressedChange={(pressed) => {
+                  useDiffPanelSessionStore.getState().setIgnoreWhitespace(Boolean(pressed));
+                }}
+              />
+            }
+            label={
+              diffIgnoreWhitespace ? gt("Show whitespace changes") : gt("Hide whitespace changes")
+            }
+          >
+            <PilcrowIcon className="size-3.5" />
+          </SharedTooltipTrigger>
+        ) : null}
         {testFileCount > 0 && (
           <SharedTooltipTrigger
             render={
@@ -1696,7 +1769,9 @@ export default function DiffPanel({
                           ? gt("Loading uncommitted changes...")
                           : selectedGitScope === "commit"
                             ? gt("Loading commit...")
-                            : gt("Loading changes...")
+                            : selectedGitButlerBranch !== null
+                              ? gt("Loading {branch}...", { branch: selectedGitButlerBranch })
+                              : gt("Loading changes...")
                   }
                 />
               ) : (

@@ -53,6 +53,7 @@ import {
   fromRunner,
   decodeJsonReply,
 } from "@t3tools/provider-core/server/textGenerationOperations";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -65,6 +66,7 @@ import type {
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -633,6 +635,7 @@ function runStackedAction(
     commitMessage?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
+    gitbutlerBranch?: string;
   },
   options?: Parameters<GitManager.GitManager["Service"]["runStackedAction"]>[1],
 ) {
@@ -662,6 +665,8 @@ function makeManager(input?: {
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
   gitConfigReads?: string[];
   gitCommands?: string[];
+  gitButler?: GitButlerWorkspace.GitButlerWorkspace["Service"];
+  dispatch?: Orchestrator.OrchestratorV2["Service"]["dispatch"];
   gitSpawnGate?: {
     readonly matches: (args: ReadonlyArray<string>) => boolean;
     readonly reached: Deferred.Deferred<void>;
@@ -763,6 +768,9 @@ function makeManager(input?: {
   );
 
   const layerManager = Layer.mergeAll(
+    Layer.mock(Orchestrator.OrchestratorV2)({
+      dispatch: input?.dispatch ?? (() => Effect.die("Unexpected thread mutation")),
+    }),
     Layer.succeed(TextGeneration.TextGeneration, textGeneration),
     Layer.mock(PullRequestService.PullRequestService)(input?.pullRequests ?? {}),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -776,6 +784,11 @@ function makeManager(input?: {
     ),
     layerServerSettings,
   ).pipe(
+    Layer.provideMerge(
+      input?.gitButler
+        ? Layer.succeed(GitButlerWorkspace.GitButlerWorkspace, input.gitButler)
+        : GitButlerWorkspace.layer,
+    ),
     Layer.provideMerge(layerSourceControlRegistry),
     Layer.provideMerge(layerVcsDriver),
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -835,6 +848,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             Layer.provide(
               GitWorkflowService.layer.pipe(
                 Layer.provide(Layer.succeed(GitManager.GitManager, manager)),
+                Layer.provide(GitButlerWorkspace.layer),
                 Layer.provide(
                   VcsDriverRegistry.layer.pipe(
                     Layer.provide(VcsProjectConfig.layer),
@@ -909,6 +923,2269 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       }),
   );
 
+  it.effect(
+    "routes all workspace actions through GitButler and links new branches before publishing",
+    () =>
+      Effect.forEach(
+        [
+          "commit",
+          "push",
+          "create_pr",
+          "commit_push",
+          "commit_push_pr",
+          "new",
+          "feature",
+          "draft",
+          "force",
+          "raced_commit",
+          "raced_commit_push",
+          "raced_commit_push_pr",
+          "raced_new",
+        ] as const,
+        (scenario) =>
+          Effect.gen(function* () {
+            const repoDir = yield* makeTempDir("t3code-git-butler-action-");
+            yield* initRepo(repoDir);
+            yield* runGit(repoDir, ["checkout", "-b", "gitbutler/workspace"]);
+            NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nchanged\n");
+            const calls: Array<readonly string[]> = [];
+            const commands: string[] = [];
+            const linked: string[] = [];
+            const holdRefs = new Map<string, string>();
+            const butProcess = VcsProcess.VcsProcess.of({
+              run: (request) =>
+                Effect.sync(() => {
+                  // A raced commit holds other bytes than the check saw, as after a late write.
+                  const raced = scenario.startsWith("raced_");
+                  if (
+                    request.command === "git" &&
+                    (request.args.includes("diff-index") || request.args.includes("--raw"))
+                  ) {
+                    const path = raced ? "logo.bin" : "README.md";
+                    return {
+                      exitCode: ChildProcessSpawner.ExitCode(0),
+                      stderr: "",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                      stdout: `:100644 100644 base ${request.args.includes("diff-index") || !raced ? "chosen" : "racer"} M\0${path}\0`,
+                    };
+                  }
+                  if (request.command === "git" && request.args[0] === "update-ref") {
+                    for (const [op, ref, sha] of request.args[1] === "--stdin"
+                      ? String(request.stdin)
+                          .split("\n")
+                          .map((line) => line.split(" "))
+                      : [["create", request.args[1]!, request.args[2]!]]) {
+                      if (op === "delete") holdRefs.delete(ref!);
+                      if (op === "create") holdRefs.set(ref!, sha!);
+                    }
+                  }
+                  if (request.command === "git" && request.args.at(-1)?.startsWith("refs/t3/")) {
+                    return {
+                      exitCode: ChildProcessSpawner.ExitCode(0),
+                      stderr: "",
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                      stdout: [...holdRefs].map(([ref, sha]) => `${ref}\0${sha}`).join("\n"),
+                    };
+                  }
+                  calls.push(request.args);
+                  const branch = request.args[0] === "commit" ? request.args[2]! : "feature/api";
+                  return {
+                    exitCode: ChildProcessSpawner.ExitCode(0),
+                    stderr: "",
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                    stdout: JSON.stringify(
+                      request.args.includes("--dry-run")
+                        ? {
+                            branches:
+                              scenario === "force"
+                                ? [
+                                    {
+                                      branchName: "feature/api",
+                                      remote: "origin",
+                                      requiresForce: true,
+                                    },
+                                  ]
+                                : [],
+                          }
+                        : request.args[0] === "status"
+                          ? {
+                              uncommittedChanges: scenario.startsWith("raced_")
+                                ? [{ cliId: "logo", filePath: "logo.bin", changeType: "modified" }]
+                                : [
+                                    {
+                                      cliId: "readme",
+                                      filePath: "README.md",
+                                      changeType: "modified",
+                                    },
+                                  ],
+                              mergeBase: { commitId: "base-commit" },
+                              stacks: [
+                                { branches: [{ name: "feature/api" }], assignedChanges: [] },
+                              ],
+                            }
+                          : request.args[0] === "diff"
+                            ? {
+                                changes: [
+                                  scenario.startsWith("raced_")
+                                    ? {
+                                        id: "logo:empt",
+                                        path: "logo.bin",
+                                        diff: { type: "patch", hunks: [] },
+                                      }
+                                    : {
+                                        id: "readme:1",
+                                        path: "README.md",
+                                        diff: { type: "patch", hunks: [] },
+                                      },
+                                ],
+                              }
+                            : request.args[0] === "commit"
+                              ? { commitId: "abcdef123456" }
+                              : request.args[0] === "pr"
+                                ? {
+                                    published: [
+                                      {
+                                        sourceBranch: branch,
+                                        targetBranch: "main",
+                                        number: 42,
+                                        title: "API",
+                                        htmlUrl: "https://github.com/acme/repo/pull/42",
+                                      },
+                                    ],
+                                    alreadyExisting: [],
+                                  }
+                                : {},
+                    ),
+                  };
+                }),
+            });
+            const butContext = yield* Layer.build(
+              GitButlerWorkspace.layer.pipe(
+                Layer.provide(Layer.succeed(VcsProcess.VcsProcess, butProcess)),
+              ),
+            );
+            const threadId = ThreadId.make("gitbutler-action");
+            const createdAt = DateTime.makeUnsafe("2026-10-28T00:00:00Z");
+            const { manager } = yield* makeManager({
+              gitCommands: commands,
+              gitButler: Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace),
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  if (command.type === "thread.metadata.update" && command.gitbutlerBranch)
+                    linked.push(command.gitbutlerBranch);
+                  return { sequence: 1, storedEvents: [] };
+                }),
+              seed: Effect.gen(function* () {
+                yield* (yield* ProjectionStore.ProjectionStoreV2).apply({
+                  id: EventId.make("gitbutler-thread"),
+                  type: "thread.created",
+                  threadId,
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                  occurredAt: createdAt,
+                  payload: {
+                    createdBy: "user",
+                    creationSource: "web",
+                    id: threadId,
+                    projectId: ProjectId.make("project"),
+                    title: "GitButler",
+                    providerInstanceId: ProviderInstanceId.make("codex"),
+                    modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+                    runtimeMode: "full-access",
+                    interactionMode: "default",
+                    branch: "gitbutler/workspace",
+                    gitbutlerBranch:
+                      scenario === "new" || scenario === "raced_new" ? null : "feature/api",
+                    worktreePath: repoDir,
+                    activeProviderThreadId: null,
+                    lineage: {
+                      parentThreadId: null,
+                      relationshipToParent: null,
+                      rootThreadId: threadId,
+                    },
+                    forkedFrom: null,
+                    createdAt,
+                    updatedAt: createdAt,
+                    archivedAt: null,
+                    settledOverride: null,
+                    settledAt: null,
+                    lastVisitedAt: null,
+                    deletedAt: null,
+                  },
+                });
+              }),
+            });
+            const offeredChangeIds = Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace)
+              .readCommitChanges({ cwd: repoDir })
+              .pipe(Effect.map(({ files }) => files[0]!.changeIds));
+            const realWrites = () =>
+              calls
+                .filter(
+                  (args) =>
+                    ["commit", "push", "pr"].includes(args[0]!) && !args.includes("--dry-run"),
+                )
+                .map((args) => args[0]);
+            if (scenario === "force") {
+              const refused = yield* manager
+                .runStackedAction({
+                  cwd: repoDir,
+                  actionId: "force-refused",
+                  action: "commit_push",
+                  threadId,
+                  commitMessage: "Selected change",
+                  gitbutlerChangeIds: yield* offeredChangeIds,
+                })
+                .pipe(Effect.flip);
+              expect(refused._tag).toBe("GitButlerForcePushConfirmationError");
+              // The commit is safe locally, and only the overwrite is held back.
+              expect(realWrites()).toEqual(["commit"]);
+              if (refused._tag !== "GitButlerForcePushConfirmationError") return;
+              yield* manager.runStackedAction({
+                cwd: repoDir,
+                actionId: "force-approved",
+                action: "push",
+                threadId,
+                gitbutlerForcePushApproval: refused.approval,
+              });
+              expect(realWrites()).toEqual(["commit", "push"]);
+              return;
+            }
+            if (
+              scenario === "raced_commit" ||
+              scenario === "raced_commit_push" ||
+              scenario === "raced_commit_push_pr" ||
+              scenario === "raced_new"
+            ) {
+              const refused = yield* manager
+                .runStackedAction({
+                  cwd: repoDir,
+                  actionId: scenario,
+                  action:
+                    scenario === "raced_commit_push"
+                      ? "commit_push"
+                      : scenario === "raced_commit_push_pr"
+                        ? "commit_push_pr"
+                        : "commit",
+                  threadId,
+                  commitMessage: "Selected change",
+                  gitbutlerChangeIds: yield* offeredChangeIds,
+                })
+                .pipe(Effect.flip);
+              expect(refused._tag).toBe("GitManagerError");
+              expect(refused.message).toContain("abcdef123456");
+              expect(refused.message).toContain("logo.bin");
+              // The commit is real and reported as such; nothing built on it ran.
+              expect(realWrites()).toEqual(["commit"]);
+              expect(linked.length).toBe(scenario === "raced_new" ? 1 : 0);
+              if (scenario !== "raced_commit") return;
+              // A separate action later, as a person or another client would start it.
+              for (const action of ["create_pr", "push"] as const) {
+                const held = yield* manager
+                  .runStackedAction({ cwd: repoDir, actionId: `${action}-held`, action, threadId })
+                  .pipe(Effect.flip);
+                expect(held._tag).toBe("GitButlerPublicationHoldError");
+                expect(realWrites()).toEqual(["commit"]);
+                if (action !== "push" || held._tag !== "GitButlerPublicationHoldError") continue;
+                yield* manager.runStackedAction({
+                  cwd: repoDir,
+                  actionId: "push-reviewed",
+                  action,
+                  threadId,
+                  gitbutlerHoldApproval: held.approval,
+                });
+                expect(realWrites()).toEqual(["commit", "push"]);
+              }
+              return;
+            }
+            const action =
+              scenario === "new" || scenario === "feature" || scenario === "draft"
+                ? "commit"
+                : scenario;
+            if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
+              for (const unreviewed of [{}, { filePaths: ["README.md"] }]) {
+                const refused = yield* manager
+                  .runStackedAction({
+                    cwd: repoDir,
+                    actionId: `${scenario}-unreviewed`,
+                    action,
+                    threadId,
+                    commitMessage: "Everything",
+                    ...unreviewed,
+                  })
+                  .pipe(Effect.flip);
+                expect(refused._tag).toBe("GitManagerError");
+              }
+              expect(realWrites()).toEqual([]);
+            }
+            const result = yield* manager.runStackedAction({
+              cwd: repoDir,
+              actionId: scenario,
+              action,
+              ...(action === "commit" || action === "commit_push" || action === "commit_push_pr"
+                ? { gitbutlerChangeIds: yield* offeredChangeIds }
+                : {}),
+              ...(scenario === "draft"
+                ? { gitbutlerBranch: "feature/api" }
+                : { threadId, gitbutlerBranch: "ignored-for-persisted-threads" }),
+              commitMessage: "Selected change",
+              ...(scenario === "feature" ? { featureBranch: true } : {}),
+            });
+            expect(realWrites()).toEqual(
+              action === "commit"
+                ? ["commit"]
+                : action === "push"
+                  ? ["push"]
+                  : action === "create_pr"
+                    ? ["pr"]
+                    : action === "commit_push"
+                      ? ["commit", "push"]
+                      : ["commit", "pr"],
+            );
+            expect(
+              commands.some((command) =>
+                /^(?:commit|push|add|reset|read-tree|update-index|switch|checkout)\b/.test(command),
+              ),
+            ).toBe(false);
+            expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe(
+              "gitbutler/workspace",
+            );
+            if (scenario === "new" || scenario === "feature") {
+              expect(result.branch.status).toBe("created");
+              expect(linked).toEqual([result.branch.name]);
+              expect(calls.find((args) => args[0] === "commit")?.[2]).toBe(result.branch.name);
+            } else {
+              expect(linked).toEqual([]);
+            }
+            if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
+              expect(calls.find((args) => args[0] === "commit")?.at(-1)).toBe("readme:1");
+            }
+          }),
+      ),
+  );
+  it.effect("starts a requested worktree above a commit on an applied stack, and no other", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-applied-stack-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["switch", "-c", "stack/one"]);
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "applied work"]);
+      yield* runGit(repoDir, ["switch", "-c", "gitbutler/workspace", "main"]);
+      yield* runGit(repoDir, ["merge", "--no-ff", "-m", "Workspace", "stack/one"]);
+      yield* runGit(repoDir, ["config", "gitbutler.project.targetref", "refs/heads/main"]);
+      const tip = (yield* runGit(repoDir, ["rev-parse", "stack/one"])).stdout.trim();
+      const { manager } = yield* makeManager();
+      const worktrees = yield* makeTempDir("t3code-git-applied-stack-worktrees-");
+      const create = (branch: string, refName: string, startAboveAppliedStack: boolean) =>
+        manager.createWorktree(
+          {
+            cwd: repoDir,
+            refName,
+            newRefName: branch,
+            path: NodePath.join(worktrees, branch),
+          },
+          { startAboveAppliedStack },
+        );
+      const parentOf = (branch: string) =>
+        runGit(repoDir, ["rev-parse", `${branch}^`]).pipe(Effect.map((r) => r.stdout.trim()));
+
+      yield* create("pinned", "stack/one", true);
+      expect(yield* parentOf("pinned")).toBe(tip);
+
+      // Recovery and other callers keep the exact commit they asked for.
+      yield* create("exact", "stack/one", false);
+      expect((yield* runGit(repoDir, ["rev-parse", "exact"])).stdout.trim()).toBe(tip);
+
+      const main = (yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim();
+      yield* create("from-target", "main", true);
+      expect((yield* runGit(repoDir, ["rev-parse", "from-target"])).stdout.trim()).toBe(main);
+    }),
+  );
+
+  describe("create_pr from a worktree started above a GitButler stack", () => {
+    const startChild = Effect.fn("startChild")(function* (input?: {
+      readonly providerScenario?: FakeProviderScenario;
+      readonly parentRef?: string | undefined;
+      readonly fromFetchedParent?: boolean | undefined;
+      readonly parentRemote?: string | undefined;
+      readonly createsChangeRequestsIn?: boolean | undefined;
+      readonly gitButler?: GitButlerWorkspace.GitButlerWorkspace["Service"] | undefined;
+      readonly baseRefName?: string | undefined;
+    }) {
+      const repoDir = yield* makeTempDir("t3code-git-pr-parent-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "origin", "main"]);
+      yield* runGit(repoDir, ["switch", "-c", "stack/one"]);
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "parent work"]);
+      yield* runGit(repoDir, ["branch", "origin/topic"]);
+      if (input?.parentRef === "refs/heads/refs/heads/main") {
+        yield* runGit(repoDir, ["branch", "refs/heads/main"]);
+      }
+      if (input?.parentRef === "origin/refs/heads/main") {
+        yield* runGit(repoDir, ["branch", "origin/refs/heads/main"]);
+      }
+      yield* runGit(repoDir, ["switch", "-c", "gitbutler/workspace", "main"]);
+      yield* runGit(repoDir, ["merge", "--no-ff", "-m", "Workspace", "stack/one"]);
+      yield* runGit(repoDir, ["config", "gitbutler.project.targetref", "refs/heads/main"]);
+      const worktree = NodePath.join(yield* makeTempDir("t3code-git-pr-parent-wt-"), "child");
+      const recorded: Array<{ branch: string; baseBranch: string }> = [];
+      const { service, calls } = createFakeSourceControlProvider(input?.providerScenario);
+      const services = yield* Effect.context<GitVcsDriver.GitVcsDriver>();
+      let duringGeneration: Effect.Effect<unknown, GitCommandError> = Effect.void;
+      const { manager } = yield* makeManager({
+        ...(input?.gitButler ? { gitButler: input.gitButler } : {}),
+        sourceControlProvider: {
+          ...service,
+          recordBranchBase: ({ branch, baseBranch }) =>
+            Effect.sync(() => {
+              recorded.push({ branch, baseBranch });
+            }),
+          ...(input?.createsChangeRequestsIn === undefined
+            ? {}
+            : { createsChangeRequestsIn: () => Effect.succeed(input.createsChangeRequestsIn!) }),
+        },
+        textGeneration: {
+          generatePrContent: () =>
+            Effect.suspend(() => duringGeneration).pipe(
+              Effect.orDie,
+              Effect.as({ title: "Child", body: "Child work" }),
+            ),
+        },
+      });
+      const parentRemote = input?.parentRemote ?? "origin";
+      if (parentRemote !== "origin") {
+        yield* runGit(repoDir, ["remote", "add", parentRemote, yield* createBareRemote()]);
+      }
+      // A launch from origin names the fetched commit and passes the branch alongside it.
+      if (input?.fromFetchedParent) yield* runGit(repoDir, ["push", parentRemote, "stack/one"]);
+      const fetchedParent = (yield* runGit(repoDir, ["rev-parse", "stack/one"])).stdout.trim();
+      yield* manager.createWorktree(
+        {
+          cwd: repoDir,
+          refName: input?.fromFetchedParent ? fetchedParent : (input?.parentRef ?? "stack/one"),
+          newRefName: "child",
+          ...(input?.fromFetchedParent
+            ? { baseRefName: input.baseRefName ?? `refs/remotes/${parentRemote}/stack/one` }
+            : {}),
+          path: worktree,
+        },
+        { startAboveAppliedStack: true },
+      );
+      yield* runGit(worktree, ["commit", "--allow-empty", "-m", "child work"]);
+      const publishChild = runGit(worktree, ["push", "-u", "origin", "child"]);
+      const publishParent = runGit(repoDir, ["push", "origin", "stack/one"]);
+      const createPr = runStackedAction(manager, { cwd: worktree, action: "create_pr" });
+      return {
+        repoDir,
+        remoteDir,
+        worktree,
+        manager,
+        calls,
+        recorded,
+        publishChild,
+        publishParent,
+        createPr,
+        setDuringGeneration: (
+          effect: Effect.Effect<unknown, GitCommandError, GitVcsDriver.GitVcsDriver>,
+        ) => {
+          duringGeneration = effect.pipe(Effect.provide(services));
+        },
+      };
+    });
+    type Child = Effect.Success<ReturnType<typeof startChild>>;
+    const git = (cwd: string, ...args: ReadonlyArray<string>) => runGit(cwd, [...args]);
+    const rewriteParent = ({ repoDir }: Child, remote = "origin") =>
+      Effect.gen(function* () {
+        const tip = (yield* git(repoDir, "rev-parse", "main")).stdout.trim();
+        const rewritten = (yield* git(
+          repoDir,
+          "commit-tree",
+          `${tip}^{tree}`,
+          "-p",
+          tip,
+          "-m",
+          "parent work, rewritten",
+        )).stdout.trim();
+        yield* git(repoDir, "push", "--force", remote, `${rewritten}:refs/heads/stack/one`);
+      });
+    const remoteBranches = (remoteDir: string) =>
+      git(process.cwd(), "ls-remote", "--heads", remoteDir).pipe(
+        Effect.map(({ stdout }) =>
+          stdout
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => line.split("refs/heads/")[1]),
+        ),
+      );
+
+    const targets = [
+      {
+        name: "its published parent",
+        base: "stack/one",
+        arrange: (child: Child) => child.publishParent,
+      },
+      {
+        name: "its published parent after the remote was renamed",
+        base: "stack/one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) => git(repoDir, "remote", "rename", "origin", "upstream"),
+      },
+      {
+        name: "the base someone chose when a tag shares its name",
+        base: "release/v2",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "release/v2", "main");
+            yield* git(repoDir, "tag", "release/v2", "main");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/release/v2");
+          }),
+      },
+      {
+        name: "the base someone chose after the remote was renamed",
+        base: "main",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "its parent after it moved forward from another machine",
+        base: "stack/one",
+        arrange: ({ repoDir, remoteDir, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            const elsewhere = yield* makeTempDir("t3code-git-pr-parent-elsewhere-");
+            yield* git(repoDir, "clone", "--branch", "stack/one", remoteDir, elsewhere);
+            yield* git(
+              elsewhere,
+              "-c",
+              "user.name=Elsewhere",
+              "-c",
+              "user.email=elsewhere@example.com",
+              "-c",
+              "commit.gpgsign=false",
+              "commit",
+              "--allow-empty",
+              "-m",
+              "more parent work",
+            );
+            yield* git(elsewhere, "push", "origin", "stack/one");
+          }),
+      },
+      {
+        name: "the default branch once the parent merged and went away",
+        base: "main",
+        arrange: ({ repoDir }: Child) => git(repoDir, "push", "origin", "stack/one:main"),
+      },
+      {
+        name: "the default branch once the parent landed, even with its branch still there",
+        base: "main",
+        arrange: ({ repoDir, publishParent }: Child) =>
+          publishParent.pipe(Effect.andThen(git(repoDir, "push", "origin", "stack/one:main"))),
+      },
+      {
+        name: "its published parent when no ref to it is left here",
+        base: "stack/one",
+        arrange: ({ repoDir, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            yield* git(repoDir, "branch", "-D", "stack/one");
+            yield* git(repoDir, "update-ref", "-d", "refs/remotes/origin/stack/one");
+          }),
+      },
+      {
+        name: "the base someone chose over a recorded ref ending in its name",
+        base: "main",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "release/main", "main");
+            yield* git(
+              repoDir,
+              "config",
+              "branch.child.t3-merge-base-ref",
+              "refs/heads/release/main",
+            );
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main");
+          }),
+      },
+      {
+        name: "its parent named in full, when several remotes leave it uncheckable",
+        base: "stack/one",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "remote", "add", "upstream", `${repoDir}-upstream`);
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/stack/one");
+          }),
+      },
+      {
+        name: "its parent named just as the start commit does, when it can't be checked",
+        base: "stack/one",
+        parentRef: "refs/heads/stack/one",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "remote", "add", "upstream", `${repoDir}-upstream`);
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/stack/one");
+          }),
+      },
+      {
+        name: "its parent's recorded name after a rename moved the remote's boundary",
+        base: "stack/one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) => git(repoDir, "remote", "rename", "origin", "origin/stack"),
+      },
+      {
+        name: "its parent's recorded name after a rename let the ref name another branch",
+        base: "stack/one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "remote", "rename", "origin", "origin/stack");
+            yield* git(repoDir, "push", "origin/stack", "main:refs/heads/one");
+          }),
+      },
+      {
+        name: "a base that may be the parent's old name, because the host's branch holds the parent",
+        base: "one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "push", "origin", "stack/one:refs/heads/one");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "one");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a base someone named in full that ends like the parent's ref",
+        base: "one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "one", "main");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/one");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a short base that holds the parent, though nothing chose it",
+        base: "elsewhere",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "push", "origin", "stack/one:refs/heads/elsewhere");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "elsewhere");
+          }),
+      },
+      {
+        name: "the base someone chose over the parent",
+        base: "main",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main"),
+      },
+      {
+        name: "its parent after the branch was deleted and recovered",
+        base: "stack/one",
+        arrange: ({ repoDir, worktree, manager, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            const start = (yield* git(repoDir, "config", "branch.child.t3-start-commit")).stdout;
+            const recoveredAt = (yield* git(worktree, "rev-parse", "HEAD")).stdout.trim();
+            yield* git(repoDir, "worktree", "remove", "--force", worktree);
+            yield* git(repoDir, "branch", "-D", "child");
+            expect(start.trim()).not.toBe("");
+            yield* manager.createWorktree({
+              cwd: repoDir,
+              refName: recoveredAt,
+              newRefName: "child",
+              path: worktree,
+            });
+          }),
+      },
+    ];
+    it.effect.each(targets)("targets $name", ({ base, arrange, fromFetchedParent, parentRef }) =>
+      Effect.gen(function* () {
+        const child = yield* startChild({ fromFetchedParent, parentRef });
+        yield* child.publishChild;
+        yield* arrange(child);
+        const result = yield* child.createPr;
+        expect(result.pr.status).toBe("created");
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual([base]);
+      }),
+    );
+
+    const refusals = [
+      {
+        name: "an unpublished parent",
+        detail: "isn't on origin",
+        arrange: () => Effect.void,
+      },
+      {
+        name: "a parent rewritten on the host",
+        detail: "no longer contains",
+        arrange: ({ repoDir, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            const tip = (yield* git(repoDir, "rev-parse", "main")).stdout.trim();
+            const rewritten = (yield* git(
+              repoDir,
+              "commit-tree",
+              `${tip}^{tree}`,
+              "-p",
+              tip,
+              "-m",
+              "parent work, rewritten",
+            )).stdout.trim();
+            yield* git(repoDir, "push", "--force", "origin", `${rewritten}:refs/heads/stack/one`);
+          }),
+      },
+      {
+        name: "a parent rewritten after a launch from origin",
+        detail: "no longer contains",
+        fromFetchedParent: true,
+        arrange: ({ repoDir, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            const tip = (yield* git(repoDir, "rev-parse", "main")).stdout.trim();
+            const rewritten = (yield* git(
+              repoDir,
+              "commit-tree",
+              `${tip}^{tree}`,
+              "-p",
+              tip,
+              "-m",
+              "parent work, rewritten",
+            )).stdout.trim();
+            yield* git(repoDir, "push", "--force", "origin", `${rewritten}:refs/heads/stack/one`);
+          }),
+      },
+      {
+        name: "a parent rewritten after the remote was renamed",
+        detail: "no longer contains",
+        fromFetchedParent: true,
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            yield* child.publishParent;
+            yield* rewriteParent(child);
+            yield* git(child.repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a parent rewritten after the remote was renamed, with another remote added",
+        detail: "more than one",
+        fromFetchedParent: true,
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            yield* child.publishParent;
+            yield* rewriteParent(child);
+            yield* git(child.repoDir, "remote", "rename", "origin", "upstream");
+            yield* git(child.repoDir, "remote", "add", "fork", `${child.repoDir}-fork`);
+          }),
+      },
+      {
+        name: "a parent named by a second remote",
+        detail: "more than one",
+        fromFetchedParent: true,
+        parentRemote: "upstream",
+        arrange: () => Effect.void,
+      },
+      {
+        name: "a base that may be a renamed remote's name for the parent",
+        detail: "'one', the base recorded",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "one");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a base it can't tell apart, saying how to choose it",
+        detail: "t3-merge-base refs/heads/one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "one", "main");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "one");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a base it can't tell apart once the start record is dropped, as history still holds it",
+        detail: "t3-merge-base refs/heads/one",
+        fromFetchedParent: true,
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "one", "main");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "one");
+            yield* git(repoDir, "remote", "rename", "origin", "upstream");
+            yield* git(repoDir, "config", "--unset", "branch.child.t3-start-commit");
+          }),
+      },
+      {
+        name: "a rewritten parent's base after a rename left another branch at the old ref",
+        detail: "'stack/one', the base recorded",
+        fromFetchedParent: true,
+        parentRemote: "a/b",
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            const { repoDir, worktree } = child;
+            yield* git(repoDir, "remote", "remove", "origin");
+            yield* git(repoDir, "remote", "rename", "a/b", "a");
+            yield* git(worktree, "push", "-u", "a", "child");
+            yield* git(repoDir, "push", "a", "stack/one:refs/heads/b/stack/one");
+            yield* rewriteParent(child, "a");
+          }),
+      },
+      {
+        name: "a parent on several remotes, saying how to choose a base that still works",
+        detail: "name it in full",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "remote", "add", "upstream", `${repoDir}-upstream`),
+      },
+      {
+        name: "a rewritten parent's base when a local branch now has the remote ref's old name",
+        detail: "'stack/one', the base recorded",
+        fromFetchedParent: true,
+        baseRefName: "origin/stack/one",
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            yield* git(child.repoDir, "branch", "origin/stack/one", "main");
+            yield* rewriteParent(child);
+            yield* git(child.repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+      {
+        name: "a branch on the same start whose own name looks like a full ref",
+        detail: "t3-merge-base refs/heads/refs/heads/main",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "branch", "refs/heads/main", "child");
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main");
+          }),
+      },
+      {
+        name: "a base that looks like a full ref but is the tail of the parent's",
+        detail: "'refs/heads/main', the base recorded",
+        parentRef: "origin/refs/heads/main",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main"),
+      },
+      {
+        name: "a rewritten parent, when a branch whose name ends like it holds the commit",
+        detail: "no longer contains",
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            yield* child.publishParent;
+            yield* rewriteParent(child);
+            yield* git(
+              child.repoDir,
+              "push",
+              "origin",
+              "stack/one:refs/heads/refs/heads/stack/one",
+            );
+          }),
+      },
+      {
+        name: "a parent whose own name looks like a full ref",
+        detail: "isn't on origin",
+        parentRef: "refs/heads/refs/heads/main",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main"),
+      },
+      {
+        name: "a chosen base that can't be found",
+        detail: "isn't a branch T3 Code can find",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "config", "branch.child.t3-merge-base", "refs/heads/stack/absent"),
+      },
+      {
+        name: "a short base that doesn't hold the parent",
+        detail: "t3-merge-base refs/heads/main",
+        arrange: ({ repoDir }: Child) =>
+          git(repoDir, "config", "branch.child.t3-merge-base", "main"),
+      },
+      {
+        name: "a parent it can't check because the host can't be reached",
+        detail: "Couldn't check 'stack/one' on origin",
+        arrange: ({ repoDir, publishParent }: Child) =>
+          publishParent.pipe(
+            Effect.andThen(git(repoDir, "remote", "set-url", "origin", `${repoDir}-missing`)),
+          ),
+      },
+      {
+        name: "a parent checked against one remote of several",
+        detail: "more than one",
+        arrange: ({ repoDir, publishParent }: Child) =>
+          publishParent.pipe(
+            Effect.andThen(git(repoDir, "remote", "add", "upstream", `${repoDir}-upstream`)),
+          ),
+      },
+      {
+        name: "a deleted parent the host was told about, named by its full ref",
+        detail: "isn't on 'main'",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "config", "branch.child.gh-merge-base", "stack/one");
+            yield* git(repoDir, "branch", "-D", "stack/one");
+          }),
+        parentRef: "refs/heads/stack/one",
+      },
+      {
+        name: "a deleted parent whose local name starts with the remote's",
+        detail: "isn't on 'main'",
+        arrange: ({ repoDir }: Child) =>
+          Effect.gen(function* () {
+            yield* git(repoDir, "config", "branch.child.t3-merge-base", "origin/topic");
+            yield* git(repoDir, "branch", "-D", "origin/topic");
+          }),
+        parentRef: "refs/heads/origin/topic",
+      },
+      {
+        name: "a parent deleted without landing on the default branch",
+        detail: "isn't on 'main'",
+        arrange: ({ repoDir }: Child) => git(repoDir, "branch", "-D", "stack/one"),
+      },
+    ];
+    it.effect.each(refusals)(
+      "refuses $name",
+      ({ detail, arrange, parentRef, fromFetchedParent, parentRemote, baseRefName }) =>
+        Effect.gen(function* () {
+          const child = yield* startChild({
+            parentRef,
+            fromFetchedParent,
+            parentRemote,
+            baseRefName,
+          });
+          yield* child.publishChild;
+          yield* arrange(child);
+          const failed = yield* child.createPr.pipe(Effect.flip);
+          expect(failed.message).toContain(detail);
+          expect(failed.message).toContain("No pull request was created");
+          expect(created(child.calls)).toEqual([]);
+        }),
+    );
+
+    const pushedRefusals = [
+      {
+        name: "create_pr with an unpublished parent",
+        action: "create_pr" as const,
+        detail: "isn't on origin",
+        arrange: () => Effect.void,
+      },
+      {
+        name: "commit_push_pr with an unpublished parent",
+        action: "commit_push_pr" as const,
+        detail: "isn't on origin",
+        arrange: () => Effect.void,
+      },
+      {
+        name: "create_pr when the host would land it in another repository",
+        action: "create_pr" as const,
+        detail: "more than one",
+        createsChangeRequestsIn: false,
+        arrange: ({ repoDir, remoteDir, publishParent }: Child) =>
+          Effect.gen(function* () {
+            yield* publishParent;
+            const hosted = "https://github.com/acme/child.git";
+            yield* git(repoDir, "config", `url.${remoteDir}.insteadOf`, hosted);
+            yield* git(repoDir, "remote", "set-url", "origin", hosted);
+          }),
+      },
+      {
+        name: "commit_push_pr with a parent rewritten after the remote was renamed",
+        action: "commit_push_pr" as const,
+        detail: "no longer contains",
+        fromFetchedParent: true,
+        arrange: (child: Child) =>
+          Effect.gen(function* () {
+            yield* child.publishParent;
+            yield* rewriteParent(child);
+            yield* git(child.repoDir, "remote", "rename", "origin", "upstream");
+          }),
+      },
+    ];
+    it.effect.each(pushedRefusals)(
+      "publishes nothing for $name",
+      ({ action, detail, arrange, createsChangeRequestsIn, fromFetchedParent }) =>
+        Effect.gen(function* () {
+          const child = yield* startChild({ createsChangeRequestsIn, fromFetchedParent });
+          yield* arrange(child);
+          NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+          const head = (yield* git(child.worktree, "rev-parse", "HEAD")).stdout;
+          const failed = yield* runStackedAction(child.manager, {
+            cwd: child.worktree,
+            action,
+            ...(action === "commit_push_pr" ? { commitMessage: "Child file" } : {}),
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain(detail);
+          expect(failed.message).toContain("nothing was committed or pushed");
+          expect(yield* remoteBranches(child.remoteDir)).not.toContain("child");
+          expect((yield* git(child.worktree, "rev-parse", "HEAD")).stdout).toBe(head);
+          expect(created(child.calls)).toEqual([]);
+        }),
+    );
+
+    it.effect("pushes and creates a child whose parent checks out, in one action", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const result = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit_push_pr",
+          commitMessage: "Child file",
+        });
+        expect(result.push.status).toBe("pushed");
+        expect(yield* remoteBranches(child.remoteDir)).toContain("child");
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+      }),
+    );
+
+    it.effect("ignores the open pull request of a parent the child tracks", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild({
+          providerScenario: {
+            prListSequence: [
+              [
+                {
+                  number: 12,
+                  title: "Parent",
+                  url: "https://github.com/pingdotgg/codething-mvp/pull/12",
+                  baseRefName: "main",
+                  headRefName: "stack/one",
+                },
+              ],
+            ],
+          },
+        });
+        yield* child.publishParent;
+        yield* git(child.worktree, "branch", "--set-upstream-to=origin/stack/one", "child");
+        yield* rewriteParent(child);
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(yield* remoteBranches(child.remoteDir)).not.toContain("child");
+      }),
+    );
+
+    it.effect("publishes a child with a chosen base without asking about its parent", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* git(child.repoDir, "config", "branch.child.t3-merge-base", "refs/heads/main");
+        yield* child.createPr;
+        expect(yield* remoteBranches(child.remoteDir)).toContain("child");
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["main"]);
+      }),
+    );
+
+    it.effect("still pushes a child on its own when its pull request would be refused", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        const result = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "push",
+        });
+        expect(result.push.status).toBe("pushed");
+        expect(yield* remoteBranches(child.remoteDir)).toContain("child");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("keeps checking the parent of a child that tracks another branch", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        yield* git(child.worktree, "branch", "--set-upstream-to=origin/main", "child");
+        yield* rewriteParent(child);
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("no longer contains");
+        expect(yield* remoteBranches(child.remoteDir)).not.toContain("child");
+        // The push alone leaves nothing behind that a later pull request reads as someone's choice.
+        yield* runStackedAction(child.manager, { cwd: child.worktree, action: "push" });
+        const later = yield* child.createPr.pipe(Effect.flip);
+        expect(later.message).toContain("no longer contains");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("reports a parent rewritten during the push, with the child left pushed", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        const tip = (yield* git(child.repoDir, "rev-parse", "main")).stdout.trim();
+        const rewritten = (yield* git(
+          child.repoDir,
+          "commit-tree",
+          `${tip}^{tree}`,
+          "-p",
+          tip,
+          "-m",
+          "parent work, rewritten",
+        )).stdout.trim();
+        yield* git(child.repoDir, "push", "origin", `${rewritten}:refs/heads/stack/rewritten`);
+        const hook = NodePath.join(child.remoteDir, "hooks", "post-receive");
+        NodeFS.mkdirSync(NodePath.dirname(hook), { recursive: true });
+        NodeFS.writeFileSync(
+          hook,
+          `#!/bin/sh\ngit update-ref refs/heads/stack/one ${rewritten}\n`,
+          { mode: 0o755 },
+        );
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("'child' was pushed, but no pull request was created");
+        expect(failed.message).toContain("no longer contains");
+        expect(yield* remoteBranches(child.remoteDir)).toContain("child");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    const duringGeneration = [
+      {
+        name: "refuses a parent rewritten",
+        detail: "no longer contains",
+        act: (child: Child) => rewriteParent(child),
+      },
+      {
+        name: "refuses another repository",
+        detail: "changed while its pull request was being prepared",
+        act: ({ repoDir, remoteDir }: Child) =>
+          Effect.gen(function* () {
+            const mirror = `${remoteDir}-mirror`;
+            yield* git(repoDir, "clone", "--mirror", remoteDir, mirror);
+            yield* git(repoDir, "remote", "set-url", "origin", mirror);
+          }),
+      },
+      {
+        name: "refuses a removed remote",
+        detail: "No git remote is configured",
+        act: ({ repoDir }: Child) => git(repoDir, "remote", "remove", "origin"),
+      },
+      {
+        name: "creates after a rename",
+        detail: null,
+        act: ({ repoDir }: Child) => git(repoDir, "remote", "rename", "origin", "upstream"),
+      },
+    ];
+    it.effect.each(duringGeneration)("$name while generating", ({ detail, act }) =>
+      Effect.gen(function* () {
+        const child = yield* startChild({ fromFetchedParent: true });
+        yield* child.publishChild;
+        child.setDuringGeneration(act(child));
+        if (detail === null) {
+          yield* child.createPr;
+          expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+          return;
+        }
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain(detail);
+        expect(failed.message).toContain("No pull request was created");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("reports an open PR whatever became of the parent", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild({
+          providerScenario: {
+            prListSequence: [
+              [
+                {
+                  number: 77,
+                  title: "Open already",
+                  url: "https://github.com/pingdotgg/codething-mvp/pull/77",
+                  baseRefName: "main",
+                  headRefName: "child",
+                },
+              ],
+              [
+                {
+                  number: 77,
+                  title: "Open already",
+                  url: "https://github.com/pingdotgg/codething-mvp/pull/77",
+                  baseRefName: "main",
+                  headRefName: "child",
+                },
+              ],
+            ],
+          },
+        });
+        yield* child.publishChild;
+        yield* git(child.worktree, "commit", "--allow-empty", "-m", "more child work");
+        const result = yield* child.createPr;
+        expect(result.pr.status).toBe("opened_existing");
+        expect(result.push.status).toBe("pushed");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect(
+      "publishes nothing for a new branch cut from a child with an unpublished parent",
+      () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+          const head = (yield* git(child.worktree, "rev-parse", "HEAD")).stdout;
+          const failed = yield* runStackedAction(child.manager, {
+            cwd: child.worktree,
+            action: "commit_push_pr",
+            featureBranch: true,
+            commitMessage: "Child file",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("isn't on origin");
+          expect(failed.message).toContain("nothing was committed or pushed");
+          expect(
+            (yield* git(child.worktree, "rev-parse", "--abbrev-ref", "HEAD")).stdout.trim(),
+          ).toBe("child");
+          expect((yield* git(child.worktree, "rev-parse", "HEAD")).stdout).toBe(head);
+          expect(yield* remoteBranches(child.remoteDir)).toEqual(["main"]);
+          expect(created(child.calls)).toEqual([]);
+        }),
+    );
+
+    it.effect("publishes nothing for a new branch cut from a detached child", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* git(child.worktree, "switch", "--detach");
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Child file",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(yield* remoteBranches(child.remoteDir)).toEqual(["main"]);
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("checks a new branch's parent even though the child has its own open PR", () =>
+      Effect.gen(function* () {
+        const openOnChild = {
+          number: 77,
+          title: "Open already",
+          url: "https://github.com/pingdotgg/codething-mvp/pull/77",
+          baseRefName: "stack/one",
+          headRefName: "child",
+        };
+        const child = yield* startChild({
+          providerScenario: { prListSequence: [[openOnChild]] },
+        });
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Child file",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("isn't on origin");
+        expect(yield* remoteBranches(child.remoteDir)).toEqual(["main"]);
+      }),
+    );
+
+    it.effect("targets the parent from a new branch cut from a child, in one action", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const result = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Child file",
+        });
+        expect(result.pr.status).toBe("created");
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        const branch = result.branch.name!;
+        expect(branch).not.toBe("child");
+        expect(child.recorded).toContainEqual({ branch, baseBranch: "stack/one" });
+      }),
+    );
+
+    const worktreeFromChild = Effect.fn("worktreeFromChild")(function* (
+      child: Child,
+      baseRefName?: string,
+    ) {
+      const worktree = `${child.worktree}-cut`;
+      yield* child.manager.createWorktree({
+        cwd: child.repoDir,
+        refName: "child",
+        newRefName: "cut",
+        ...(baseRefName ? { baseRefName } : {}),
+        path: worktree,
+      });
+      yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+      return runStackedAction(child.manager, { cwd: worktree, action: "commit_push_pr" });
+    });
+
+    it.effect("refuses a worktree cut from a child with an unpublished parent", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        const failed = yield* (yield* worktreeFromChild(child)).pipe(Effect.flip);
+        expect(failed.message).toContain("isn't on origin");
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(yield* remoteBranches(child.remoteDir)).toEqual(["main"]);
+      }),
+    );
+
+    it.effect("refuses a worktree based on a child that doesn't hold the parent remotely", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* git(child.repoDir, "push", "origin", "main:refs/heads/child");
+        const failed = yield* (yield* worktreeFromChild(child, "child")).pipe(Effect.flip);
+        expect(failed.message).toContain("'child', the base recorded");
+        expect(failed.message).toContain("t3-merge-base refs/heads/child");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("keeps the guard when a rebase replays the start commit with a new parent", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        yield* git(child.repoDir, "switch", "main");
+        yield* git(child.repoDir, "commit", "--allow-empty", "-m", "main moves");
+        yield* git(child.repoDir, "push", "origin", "main");
+        yield* git(child.worktree, "rebase", "main");
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("refuses until told, when a rewrite took the start commit out of the history", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        yield* git(child.worktree, "reset", "--hard", "main");
+        yield* git(child.worktree, "commit", "--allow-empty", "-m", "child work, rebuilt");
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("git config --unset branch.child.t3-start-commit");
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(yield* remoteBranches(child.remoteDir)).not.toContain("child");
+
+        yield* git(child.repoDir, "config", "--unset", "branch.child.t3-start-commit");
+        yield* child.createPr;
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["main"]);
+      }),
+    );
+
+    it.effect("keeps asking on branches cut from a child that dropped its start commit", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* git(child.worktree, "reset", "--hard", "main");
+        yield* git(child.worktree, "commit", "--allow-empty", "-m", "child work, rebuilt");
+        const failed = yield* (yield* worktreeFromChild(child)).pipe(Effect.flip);
+        expect(failed.message).toContain("git config --unset branch.cut.t3-start-commit");
+        expect(created(child.calls)).toEqual([]);
+
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const refused = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit",
+          featureBranch: true,
+          commitMessage: "Child file",
+        });
+        expect(refused.branch.status).toBe("created");
+        const recorded = yield* git(
+          child.worktree,
+          "config",
+          `branch.${refused.branch.name}.t3-start-commit`,
+        );
+        expect(recorded.stdout.trim()).not.toBe("");
+      }),
+    );
+
+    it.effect("publishes nothing for a new branch cut from a child with an unresolved record", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        // An older start commit stays in the history, under the one this record names.
+        const start = (yield* git(child.repoDir, "config", "branch.child.t3-start-commit")).stdout;
+        const newer = (yield* git(
+          child.worktree,
+          "commit-tree",
+          "HEAD^{tree}",
+          "-p",
+          "HEAD",
+          "-m",
+          `T3 Code starts this branch one empty commit above ${start.trim()} so that GitButler keeps it out of the x stack.`,
+        )).stdout.trim();
+        yield* git(child.repoDir, "config", "branch.child.t3-start-commit", newer);
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Child file",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(failed.message).toContain("git config --unset branch.child.t3-start-commit");
+        expect(yield* remoteBranches(child.remoteDir)).not.toContain("child");
+      }),
+    );
+
+    it.effect("targets the parent after the child is rebased onto its new tip", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* git(child.repoDir, "switch", "stack/one");
+        yield* git(child.repoDir, "commit", "--allow-empty", "-m", "more parent work");
+        yield* child.publishParent;
+        yield* git(child.worktree, "rebase", "stack/one");
+        yield* child.createPr;
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+      }),
+    );
+
+    it.effect(
+      "targets the default branch when a cut branch's source isn't out but the parent landed",
+      () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          yield* git(child.repoDir, "push", "origin", "stack/one:main");
+          const result = yield* yield* worktreeFromChild(child, "child");
+          expect(result.pr.status).toBe("created");
+          expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["main"]);
+        }),
+    );
+
+    it.effect("publishes nothing for a new branch cut from a clone with no start record", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const clone = yield* makeTempDir("t3code-git-pr-parent-clone-");
+        yield* git(child.repoDir, "clone", "--branch", "child", child.remoteDir, clone);
+        NodeFS.writeFileSync(NodePath.join(clone, "cut.txt"), "cut\n");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: clone,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Cut file",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("nothing was committed or pushed");
+        expect(yield* remoteBranches(child.remoteDir)).toEqual(["child", "main"]);
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("keeps guarding a worktree launched from a child's remote ref", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const worktree = `${child.worktree}-remote`;
+        yield* child.manager.createWorktree({
+          cwd: child.repoDir,
+          refName: "refs/remotes/origin/child",
+          newRefName: "cut",
+          path: worktree,
+        });
+        yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: worktree,
+          action: "commit_push_pr",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("isn't on origin");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("keeps guarding a worktree launched from a child's fetched tip", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const tip = (yield* git(child.worktree, "rev-parse", "HEAD")).stdout.trim();
+        const worktree = `${child.worktree}-fetched`;
+        yield* child.manager.createWorktree({
+          cwd: child.repoDir,
+          refName: tip,
+          newRefName: "cut",
+          baseRefName: "refs/remotes/origin/child",
+          path: worktree,
+        });
+        yield* git(child.repoDir, "push", "--force", "origin", "main:refs/heads/child");
+        yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: worktree,
+          action: "commit_push_pr",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("'child', the base recorded");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("still checks a worktree's base after the local branch it was cut from is gone", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const worktree = `${child.worktree}-gone`;
+        yield* child.manager.createWorktree({
+          cwd: child.repoDir,
+          refName: "child",
+          newRefName: "cut",
+          baseRefName: "child",
+          path: worktree,
+        });
+        yield* git(child.repoDir, "worktree", "remove", "--force", child.worktree);
+        yield* git(child.repoDir, "branch", "-D", "child");
+        yield* git(child.repoDir, "push", "--force", "origin", "main:refs/heads/child");
+        yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: worktree,
+          action: "commit_push_pr",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("'child', the base recorded");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("finds the start commit in a fetched child with no local branch of its name", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const tip = (yield* git(child.worktree, "rev-parse", "HEAD")).stdout.trim();
+        const clone = yield* makeTempDir("t3code-git-pr-parent-clone-");
+        yield* git(child.repoDir, "clone", "--branch", "main", child.remoteDir, clone);
+        const worktree = `${clone}-cut`;
+        yield* child.manager.createWorktree({
+          cwd: clone,
+          refName: tip,
+          newRefName: "cut",
+          baseRefName: "refs/remotes/origin/child",
+          path: worktree,
+        });
+        yield* git(child.repoDir, "push", "--force", "origin", "main:refs/heads/child");
+        yield* git(
+          worktree,
+          "-c",
+          "user.name=Elsewhere",
+          "-c",
+          "user.email=elsewhere@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "cut work",
+        );
+        const failed = yield* runStackedAction(child.manager, {
+          cwd: worktree,
+          action: "commit_push_pr",
+        }).pipe(Effect.flip);
+        expect(failed.message).toContain("'child', the base recorded");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("targets a published child from a worktree based on it", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishChild;
+        const result = yield* yield* worktreeFromChild(child, "child");
+        expect(result.pr.status).toBe("created");
+        expect(created(child.calls).map((call) => call.baseRefName)).toEqual(["child"]);
+      }),
+    );
+
+    it.effect("keeps guarding a branch cut from a child by an earlier commit", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        NodeFS.writeFileSync(NodePath.join(child.worktree, "child.txt"), "child\n");
+        const committed = yield* runStackedAction(child.manager, {
+          cwd: child.worktree,
+          action: "commit",
+          featureBranch: true,
+          commitMessage: "Child file",
+        });
+        yield* rewriteParent(child);
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(committed.branch.status).toBe("created");
+        expect(failed.message).toContain("no longer contains");
+        expect(created(child.calls)).toEqual([]);
+      }),
+    );
+
+    it.effect("leaves the remote-tracking ref alone when it fetches to compare the parent", () =>
+      Effect.gen(function* () {
+        const child = yield* startChild();
+        yield* child.publishParent;
+        const tracking = "refs/remotes/origin/stack/one";
+        const before = (yield* git(child.repoDir, "rev-parse", tracking)).stdout;
+        const elsewhere = yield* makeTempDir("t3code-git-pr-parent-elsewhere-");
+        yield* git(child.repoDir, "clone", "--branch", "stack/one", child.remoteDir, elsewhere);
+        const rewritten = (yield* git(
+          elsewhere,
+          "-c",
+          "user.name=Elsewhere",
+          "-c",
+          "user.email=elsewhere@example.com",
+          "commit-tree",
+          "HEAD^{tree}",
+          "-p",
+          "HEAD^",
+          "-m",
+          "parent work, rewritten elsewhere",
+        )).stdout.trim();
+        yield* git(elsewhere, "push", "--force", "origin", `${rewritten}:refs/heads/stack/one`);
+        const failed = yield* child.createPr.pipe(Effect.flip);
+        expect(failed.message).toContain("no longer contains");
+        expect((yield* git(child.repoDir, "rev-parse", tracking)).stdout).toBe(before);
+      }),
+    );
+
+    // By hand, since the note is all that survives a clone, and a merge needs no second worktree.
+    const startAbove = Effect.fn("startAbove")(function* (
+      cwd: string,
+      parent: string,
+      branch: string,
+    ) {
+      const parentSha = (yield* git(cwd, "rev-parse", parent)).stdout.trim();
+      yield* git(cwd, "switch", "-c", branch, parent);
+      yield* git(
+        cwd,
+        "commit",
+        "--allow-empty",
+        "-m",
+        `Start ${branch}\n\nT3 Code starts this branch one empty commit above ${parentSha} so that GitButler keeps it out of the ${parent} stack.`,
+      );
+      return (yield* git(cwd, "rev-parse", "HEAD")).stdout.trim();
+    });
+    const publishedParent = Effect.fn("publishedParent")(function* (
+      cwd: string,
+      branch: string,
+      from: string,
+    ) {
+      yield* git(cwd, "switch", "-c", branch, from);
+      yield* git(cwd, "commit", "--allow-empty", "-m", `${branch} work`);
+      yield* git(cwd, "push", "origin", branch);
+    });
+
+    describe("with start commits above different parents in its history", () => {
+      const scenario = Effect.fn("scenario")(function* (input: {
+        readonly aboveParent?: string;
+        readonly mergedParent?: string;
+        readonly landed?: string;
+      }) {
+        const child = yield* startChild();
+        const { repoDir, remoteDir } = child;
+        yield* child.publishParent;
+        yield* publishedParent(repoDir, "stack/two", "main");
+        yield* publishedParent(repoDir, "stack/three", "stack/one");
+        const startA = yield* startAbove(repoDir, input.aboveParent ?? "stack/one", "a");
+        yield* git(repoDir, "commit", "--allow-empty", "-m", "a work");
+        yield* git(repoDir, "commit", "--allow-empty", "-m", "more a work");
+        yield* startAbove(repoDir, input.mergedParent ?? "stack/two", "b");
+        yield* git(repoDir, "commit", "--allow-empty", "-m", "b work");
+        yield* git(repoDir, "switch", "a");
+        yield* git(repoDir, "merge", "--no-ff", "-m", "Merge b", "b");
+        yield* git(repoDir, "push", "origin", "a");
+        if (input.landed) yield* git(repoDir, "push", "origin", `${input.landed}:main`);
+        const clone = yield* makeTempDir("t3code-git-pr-merged-clone-");
+        yield* git(repoDir, "clone", "--branch", "a", remoteDir, clone);
+        yield* git(clone, "config", "user.email", "test@example.com");
+        yield* git(clone, "config", "user.name", "Test User");
+        return { ...child, clone, startA };
+      });
+      type Scenario = Effect.Success<ReturnType<typeof scenario>>;
+      const cutFeatureBranch = ({ manager, clone }: Scenario) => {
+        NodeFS.writeFileSync(NodePath.join(clone, "cut.txt"), "cut\n");
+        return runStackedAction(manager, {
+          cwd: clone,
+          action: "commit_push_pr",
+          featureBranch: true,
+          commitMessage: "Cut file",
+        });
+      };
+      const branchesBefore = ["a", "main", "stack/one", "stack/three", "stack/two"];
+
+      it.effect("publishes nothing for a feature branch cut from a clone of it", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          const failed = yield* cutFeatureBranch(merged).pipe(Effect.flip);
+          expect(failed.message).toContain("nothing was committed or pushed");
+          expect(failed.message).toContain("can't name a base");
+          expect(yield* remoteBranches(merged.remoteDir)).toEqual(branchesBefore);
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses a clone's own branch, which has no start record", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("can't name a base");
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses even with a record of the branch's own start commit", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(merged.clone, "config", "branch.a.t3-start-commit", merged.startA);
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("can't name a base");
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses a worktree launched from it, recording no start for either side", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          const worktree = `${merged.clone}-cut`;
+          yield* merged.manager.createWorktree({
+            cwd: merged.clone,
+            refName: "a",
+            newRefName: "cut",
+            path: worktree,
+          });
+          const record = yield* runGit(
+            merged.clone,
+            ["config", "--get", "branch.cut.t3-start-commit"],
+            true,
+          );
+          expect(record.stdout).toBe("");
+          yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: worktree,
+            action: "commit_push_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("can't name a base");
+          expect(yield* remoteBranches(merged.remoteDir)).toEqual(branchesBefore);
+        }),
+      );
+
+      it.effect("lets a base named in full through, for the branch and one cut from it", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(
+            merged.clone,
+            "config",
+            "branch.a.t3-merge-base",
+            "refs/remotes/origin/stack/two",
+          );
+          yield* cutFeatureBranch(merged);
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["stack/two"]);
+        }),
+      );
+
+      it.effect("targets the parent when both children started above the same one", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({ mergedParent: "stack/one" });
+          yield* cutFeatureBranch(merged);
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("targets the parent that holds the other parent, whichever side it's on", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({ mergedParent: "stack/three" });
+          yield* git(merged.clone, "config", "branch.a.t3-start-commit", merged.startA);
+          yield* runStackedAction(merged.manager, { cwd: merged.clone, action: "create_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["stack/three"]);
+        }),
+      );
+
+      it.effect("refuses when a merged child's parent landed but the base lacks it", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({ landed: "stack/two" });
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("can't name a base");
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("targets the default branch once every parent landed", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({ mergedParent: "stack/three", landed: "stack/three" });
+          yield* runStackedAction(merged.manager, { cwd: merged.clone, action: "create_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["main"]);
+        }),
+      );
+
+      it.effect("targets a short base that holds every parent, which it checks on the remote", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          const { clone, repoDir } = merged;
+          yield* git(repoDir, "push", "origin", "a:refs/heads/holds-both");
+          yield* git(clone, "fetch", "origin");
+          yield* git(clone, "config", "branch.a.t3-merge-base", "holds-both");
+          yield* runStackedAction(merged.manager, { cwd: clone, action: "create_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["holds-both"]);
+        }),
+      );
+
+      it.effect("reads a recorded base through its remote's name, as the base itself does", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          const { clone, repoDir } = merged;
+          yield* git(repoDir, "push", "origin", "a:refs/heads/holds-both");
+          yield* git(clone, "fetch", "origin");
+          yield* git(clone, "config", "branch.a.t3-merge-base", "origin/holds-both");
+          yield* runStackedAction(merged.manager, { cwd: clone, action: "create_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["holds-both"]);
+        }),
+      );
+
+      it.effect("refuses a short base that lacks a parent, naming how to override it", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(merged.clone, "config", "branch.a.t3-merge-base", "stack/two");
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("t3-merge-base refs/heads/<branch>");
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("leaves a branch alone that only merged a child into its own line", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, remoteDir, manager, calls } = child;
+          yield* child.publishParent;
+          yield* publishedParent(repoDir, "develop", "main");
+          yield* startAbove(repoDir, "stack/one", "b");
+          yield* git(repoDir, "switch", "develop");
+          yield* git(repoDir, "merge", "--no-ff", "-m", "Merge b", "b");
+          yield* git(repoDir, "push", "origin", "develop");
+          const clone = yield* makeTempDir("t3code-git-pr-plain-clone-");
+          yield* git(repoDir, "clone", "--branch", "develop", remoteDir, clone);
+          yield* runStackedAction(manager, { cwd: clone, action: "create_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["main"]);
+        }),
+      );
+
+      it.effect("leaves a parent alone that merged back a child started above it", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, remoteDir, manager, calls } = child;
+          yield* child.publishParent;
+          yield* startAbove(repoDir, "stack/one", "p");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "p work");
+          yield* git(repoDir, "push", "origin", "p");
+          yield* startAbove(repoDir, "p", "c");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "c work");
+          yield* git(repoDir, "switch", "p");
+          yield* git(repoDir, "merge", "--no-ff", "-m", "Merge c", "c");
+          yield* git(repoDir, "push", "origin", "p");
+          const clone = yield* makeTempDir("t3code-git-pr-parent-back-clone-");
+          yield* git(repoDir, "clone", "--branch", "p", remoteDir, clone);
+          yield* runStackedAction(manager, { cwd: clone, action: "create_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("leaves a chain of children merged back alone too", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, remoteDir, manager, calls } = child;
+          yield* child.publishParent;
+          yield* startAbove(repoDir, "stack/one", "p");
+          yield* startAbove(repoDir, "p", "c");
+          yield* startAbove(repoDir, "c", "g");
+          yield* git(repoDir, "switch", "c");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "c work");
+          yield* git(repoDir, "merge", "--no-ff", "-m", "Merge g", "g");
+          yield* git(repoDir, "switch", "p");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "p work");
+          yield* git(repoDir, "merge", "--no-ff", "-m", "Merge c", "c");
+          yield* git(repoDir, "push", "origin", "p", "c");
+          const clone = yield* makeTempDir("t3code-git-pr-chain-clone-");
+          yield* git(repoDir, "clone", "--branch", "p", remoteDir, clone);
+          yield* runStackedAction(manager, { cwd: clone, action: "create_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("checks a branch cut from a child that merged back its own child alike", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, remoteDir, manager, calls } = child;
+          yield* child.publishParent;
+          yield* startAbove(repoDir, "stack/one", "p");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "p work");
+          yield* git(repoDir, "push", "origin", "p");
+          yield* startAbove(repoDir, "p", "c");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "c work");
+          yield* git(repoDir, "switch", "p");
+          yield* git(repoDir, "merge", "--no-ff", "-m", "Merge c", "c");
+          yield* git(repoDir, "push", "origin", "p");
+          const clone = yield* makeTempDir("t3code-git-pr-cut-back-clone-");
+          yield* git(repoDir, "clone", "--branch", "p", remoteDir, clone);
+          yield* git(clone, "config", "user.email", "test@example.com");
+          yield* git(clone, "config", "user.name", "Test User");
+          NodeFS.writeFileSync(NodePath.join(clone, "cut.txt"), "cut\n");
+          yield* runStackedAction(manager, {
+            cwd: clone,
+            action: "commit_push_pr",
+            featureBranch: true,
+            commitMessage: "Cut file",
+          });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("doesn't take a base from a local namesake of the launched remote branch", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, manager, calls } = child;
+          yield* child.publishParent;
+          yield* startAbove(repoDir, "stack/one", "remote-a");
+          yield* git(repoDir, "push", "origin", "remote-a:a");
+          yield* git(repoDir, "fetch", "origin");
+          yield* git(repoDir, "branch", "a", "main");
+          yield* git(repoDir, "branch", "x", "main");
+          yield* git(repoDir, "config", "branch.a.t3-merge-base", "refs/heads/x");
+          const worktree = `${repoDir}-from-remote`;
+          yield* manager.createWorktree({
+            cwd: repoDir,
+            refName: "origin/a",
+            newRefName: "cut",
+            path: worktree,
+          });
+          yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+          yield* runStackedAction(manager, { cwd: worktree, action: "commit_push_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("leaves a fork's branch alone when upstream already landed the child", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          const { repoDir, worktree, manager, calls } = child;
+          yield* child.publishParent;
+          yield* git(repoDir, "remote", "add", "upstream", yield* createBareRemote());
+          yield* git(worktree, "push", "upstream", "child:main");
+          yield* git(repoDir, "fetch", "upstream");
+          yield* git(repoDir, "switch", "-c", "from-upstream", "upstream/main");
+          yield* git(repoDir, "commit", "--allow-empty", "-m", "fork work");
+          yield* runStackedAction(manager, { cwd: repoDir, action: "commit_push_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["main"]);
+        }),
+      );
+
+      it.effect("targets the default branch when diverged parents both landed", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(merged.repoDir, "switch", "main");
+          yield* git(merged.repoDir, "merge", "--no-ff", "-m", "Land", "stack/one", "stack/two");
+          yield* git(merged.repoDir, "push", "origin", "main");
+          yield* git(merged.clone, "fetch", "origin");
+          yield* runStackedAction(merged.manager, { cwd: merged.clone, action: "create_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["main"]);
+        }),
+      );
+
+      it.effect("refuses a short base that lacks a parent even once both landed", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(merged.repoDir, "switch", "main");
+          yield* git(merged.repoDir, "merge", "--no-ff", "-m", "Land", "stack/one", "stack/two");
+          yield* git(merged.repoDir, "push", "origin", "main");
+          yield* git(merged.clone, "fetch", "origin");
+          yield* git(merged.clone, "config", "branch.a.t3-merge-base", "stack/one");
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("doesn't hold them all");
+          expect(created(merged.calls)).toEqual([]);
+        }),
+      );
+
+      it.effect("says so when a base named in full can't be found", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(merged.clone, "config", "branch.a.t3-merge-base", "refs/heads/stack/two");
+          const failed = yield* runStackedAction(merged.manager, {
+            cwd: merged.clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("isn't a branch T3 Code can find");
+        }),
+      );
+
+      it.effect("carries a base named in full to a worktree launched from it", () =>
+        Effect.gen(function* () {
+          const merged = yield* scenario({});
+          yield* git(
+            merged.clone,
+            "config",
+            "branch.a.t3-merge-base",
+            "refs/remotes/origin/stack/two",
+          );
+          const worktree = `${merged.clone}-cut`;
+          yield* merged.manager.createWorktree({
+            cwd: merged.clone,
+            refName: "a",
+            newRefName: "cut",
+            path: worktree,
+          });
+          yield* git(worktree, "commit", "--allow-empty", "-m", "cut work");
+          yield* runStackedAction(merged.manager, { cwd: worktree, action: "commit_push_pr" });
+          expect(created(merged.calls).map((call) => call.baseRefName)).toEqual(["stack/two"]);
+        }),
+      );
+
+      it.effect("guards a clone's own branch with a squashed start commit", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          yield* child.publishParent;
+          const { repoDir, remoteDir, manager, calls } = child;
+          yield* startAbove(repoDir, "stack/one", "squashed");
+          NodeFS.writeFileSync(NodePath.join(repoDir, "squashed.txt"), "work\n");
+          yield* git(repoDir, "add", "squashed.txt");
+          yield* git(repoDir, "commit", "--amend", "--no-edit");
+          yield* git(repoDir, "push", "origin", "squashed");
+          const clone = yield* makeTempDir("t3code-git-pr-squashed-clone-");
+          yield* git(repoDir, "clone", "--branch", "squashed", remoteDir, clone);
+          yield* runStackedAction(manager, { cwd: clone, action: "create_pr" });
+          expect(created(calls).map((call) => call.baseRefName)).toEqual(["stack/one"]);
+        }),
+      );
+
+      it.effect("guards a clone's own branch with a single start commit too", () =>
+        Effect.gen(function* () {
+          const child = yield* startChild();
+          yield* child.publishChild;
+          const clone = yield* makeTempDir("t3code-git-pr-parent-clone-");
+          yield* git(child.repoDir, "clone", "--branch", "child", child.remoteDir, clone);
+          const failed = yield* runStackedAction(child.manager, {
+            cwd: clone,
+            action: "create_pr",
+          }).pipe(Effect.flip);
+          expect(failed.message).toContain("present that work");
+          expect(created(child.calls)).toEqual([]);
+        }),
+      );
+    });
+
+    describe("once applied to a GitButler workspace", () => {
+      const applied = Effect.fn("applied")(function* (input: {
+        readonly stackedOnParent: boolean;
+        readonly openPr?: boolean;
+        readonly selected?: string;
+        readonly startDropped?: boolean;
+        readonly mergedOtherChild?: boolean;
+      }) {
+        const butCalls: Array<ReadonlyArray<string>> = [];
+        const parentSha = { current: "" };
+        const ok = (stdout: string) => ({
+          exitCode: ChildProcessSpawner.ExitCode(0),
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdout,
+        });
+        const butProcess = VcsProcess.VcsProcess.of({
+          run: (request) =>
+            Effect.sync(() => {
+              if (request.command !== "but") return ok("");
+              butCalls.push(request.args);
+              if (request.args[0] === "status") {
+                const parentCommits = [{ commitId: parentSha.current, message: "parent work" }];
+                const startCommits = [
+                  {
+                    commitId: "b".repeat(40),
+                    message: `Start\n\nT3 Code starts this branch one empty commit\nabove ${"a".repeat(40)} so that GitButler keeps it out.`,
+                  },
+                ];
+                return ok(
+                  JSON.stringify({
+                    uncommittedChanges: [],
+                    mergeBase: { commitId: "base-commit" },
+                    stacks: [
+                      {
+                        assignedChanges: [],
+                        branches: input.startDropped
+                          ? [{ name: "child", commits: parentCommits }]
+                          : input.stackedOnParent
+                            ? [
+                                { name: "child", commits: startCommits },
+                                { name: "stack/one", commits: parentCommits },
+                              ]
+                            : [
+                                { name: "top", commits: [] },
+                                { name: "child", commits: [...startCommits, ...parentCommits] },
+                              ],
+                      },
+                    ],
+                  }),
+                );
+              }
+              return ok(
+                JSON.stringify({
+                  published: [
+                    {
+                      sourceBranch: "child",
+                      targetBranch: "stack/one",
+                      number: 42,
+                      title: "Child",
+                      htmlUrl: "https://github.com/acme/repo/pull/42",
+                    },
+                  ],
+                  alreadyExisting: [],
+                  branches: [],
+                }),
+              );
+            }),
+        });
+        const butContext = yield* Layer.build(
+          GitButlerWorkspace.layer.pipe(
+            Layer.provide(Layer.succeed(VcsProcess.VcsProcess, butProcess)),
+          ),
+        );
+        const child = yield* startChild({
+          gitButler: Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace),
+          ...(input.openPr
+            ? {
+                providerScenario: {
+                  prListSequence: [
+                    [
+                      {
+                        number: 77,
+                        title: "Open already",
+                        url: "https://github.com/pingdotgg/codething-mvp/pull/77",
+                        baseRefName: "main",
+                        headRefName: "child",
+                      },
+                    ],
+                  ],
+                },
+              }
+            : {}),
+        });
+        parentSha.current = (yield* git(child.repoDir, "rev-parse", "stack/one")).stdout.trim();
+        if (input.startDropped) {
+          yield* git(child.worktree, "reset", "--hard", "stack/one");
+        }
+        if (input.mergedOtherChild) {
+          yield* publishedParent(child.repoDir, "stack/two", "main");
+          yield* startAbove(child.repoDir, "stack/two", "other");
+          yield* git(child.repoDir, "switch", "gitbutler/workspace");
+          yield* git(child.worktree, "merge", "--no-ff", "-m", "Merge other", "other");
+        }
+        const createPr = runStackedAction(child.manager, {
+          cwd: child.repoDir,
+          action: "create_pr",
+          gitbutlerBranch: input.selected ?? "child",
+        });
+        return { butCalls, createPr };
+      });
+      const prNewCalls = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+        calls.filter((args) => args[0] === "pr");
+
+      it.effect("refuses when the parent's commits are in the child's own branch", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({ stackedOnParent: false });
+          const failed = yield* createPr.pipe(Effect.flip);
+          expect(failed.message).toContain("nothing was committed or pushed");
+          expect(failed.message).toContain("git branch <name>");
+          expect(prNewCalls(butCalls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses for a branch above it, because GitButler would publish it too", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({
+            stackedOnParent: false,
+            selected: "top",
+          });
+          const failed = yield* createPr.pipe(Effect.flip);
+          expect(failed.message).toContain("git branch <name>");
+          expect(prNewCalls(butCalls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses when a rewrite dropped the start commit but its record stayed", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({
+            stackedOnParent: false,
+            startDropped: true,
+          });
+          const failed = yield* createPr.pipe(Effect.flip);
+          expect(failed.message).toContain("git config --unset branch.child.t3-start-commit");
+          expect(prNewCalls(butCalls)).toEqual([]);
+        }),
+      );
+
+      it.effect("refuses a merge's start commit that the status doesn't list", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({
+            stackedOnParent: true,
+            mergedOtherChild: true,
+          });
+          const failed = yield* createPr.pipe(Effect.flip);
+          expect(failed.message).toContain("nothing was committed or pushed");
+          expect(prNewCalls(butCalls)).toEqual([]);
+        }),
+      );
+
+      it.effect("lets GitButler create it when the parent is a branch of the stack below", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({ stackedOnParent: true });
+          yield* createPr;
+          expect(prNewCalls(butCalls)).toHaveLength(1);
+        }),
+      );
+
+      it.effect("lets GitButler open a pull request that already exists", () =>
+        Effect.gen(function* () {
+          const { butCalls, createPr } = yield* applied({ stackedOnParent: false, openPr: true });
+          yield* createPr;
+          expect(prNewCalls(butCalls)).toHaveLength(1);
+        }),
+      );
+    });
+
+    it.effect("tells the host about the parent for a child made from a bare start commit", () =>
+      Effect.gen(function* () {
+        const { repoDir, worktree, manager, recorded } = yield* startChild();
+        expect(recorded).toEqual([{ branch: "child", baseBranch: "stack/one" }]);
+        const start = (yield* git(repoDir, "config", "branch.child.t3-start-commit")).stdout.trim();
+        // The delegated path names its base by the commit id alone.
+        yield* manager.createWorktree({
+          cwd: repoDir,
+          refName: start,
+          newRefName: "delegated",
+          baseRefName: start,
+          path: `${worktree}-delegated`,
+        });
+        expect(recorded).toContainEqual({ branch: "delegated", baseBranch: "stack/one" });
+      }),
+    );
+  });
+
+  it.effect("does not turn a GitButler selection into a plain commit of everything", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const head = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout;
+      NodeFS.writeFileSync(NodePath.join(repoDir, "unreviewed.txt"), "someone else's\n");
+      const { manager } = yield* makeManager();
+      const refused = yield* manager
+        .runStackedAction({
+          cwd: repoDir,
+          actionId: "left-gitbutler",
+          action: "commit",
+          commitMessage: "Selected",
+          gitbutlerChangeIds: ["file:1"],
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitManagerError");
+      expect((yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout).toBe(head);
+    }),
+  );
   it.effect("status reports the listed PR whose head is the branch", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -4307,6 +6584,44 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       }),
   );
 
+  it.effect("a push outside workspace mode stops on a hold until it's reviewed", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/held"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "held.txt"), "held\n");
+      yield* runGit(repoDir, ["add", "held.txt"]);
+      yield* runGit(repoDir, ["commit", "-m", "Held"]);
+      yield* runGit(repoDir, [
+        "update-ref",
+        "refs/t3/gitbutler-holds/unverified/id/changeid/feature/held",
+        "HEAD",
+      ]);
+
+      const { manager } = yield* makeManager();
+      const held = yield* runStackedAction(manager, { cwd: repoDir, action: "push" }).pipe(
+        Effect.flip,
+      );
+      expect(held._tag).toBe("GitButlerPublicationHoldError");
+      if (held._tag !== "GitButlerPublicationHoldError") return;
+      expect(
+        yield* runGit(remoteDir, ["--git-dir=.", "for-each-ref", "refs/heads/feature/held"]).pipe(
+          Effect.map((output) => output.stdout.trim()),
+        ),
+      ).toBe("");
+
+      const result = yield* manager.runStackedAction({
+        cwd: repoDir,
+        actionId: "push-reviewed",
+        action: "push",
+        gitbutlerHoldApproval: held.approval,
+      });
+      expect(result.push.status).toBe("pushed");
+    }),
+  );
+
   it.effect("pushes existing commits without committing dirty worktree changes", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -6749,6 +9064,30 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         const events: string[] = [];
         const workflows = yield* Effect.forEach([0, 1], () =>
           GitWorkflowService.make.pipe(
+            Effect.provideService(
+              GitButlerWorkspace.GitButlerWorkspace,
+              GitButlerWorkspace.GitButlerWorkspace.of({
+                apply: () => Effect.die("unexpected GitButler apply"),
+                unapply: () => Effect.die("unexpected GitButler unapply"),
+                createBranch: () => Effect.die("unexpected GitButler branch creation"),
+                readStatus: () => Effect.die("unexpected GitButler status read"),
+                readBranchDiff: () => Effect.die("unexpected GitButler diff read"),
+                invalidate: () => Effect.void,
+                readCommitChanges: () => Effect.die("unexpected GitButler change read"),
+                prepareCommit: () => Effect.die("unexpected GitButler commit"),
+                readCommitContext: () => Effect.die("unexpected GitButler context"),
+                commit: () => Effect.die("unexpected GitButler commit"),
+                readPublishedBranches: () => Effect.die("unexpected GitButler stack read"),
+                branchHasRevision: () => Effect.die("unexpected GitButler revision read"),
+                push: () => Effect.die("unexpected GitButler push"),
+                createPullRequest: () => Effect.die("unexpected GitButler PR"),
+                publishOutsideWorkspace: () => Effect.die("unexpected GitButler hold check"),
+                readHolds: () => Effect.die("unexpected GitButler hold read"),
+                resolveHolds: () => Effect.die("unexpected GitButler hold resolution"),
+                pull: () => Effect.die("unexpected GitButler pull"),
+                autoPull: () => Effect.die("unexpected GitButler auto-pull"),
+              }),
+            ),
             // Cache the real filesystem result so startImmediately reaches lease acquisition.
             Effect.provideService(FileSystem.FileSystem, {
               ...fileSystem,
@@ -6889,6 +9228,200 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect((yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim()).toBe(localCommit);
       expect(NodeFS.readFileSync(NodePath.join(repoDir, "mine.txt"), "utf8")).toBe("mine\n");
     }),
+  );
+
+  const setUpGitButlerPullRequest = Effect.fnUntraced(function* (input: {
+    readonly kind: "github" | "gitlab";
+    readonly readStatus: GitButlerWorkspace.GitButlerWorkspace["Service"]["readStatus"];
+    readonly invalidate?: GitButlerWorkspace.GitButlerWorkspace["Service"]["invalidate"];
+  }) {
+    const repoDir = yield* makeTempDir("t3code-git-manager-");
+    yield* initRepo(repoDir);
+    const remoteDir = yield* createBareRemote();
+    yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+    yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+    yield* runGit(repoDir, ["checkout", "-b", "gitbutler/workspace"]);
+    yield* runGit(repoDir, ["checkout", "-b", "feature/pr-safe", "main"]);
+    NodeFS.writeFileSync(NodePath.join(repoDir, "pr.txt"), "published\n");
+    yield* runGit(repoDir, ["add", "pr.txt"]);
+    yield* runGit(repoDir, ["commit", "-m", "PR head"]);
+    const pullHead = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
+    const pullRef = input.kind === "github" ? "refs/pull/91/head" : "refs/merge-requests/91/head";
+    yield* runGit(repoDir, ["push", "origin", `HEAD:${pullRef}`]);
+    NodeFS.writeFileSync(NodePath.join(repoDir, "pr.txt"), "unpublished\n");
+    yield* runGit(repoDir, ["commit", "-am", "Applied branch work"]);
+    const localTip = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
+    yield* runGit(repoDir, ["checkout", "gitbutler/workspace"]);
+    const workspaceTip = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim();
+    const butContext = yield* Layer.build(
+      Layer.mock(GitButlerWorkspace.GitButlerWorkspace)({
+        readStatus: input.readStatus,
+        invalidate: input.invalidate ?? (() => Effect.void),
+      }),
+    );
+    const { manager, providerCalls } = yield* makeManager({
+      gitButler: Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace),
+      providerScenario: {
+        kind: input.kind,
+        pullRequest: {
+          number: 91,
+          title: "GitButler PR",
+          url:
+            input.kind === "github"
+              ? "https://github.com/pingdotgg/codething-mvp/pull/91"
+              : "https://gitlab.com/pingdotgg/codething-mvp/-/merge_requests/91",
+          baseRefName: "main",
+          headRefName: "feature/pr-safe",
+          state: "open",
+          isCrossRepository: false,
+        },
+      },
+    });
+    const expectRootUntouched = Effect.gen(function* () {
+      expect((yield* runGit(repoDir, ["symbolic-ref", "HEAD"])).stdout.trim()).toBe(
+        "refs/heads/gitbutler/workspace",
+      );
+      expect((yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout.trim()).toBe(workspaceTip);
+    });
+    return { repoDir, manager, providerCalls, pullHead, localTip, expectRootUntouched };
+  });
+
+  const gitButlerStatus = (branches: ReadonlyArray<string>) => () =>
+    Effect.succeed({
+      _tag: "gitbutler" as const,
+      stacks: [{ branches, assignedChangeCount: 0 }],
+      unassignedChangeCount: 0,
+    });
+  const unexpectedGitButlerRead = () => Effect.die("nothing here needs GitButler's status");
+
+  it.effect.each(["github", "gitlab"] as const)(
+    "%s local checkout refuses a GitButler workspace before asking the host",
+    (kind) =>
+      Effect.gen(function* () {
+        const { repoDir, manager, providerCalls, expectRootUntouched } =
+          yield* setUpGitButlerPullRequest({ kind, readStatus: unexpectedGitButlerRead });
+
+        const error = yield* Effect.flip(
+          preparePullRequestThread(manager, { cwd: repoDir, reference: "91", mode: "local" }),
+        );
+
+        expect(error.message).toContain("GitButler workspace");
+        expect(providerCalls).toEqual([]);
+        yield* expectRootUntouched;
+      }),
+  );
+
+  it.effect.each([
+    { kind: "github", existingBranch: true, readStatus: gitButlerStatus(["other/applied"]) },
+    { kind: "gitlab", existingBranch: false, readStatus: unexpectedGitButlerRead },
+  ] as const)(
+    "$kind worktree PR thread leaves a GitButler workspace alone (existing branch: $existingBranch)",
+    ({ kind, existingBranch, readStatus }) =>
+      Effect.gen(function* () {
+        const { repoDir, manager, pullHead, localTip, expectRootUntouched } =
+          yield* setUpGitButlerPullRequest({ kind, readStatus });
+        if (!existingBranch) yield* runGit(repoDir, ["branch", "-D", "feature/pr-safe"]);
+
+        const result = yield* preparePullRequestThread(manager, {
+          cwd: repoDir,
+          reference: "91",
+          mode: "worktree",
+        });
+
+        // An existing branch is only fast-forwarded, so its own commits keep it off the head.
+        expect(result).toMatchObject({
+          branch: "feature/pr-safe",
+          isOnPullRequestHead: !existingBranch,
+        });
+        expect((yield* runGit(result.worktreePath!, ["rev-parse", "HEAD"])).stdout.trim()).toBe(
+          existingBranch ? localTip : pullHead,
+        );
+        yield* expectRootUntouched;
+      }),
+  );
+
+  it.effect.each([
+    { label: "is applied", readStatus: gitButlerStatus(["other/applied", "feature/pr-safe"]) },
+    {
+      label: "may be applied because GitButler can't say",
+      readStatus: () =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "GitButlerWorkspace.readStatus",
+            command: "but status",
+            cwd: "/repo",
+            detail: "but is not installed",
+          }),
+        ),
+    },
+    (() => {
+      let invalidated = false;
+      return {
+        label: "was applied after GitButler's status was cached",
+        invalidate: () =>
+          Effect.sync(() => {
+            invalidated = true;
+          }),
+        readStatus: () => gitButlerStatus(invalidated ? ["feature/pr-safe"] : ["other/applied"])(),
+      };
+    })(),
+  ])("worktree PR thread never moves a head branch that $label", ({ readStatus, ...rest }) =>
+    Effect.gen(function* () {
+      const { repoDir, manager, localTip, expectRootUntouched } = yield* setUpGitButlerPullRequest({
+        kind: "github",
+        readStatus,
+        ...("invalidate" in rest ? { invalidate: rest.invalidate } : {}),
+      });
+
+      const error = yield* Effect.flip(
+        preparePullRequestThread(manager, { cwd: repoDir, reference: "91", mode: "worktree" }),
+      );
+
+      expect(error.message).toContain("feature/pr-safe");
+      expect((yield* runGit(repoDir, ["rev-parse", "feature/pr-safe"])).stdout.trim()).toBe(
+        localTip,
+      );
+      expect((yield* runGit(repoDir, ["worktree", "list", "--porcelain"])).stdout).not.toContain(
+        "refs/heads/feature/pr-safe",
+      );
+      yield* expectRootUntouched;
+    }),
+  );
+
+  it.effect(
+    "worktree PR thread reuses an applied branch's worktree without moving the branch",
+    () =>
+      Effect.gen(function* () {
+        const { repoDir, manager, localTip, expectRootUntouched } =
+          yield* setUpGitButlerPullRequest({
+            kind: "github",
+            readStatus: gitButlerStatus(["feature/pr-safe"]),
+          });
+        // At its upstream and behind nothing, so a refresh would reset it to the rewritten head.
+        yield* runGit(repoDir, ["push", "origin", `${localTip}:refs/heads/feature/pr-safe`]);
+        yield* runGit(repoDir, ["fetch", "origin"]);
+        yield* runGit(repoDir, [
+          "branch",
+          "--set-upstream-to",
+          "origin/feature/pr-safe",
+          "feature/pr-safe",
+        ]);
+        const worktreePath = NodePath.join(yield* makeTempDir("t3code-git-manager-"), "applied");
+        yield* runGit(repoDir, ["worktree", "add", worktreePath, "feature/pr-safe"]);
+
+        const result = yield* preparePullRequestThread(manager, {
+          cwd: repoDir,
+          reference: "91",
+          mode: "worktree",
+        });
+
+        expect(result).toMatchObject({ branch: "feature/pr-safe", isOnPullRequestHead: false });
+        expect(NodeFS.realpathSync(result.worktreePath!)).toBe(NodeFS.realpathSync(worktreePath));
+        expect((yield* runGit(repoDir, ["rev-parse", "feature/pr-safe"])).stdout.trim()).toBe(
+          localTip,
+        );
+        yield* expectRootUntouched;
+      }),
   );
 
   it.effect.each([false, true])(

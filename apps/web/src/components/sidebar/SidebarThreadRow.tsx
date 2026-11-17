@@ -10,6 +10,7 @@ import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePull
 import { useDeadlinePassed } from "~/hooks/useDeadline";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { useDraggable } from "@dnd-kit/core";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
@@ -266,6 +267,7 @@ function SidebarThreadTooltip({
   showInstanceBadge,
   modelInstanceId,
   modelLabel,
+  branchLabel,
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
@@ -280,6 +282,7 @@ function SidebarThreadTooltip({
   showInstanceBadge: boolean;
   modelInstanceId: string;
   modelLabel: string;
+  branchLabel: string | null;
   branchMismatch: {
     threadBranch: string;
     currentBranch: string;
@@ -322,10 +325,10 @@ function SidebarThreadTooltip({
             <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
           </div>
         ) : null}
-        {thread.branch ? (
+        {branchLabel ? (
           <div className="flex min-w-0 items-center gap-2">
             <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
-            <MiddleTruncate value={thread.branch} className="flex" />
+            <MiddleTruncate value={branchLabel} className="flex" />
           </div>
         ) : null}
         {worktreePath ? (
@@ -775,6 +778,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     gitStatus.data,
   );
   const checkoutThread = withoutRemovedCheckout(thread, visibleGitStatus, props.project);
+  // Row status is HEAD-only for speed, so a GitButler label comes from the thread's link alone.
+  const branchLabel = resolveVcsRefDisplayName(checkoutThread.branch, null, thread.gitbutlerBranch);
   const pr = linkedPullRequestStatus?.pr ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   const currentLinkedPr = supportsMultiplePullRequests
@@ -891,6 +896,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       showInstanceBadge={showInstanceBadge}
       modelInstanceId={modelInstanceId}
       modelLabel={modelLabel}
+      branchLabel={branchLabel}
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
@@ -1877,6 +1883,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
             showInstanceBadge={showInstanceBadge}
             modelInstanceId={modelInstanceId}
             modelLabel={modelLabel}
+            branchLabel={resolveVcsRefDisplayName(thread.branch, null, thread.gitbutlerBranch)}
             branchMismatch={branchMismatch}
             terminalStatus={terminalStatus}
             terminalProcessCount={runningTerminalIds.length}

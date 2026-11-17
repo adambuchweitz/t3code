@@ -13,6 +13,12 @@ import {
   type VcsListRefsInput,
   type VcsListRefsResult,
 } from "@t3tools/contracts";
+import {
+  gitButlerLinkedBranchMessage,
+  gitButlerStartCommitRefusedMessage,
+  gitButlerWorkspaceBaseMessage,
+  isGitButlerWorkspaceRef,
+} from "@t3tools/shared/git";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -233,9 +239,33 @@ const make = Effect.gen(function* () {
     }
 
     let baseRef = input.baseRef;
+    // GitButler's checked-out ref merges every applied branch, so a default skips it and any fetch.
+    let gitButlerDefaultBase: { readonly commitSha: string; readonly baseRefName: string } | null =
+      null;
+    let pinnedBranchCommitSha: string | null = null;
+    const linkedBranch = projection.thread.gitbutlerBranch ?? null;
     if (baseRef === undefined && !projectIsRepository) {
       // Each repository starts from its own default branch.
       baseRef = "HEAD";
+    } else if (baseRef === undefined && linkedBranch !== null && input.startFromOrigin !== true) {
+      const refuse = (problem: "missing" | "conflicted" | "unreadable") =>
+        failure(
+          "invalid_request",
+          `${gitButlerLinkedBranchMessage(linkedBranch, problem)} Pass baseRef with a real branch, tag, or commit, or change the link with t3_thread_update.`,
+        );
+      const pin = yield* gitWorkflow
+        .pinBranchForWorktree({ cwd: projectCwd, branch: linkedBranch })
+        .pipe(Effect.mapError(() => refuse("unreadable")));
+      if (pin.status === "refused") {
+        return yield* failure(
+          "operation_failed",
+          gitButlerStartCommitRefusedMessage(linkedBranch, pin.detail),
+        );
+      }
+      if (pin.status !== "pinned") return yield* refuse(pin.status);
+      pinnedBranchCommitSha = pin.branchCommitSha;
+      baseRef = `refs/heads/${linkedBranch}`;
+      gitButlerDefaultBase = { commitSha: pin.commitSha, baseRefName: baseRef };
     } else if (baseRef === undefined) {
       if (localStatus.refName === null) {
         return yield* failure(
@@ -243,16 +273,37 @@ const make = Effect.gen(function* () {
           "Could not determine the current branch of the project workspace (detached HEAD?). Pass baseRef explicitly.",
         );
       }
-      baseRef = localStatus.refName;
+      if (isGitButlerWorkspaceRef(localStatus.refName)) {
+        gitButlerDefaultBase = yield* GitWorkflowService.resolveRemoteWorktreeBase(gitWorkflow, {
+          cwd: projectCwd,
+          workspace: localStatus.workspace,
+        }).pipe(asOperationFailed("Unable to read GitButler's target branch"));
+        if (gitButlerDefaultBase === null) {
+          return yield* failure(
+            "invalid_request",
+            "The project is a GitButler workspace and neither its target branch nor a remote default branch is available. Pass baseRef explicitly with a real branch, tag, or commit.",
+          );
+        }
+        baseRef = gitButlerDefaultBase.baseRefName;
+      } else {
+        baseRef = localStatus.refName;
+      }
+    } else if (
+      projectIsRepository &&
+      (yield* gitWorkflow
+        .isGitButlerWorkspaceBase({ cwd: projectCwd, refName: baseRef })
+        .pipe(asOperationFailed("Unable to check the base ref")))
+    ) {
+      return yield* failure("invalid_request", gitButlerWorkspaceBaseMessage(baseRef));
     }
 
     const startFromOrigin =
       input.startFromOrigin ?? (yield* readDefaultStartFromOrigin(project.id));
 
-    let worktreeBaseRef = baseRef;
+    let worktreeBaseRef = gitButlerDefaultBase?.commitSha ?? baseRef;
     let baseRefName = baseRef;
     let startedFromOrigin = false;
-    if (startFromOrigin && projectIsRepository) {
+    if (startFromOrigin && projectIsRepository && gitButlerDefaultBase === null) {
       const resolvedRemoteBase = yield* gitWorkflow
         .fetchWorktreeBaseCommit({ cwd: projectCwd, refName: baseRef })
         .pipe(asOperationFailed(`Unable to fetch the remote base of '${baseRef}'`));
@@ -261,6 +312,16 @@ const make = Effect.gen(function* () {
         baseRefName = `refs/remotes/${resolvedRemoteBase.remoteRefName}`;
         startedFromOrigin = true;
       }
+    }
+
+    const appliedStackPin = projectIsRepository
+      ? yield* gitWorkflow
+          .pinAppliedStackWorktreeBase({ cwd: projectCwd, refName: worktreeBaseRef, baseRefName })
+          .pipe(asOperationFailed(`Unable to start a worktree from '${baseRef}'`))
+      : null;
+    if (appliedStackPin !== null) {
+      worktreeBaseRef = appliedStackPin.commitSha;
+      pinnedBranchCommitSha = appliedStackPin.parentCommitSha;
     }
 
     const ids = yield* handoffIds(scope);
@@ -450,6 +511,10 @@ const make = Effect.gen(function* () {
             );
         }
 
+        const pinnedNote =
+          pinnedBranchCommitSha === null
+            ? ""
+            : ` This branch starts one empty commit above ${baseRef} at ${pinnedBranchCommitSha}, which keeps it out of that GitButler stack. It appears in this branch's history, and the branch does not follow later changes to ${baseRef}.`;
         const result: WorktreeMcpHandoffResult = {
           worktreePath,
           branch: worktree.refName,
@@ -465,7 +530,7 @@ const make = Effect.gen(function* () {
             setupWaitsForFullAccess
               ? " Project setup scripts do not run for a handoff from a thread below Full access."
               : ""
-          }`,
+          }${pinnedNote}`,
         };
         return result;
       }),

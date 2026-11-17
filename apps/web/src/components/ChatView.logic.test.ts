@@ -1341,11 +1341,13 @@ describe("planComposerTurn", () => {
     });
   });
 
-  it("refuses a new worktree without a base branch", () => {
-    expect(planComposerTurn({ ...base, activeThreadBranch: null })).toMatchObject({
-      missingWorktreeBaseBranch: true,
-      baseBranchForWorktree: null,
-    });
+  it("refuses a new worktree without a real base branch", () => {
+    for (const activeThreadBranch of [null, "gitbutler/workspace"]) {
+      expect(planComposerTurn({ ...base, activeThreadBranch })).toMatchObject({
+        missingWorktreeBaseBranch: true,
+        baseBranchForWorktree: null,
+      });
+    }
     // A plain folder that tracks repositories has no branch of its own to start from.
     expect(
       planComposerTurn({ ...base, activeThreadBranch: null, projectIsGitRepo: false }),

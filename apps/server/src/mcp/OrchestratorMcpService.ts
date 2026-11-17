@@ -1095,6 +1095,7 @@ function threadDetail(
             completedAt: DateTime.formatIso(projection.thread.lastTitleRegeneration.completedAt),
           },
     branch: projection.thread.branch,
+    gitbutlerBranch: projection.thread.gitbutlerBranch ?? null,
     worktreePath: projection.thread.worktreePath,
     parentThreadId: projection.thread.lineage.parentThreadId,
     relationshipToParent: projection.thread.lineage.relationshipToParent,
@@ -3026,6 +3027,7 @@ const make = Effect.gen(function* () {
         input.interactionMode,
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+      let baseNote: string | null = null;
       if (
         input.isolation === "worktree" &&
         !isRetryOfAcceptedDelegation &&
@@ -3035,16 +3037,31 @@ const make = Effect.gen(function* () {
         workspaceStrategy = { type: "worktree", baseRef: "HEAD" };
       } else if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
-          })
+        const parentCheckout = parent.thread.worktreePath ?? project.workspaceRoot;
+        // HEAD at a GitButler root merges every applied branch, not just the parent's work.
+        const gitButlerBase = yield* threadLaunch
+          .resolveGitButlerWorktreeBase(parentCheckout, parent.thread.gitbutlerBranch ?? null)
           .pipe(
-            Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
+            Effect.mapError((error) =>
+              failure(
+                "invalid_request",
+                `${error.message} Use isolation "shared" to work in the parent's checkout${
+                  error._tag !== "ThreadLaunchGitButlerNoBaseError"
+                    ? ", or change the link with t3_thread_update"
+                    : ""
+                }.`,
+              ),
             ),
           );
+        const base =
+          gitButlerBase ??
+          (yield* gitDriver
+            .resolveCommit({ cwd: parentCheckout, revision: "HEAD" })
+            .pipe(
+              Effect.mapError(() =>
+                failure("invalid_request", "Unable to resolve the parent checkout commit."),
+              ),
+            ));
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
@@ -3076,7 +3093,14 @@ const make = Effect.gen(function* () {
           baseRef: branchAtBase ? branch : base.commitSha,
           startFromOrigin: false,
         };
+        if (gitButlerBase?.branchCommitSha !== undefined) {
+          baseNote = `The child's branch starts one empty commit above ${parent.thread.gitbutlerBranch} at ${gitButlerBase.branchCommitSha}, which keeps it out of that GitButler stack. It appears in the child's history, and the child does not follow later changes to that branch.`;
+        }
       }
+      const withBaseNote = (
+        task: OrchestratorMcpDelegateTaskResult,
+      ): OrchestratorMcpDelegateTaskResult =>
+        baseNote === null ? task : { ...task, note: baseNote };
       const parentNodeId = parentRun.rootNodeId;
       // The command commits the child's preparing run, which only this call
       // prepares, so a caller that goes away must not stop it in between.
@@ -3143,9 +3167,11 @@ const make = Effect.gen(function* () {
               runId: childRunEvent.event.payload.id,
             });
           }
-          return yield* input.mode === "wait"
-            ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
-            : restore(readTask(scope, taskId, false, true));
+          return withBaseNote(
+            yield* input.mode === "wait"
+              ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
+              : restore(readTask(scope, taskId, false, true)),
+          );
         }),
       );
     }),

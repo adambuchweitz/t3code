@@ -1,5 +1,5 @@
 import { msg, useGT, useMessages } from "gt-react-native";
-
+import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";
@@ -43,11 +43,18 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null, resolve: MessageRe
   const parts: string[] = [];
   if (gitStatus.hasWorkingTreeChanges) {
     parts.push(
-      resolve(
-        msg("{count, plural, one {{count} changed} other {{count} changed}}", {
-          count: gitStatus.workingTree.files.length,
-        }),
-      ),
+      gitStatus.workspace?._tag === "gitbutler"
+        ? resolve(
+            msg(
+              "{count, plural, one {{count} changed in workspace} other {{count} changed in workspace}}",
+              { count: gitStatus.workingTree.files.length },
+            ),
+          )
+        : resolve(
+            msg("{count, plural, one {{count} changed} other {{count} changed}}", {
+              count: gitStatus.workingTree.files.length,
+            }),
+          ),
     );
   } else if (gitStatus.aheadCount === 0 && gitStatus.behindCount === 0) {
     parts.push(resolve(msg("Clean", { $context: "git working tree has no changes" })));
@@ -90,6 +97,7 @@ export type ThreadGitMenuProps = {
   readonly environmentId: EnvironmentId | string;
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly hasThread?: boolean;
   /** The project tracks repositories besides its folder, which then need not be one itself. */
   readonly tracksRepositories?: boolean;
@@ -126,7 +134,15 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const threadId = props.threadId;
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
 
-  const currentBranchLabel = gitStatus?.refName ?? props.currentBranch ?? gt("Detached HEAD");
+  // Kept out of the `??` below: React Compiler bails on a ternary inside a logical test.
+  const resolvedBranchLabel = resolveVcsRefDisplayName(
+    props.currentBranch ?? gitStatus?.refName ?? null,
+    gitStatus?.refName === props.currentBranch || gitStatus?.workspace?._tag === "gitbutler"
+      ? gitStatus.workspace
+      : null,
+    props.gitbutlerBranch,
+  );
+  const currentBranchLabel = resolvedBranchLabel ?? gt("Detached HEAD");
   const busy = gitOperationLabel !== null;
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
@@ -142,7 +158,11 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
       };
     }
     const action = resolveQuickAction(gitStatus, busy, isDefaultRef, hasPrimaryRemote, messages);
-    return !canWriteSourceControl && (action.kind === "run_pull" || action.kind === "run_action")
+    if (action.kind === "open_commit" && props.hasThread === false) {
+      return { ...action, disabled: true, hint: "Start the thread to choose changes to commit." };
+    }
+    return !canWriteSourceControl &&
+      (action.kind === "run_pull" || action.kind === "run_action" || action.kind === "open_commit")
       ? {
           ...action,
           disabled: true,
@@ -158,6 +178,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const quickActionIcon: QuickActionIcon = (() => {
     if (quickAction.kind === "run_pull") return "arrow.down.circle";
     if (quickAction.kind === "open_pr") return "arrow.up.right.circle";
+    if (quickAction.kind === "open_commit") return "checkmark.circle";
     if (quickAction.kind === "run_action") {
       if (quickAction.action === "commit") return "checkmark.circle";
       if (quickAction.action === "push" || quickAction.action === "commit_push")
@@ -239,6 +260,13 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     }
     if (quickAction.kind === "run_pull") {
       await onPull();
+      return;
+    }
+    if (quickAction.kind === "open_commit") {
+      navigation.navigate("GitCommit", {
+        environmentId: String(environmentId),
+        threadId: String(threadId),
+      });
       return;
     }
     if (quickAction.kind === "run_action" && quickAction.action) {

@@ -1,0 +1,7 @@
+{
+  "status": "applied",
+  "workspaceChanged": true,
+  "appliedBranches": ["refs/heads/feature/second", "refs/heads/feature/first"],
+  "workspaceRefCreated": true,
+  "conflictingStacks": []
+}

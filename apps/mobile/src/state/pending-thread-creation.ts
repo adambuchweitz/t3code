@@ -184,6 +184,7 @@ export function pendingThreadCreationShell(
     runtimeMode: message.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode: message.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: creation.branch,
+    gitbutlerBranch: creation.gitbutlerBranch ?? null,
     pullRequests: [],
     worktreePath: creation.workspaceMode === "worktree" ? null : creation.worktreePath,
     linkedPullRequest: null,

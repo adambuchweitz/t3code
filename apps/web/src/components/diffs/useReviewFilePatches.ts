@@ -202,6 +202,9 @@ function reviewFileQueries({
                   ...(baseRef ? { baseRef } : {}),
                   ...(source.kind === "commit" ? { commitSha: source.id } : {}),
                   ...(source.mergeBase ? { mergeBase: source.mergeBase } : {}),
+                  ...(source.kind === "gitbutler-branch" && source.headRef
+                    ? { gitbutlerBranch: source.headRef }
+                    : {}),
                   ignoreWhitespace,
                   file: {
                     path: file.path,

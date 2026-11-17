@@ -15,6 +15,7 @@ import { ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  GitButlerPublicationHoldError,
   GitCommandError,
   SourceControlProviderError,
   type SourceControlCloneRepositoryInput,
@@ -22,6 +23,7 @@ import {
 
 import * as ServerConfig from "../config.ts";
 import type { GitCloneProgressLine } from "../project/gitCloneProgress.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import type * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
@@ -68,9 +70,16 @@ function processOutput(): GitVcsDriver.ExecuteGitResult {
 function layer(input: {
   readonly provider?: SourceControlProvider.SourceControlProvider["Service"];
   readonly git?: Partial<GitVcsDriver.GitVcsDriver["Service"]>;
+  readonly gitButler?: Partial<GitButlerWorkspace.GitButlerWorkspace["Service"]>;
   readonly fileSystem?: FileSystem.FileSystem;
 }) {
   const layerService = SourceControlRepositoryService.layer.pipe(
+    Layer.provide(
+      Layer.mock(GitButlerWorkspace.GitButlerWorkspace)({
+        publishOutsideWorkspace: (_input, publish) => publish,
+        ...input.gitButler,
+      }),
+    ),
     Layer.provide(
       Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
         resolveLink: () => undefined,
@@ -834,6 +843,76 @@ function failingPush(reason?: GitCommandError["reason"]) {
       ),
   } satisfies Partial<GitVcsDriver.GitVcsDriver["Service"]>;
 }
+
+const heldError = new GitButlerPublicationHoldError({
+  cwd: "/workspace",
+  branch: "origin",
+  holds: [],
+  approval: "token",
+  staleApproval: false,
+});
+const publishToGitHub = Effect.gen(function* () {
+  const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+  return yield* Effect.flip(
+    service.publishRepository({
+      cwd: "/workspace",
+      provider: SourceControlProviderKind.make("github"),
+      repository: "octocat/t3code",
+      visibility: "private",
+      protocol: "https",
+    }),
+  );
+});
+
+it.effect("creates no repository while anything would stop its first push", () =>
+  Effect.gen(function* () {
+    for (const [cause, expected] of [
+      [heldError, "Review them from the Git menu"],
+      [
+        new GitCommandError({
+          operation: "GitButlerWorkspace.settleHolds",
+          command: "git for-each-ref",
+          cwd: "/workspace",
+          detail: "another server may be running it",
+        }),
+        "another server may be running it",
+      ],
+    ] as const) {
+      const error = yield* publishToGitHub.pipe(
+        Effect.provide(
+          layer({
+            provider: makeProvider({
+              createRepository: () => Effect.die("created a repository nothing could be pushed to"),
+            }),
+            git: { pushCurrentBranch: () => Effect.die("pushed past a hold") },
+            gitButler: { publishOutsideWorkspace: () => Effect.fail(cause) },
+          }),
+        ),
+      );
+      assert.include(error.detail, "Nothing was created.");
+      assert.include(error.detail, expected);
+    }
+  }),
+);
+
+it.effect("still stops a push when a commit is held while the repository is created", () => {
+  let checks = 0;
+  return Effect.gen(function* () {
+    const error = yield* publishToGitHub;
+    assert.include(error.detail, "Push from the Git menu");
+    assert.strictEqual(checks, 2);
+  }).pipe(
+    Effect.provide(
+      layer({
+        git: { pushCurrentBranch: () => Effect.die("pushed past a hold") },
+        gitButler: {
+          publishOutsideWorkspace: <A, E, R>(_input: unknown, publish: Effect.Effect<A, E, R>) =>
+            ++checks === 1 ? publish : Effect.fail(heldError),
+        },
+      }),
+    ),
+  );
+});
 
 it.effect("explains a rejected SSH push after creating the repository", () =>
   Effect.gen(function* () {

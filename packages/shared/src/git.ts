@@ -5,6 +5,7 @@ import type {
   VcsStatusRemoteResult,
   VcsStatusResult,
   VcsStatusStreamEvent,
+  VcsWorkspaceStatus,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
@@ -18,6 +19,113 @@ const TEMP_WORKTREE_UUID_V4_TOKEN =
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(
   `^(?:${WORKTREE_BRANCH_PREFIX}[-/]${TEMP_WORKTREE_HEX_TOKEN}|t3code(?:[-/]${TEMP_WORKTREE_HEX_TOKEN}|\\/${TEMP_WORKTREE_UUID_V4_TOKEN}))$`,
 );
+
+const GITBUTLER_WORKSPACE_REF = "gitbutler/workspace";
+
+export function isGitButlerWorkspaceRef(refName: string): boolean {
+  return refName === GITBUTLER_WORKSPACE_REF;
+}
+
+export function gitButlerWorkspaceBaseMessage(baseRef: string): string {
+  return `"${baseRef}" is GitButler's workspace commit, which merges every applied branch, so a new worktree can't start from it. Name a real branch, tag, or commit, such as GitButler's target branch.`;
+}
+
+export type GitButlerLinkedBranchProblem = "missing" | "conflicted" | "unreadable";
+
+export function gitButlerStartCommitRefusedMessage(branch: string, detail: string): string {
+  return `A new worktree from GitButler branch "${branch}" starts from one empty commit, which Git refused, so nothing was created. Fix the cause or start from another base: ${detail}`;
+}
+
+export function gitButlerLinkedBranchMessage(
+  branch: string,
+  problem: GitButlerLinkedBranchProblem,
+): string {
+  const why = {
+    missing: "isn't a branch here",
+    conflicted: "ends in a conflicted commit, which can't be checked out; resolve it first",
+    unreadable: "couldn't be read",
+  }[problem];
+  return `This thread is linked to GitButler branch "${branch}", which ${why}, so a new worktree can't start from it.`;
+}
+
+/** Applied GitButler branches in stack order, each listed once. */
+export function gitButlerAppliedBranches(
+  workspace: VcsWorkspaceStatus | null | undefined,
+): ReadonlyArray<string> {
+  if (workspace?._tag !== "gitbutler") return [];
+  return [...new Set(workspace.stacks.flatMap((stack) => stack.branches))];
+}
+
+export function gitButlerPickerSections<
+  T extends Pick<VcsRef, "name" | "isRemote" | "isDefault" | "remoteName">,
+>(refs: ReadonlyArray<T>, workspace: VcsWorkspaceStatus | null | undefined) {
+  const appliedStacks =
+    workspace?._tag === "gitbutler"
+      ? workspace.stacks.map((stack) => stack.branches).filter((branches) => branches.length > 0)
+      : [];
+  const applied = new Set(appliedStacks.flat());
+  const targets = new Set(workspace?._tag === "gitbutler" ? workspace.targetRefs : []);
+  const localNames = new Set(refs.filter((ref) => !ref.isRemote).map((ref) => ref.name));
+  const unappliedRefs = refs.filter((ref) => {
+    const remotePrefix = ref.remoteName ? `${ref.remoteName}/` : "";
+    const localName = ref.isRemote
+      ? remotePrefix && ref.name.startsWith(remotePrefix)
+        ? ref.name.slice(remotePrefix.length)
+        : deriveLocalBranchNameFromRemoteRef(ref.name)
+      : ref.name;
+    return (
+      !localName.startsWith("gitbutler/") &&
+      !applied.has(localName) &&
+      !targets.has(ref.name) &&
+      !targets.has(localName) &&
+      (targets.size > 0 || !ref.isDefault) &&
+      (!ref.isRemote || !localNames.has(localName))
+    );
+  });
+  return { appliedStacks, unappliedRefs };
+}
+
+export function filterBranchPickerRefs<T extends Pick<VcsRef, "name">>(
+  refs: ReadonlyArray<T>,
+  options: {
+    currentRefName: string | null;
+    workspace: VcsWorkspaceStatus | null | undefined;
+    isSelectingWorktreeBase: boolean;
+  },
+): ReadonlyArray<T> {
+  const appliedBranches = new Set(
+    !options.isSelectingWorktreeBase &&
+      options.currentRefName !== null &&
+      isGitButlerWorkspaceRef(options.currentRefName)
+      ? gitButlerAppliedBranches(options.workspace)
+      : [],
+  );
+  return refs.filter((ref) => !ref.name.startsWith("gitbutler/") && !appliedBranches.has(ref.name));
+}
+
+/**
+ * Names a checked-out ref for people. GitButler's synthetic workspace ref says
+ * nothing about the work, so it shows the thread's linked branch, else the only
+ * applied branch, else the workspace. Without a known applied branch, it claims
+ * only GitButler: status may still be loading.
+ */
+export function resolveVcsRefDisplayName(
+  refName: string | null,
+  workspace?: VcsWorkspaceStatus | null,
+  gitbutlerBranch?: string | null,
+): string | null {
+  if (gitbutlerBranch) {
+    return workspace?._tag === "gitbutler" &&
+      !gitButlerAppliedBranches(workspace).includes(gitbutlerBranch)
+      ? `${gitbutlerBranch} (not applied)`
+      : gitbutlerBranch;
+  }
+  if (refName === null || !isGitButlerWorkspaceRef(refName)) return refName;
+  const branches = gitButlerAppliedBranches(workspace);
+  if (branches.length === 0) return "GitButler";
+  if (branches.length === 1) return branches[0] ?? "GitButler";
+  return "GitButler workspace";
+}
 
 export function sanitizeBranchFragment(raw: string): string {
   const normalized = foldLatinDiacritics(raw)
@@ -384,6 +492,7 @@ function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }
       : {}),
+    ...(status.workspace ? { workspace: status.workspace } : {}),
     hasPrimaryRemote: status.hasPrimaryRemote,
     isDefaultRef: status.isDefaultRef,
     refName: status.refName,

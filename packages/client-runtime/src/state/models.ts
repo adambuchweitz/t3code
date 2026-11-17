@@ -162,6 +162,7 @@ export interface EnvironmentThreadShell {
   readonly runtimeMode: OrchestrationV2ThreadShell["runtimeMode"];
   readonly interactionMode: OrchestrationV2ThreadShell["interactionMode"];
   readonly branch: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly worktreePath: string | null;
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
@@ -313,6 +314,7 @@ export function presentThreadShell(
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
     branch: thread.branch,
+    gitbutlerBranch: thread.gitbutlerBranch ?? null,
     worktreePath: thread.worktreePath,
     pullRequests: threadPullRequestsOf(thread),
     linkedPullRequest: thread.linkedPullRequest ?? null,

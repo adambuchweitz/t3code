@@ -66,6 +66,7 @@ vi.mock("../../../state/use-selected-thread-worktree", () => ({
 vi.mock("../../../state/use-selected-thread-git-state", () => ({
   useSelectedThreadGitState: () => ({
     selectedThreadBranches: [{ name: "release/stable", worktreePath: null }],
+    selectedThreadRefs: [],
     gitOperationLabel: null,
   }),
 }));
@@ -83,7 +84,15 @@ vi.mock("../../../state/use-selected-thread-git-actions", () => ({
     },
   }),
 }));
-vi.mock("../../../state/vcs", () => ({ vcsEnvironment: { branch: () => null } }));
+vi.mock("../../../state/vcs", () => ({
+  vcsEnvironment: { branch: () => null, status: () => null },
+}));
+vi.mock("../../../components/ui/Button", () => ({ Button: () => null }));
+vi.mock("../../../components/ui/Dialog", () => ({ confirm: () => {} }));
+vi.mock("../../../state/session", () => ({ useEnvironmentScope: () => true }));
+vi.mock("../../../state/use-atom-command", () => ({ useAtomCommand: () => () => {} }));
+vi.mock("../../../state/entities", () => ({}));
+vi.mock("../../../state/threads", () => ({ threadEnvironment: { updateMetadata: {} } }));
 vi.mock("./gitSheetComponents", () => ({
   SheetActionButton: (props: ActionProps) => {
     state.actions.set(props.label, props);

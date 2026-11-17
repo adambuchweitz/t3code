@@ -4,12 +4,15 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyGitStatusStreamEvent,
+  filterBranchPickerRefs,
+  gitButlerPickerSections,
   formatGeneratedBranchName,
   buildTemporaryWorktreeBranchName,
   flattenTemporaryWorktreeBranchName,
   isBareGitConfig,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
+  resolveVcsRefDisplayName,
   parseOriginUrlFromGitConfig,
   resolveAutoFeatureBranchName,
   sanitizeFeatureBranchName,
@@ -335,9 +338,14 @@ describe("applyGitStatusStreamEvent", () => {
         name: "GitHub",
         baseUrl: "https://github.com",
       },
+      workspace: {
+        _tag: "gitbutler",
+        stacks: [{ branches: ["feature/demo"], assignedChangeCount: 1 }],
+        unassignedChangeCount: 0,
+      },
       hasPrimaryRemote: true,
       isDefaultRef: false,
-      refName: "feature/demo",
+      refName: "gitbutler/workspace",
       hasWorkingTreeChanges: true,
       workingTree: {
         files: [{ path: "src/demo.ts", insertions: 1, deletions: 0 }],
@@ -364,6 +372,175 @@ describe("applyGitStatusStreamEvent", () => {
       behindCount: 1,
       pr: null,
     });
+  });
+});
+
+describe("filterBranchPickerRefs", () => {
+  const refs = [
+    "gitbutler/workspace",
+    "gitbutler/target",
+    "gitbutler/edit",
+    "feature/api",
+    "ui/base",
+    "ui/top",
+    "main",
+    "origin/main",
+  ].map((name) => ({ name, current: false, isDefault: false, worktreePath: null }));
+  const workspace = {
+    _tag: "gitbutler" as const,
+    stacks: [
+      { branches: ["feature/api"], assignedChangeCount: 1 },
+      { branches: ["ui/base", "ui/top"], assignedChangeCount: 0 },
+    ],
+    unassignedChangeCount: 0,
+  };
+  const realRefs = ["feature/api", "ui/base", "ui/top", "main", "origin/main"];
+
+  it.each([
+    {
+      name: "a local GitButler workspace",
+      currentRefName: "gitbutler/workspace",
+      workspace,
+      isSelectingWorktreeBase: false,
+      expected: ["main", "origin/main"],
+    },
+    {
+      name: "a new worktree from a GitButler workspace",
+      currentRefName: "gitbutler/workspace",
+      workspace,
+      isSelectingWorktreeBase: true,
+      expected: realRefs,
+    },
+    {
+      name: "an existing worktree with workspace metadata",
+      currentRefName: "main",
+      workspace,
+      isSelectingWorktreeBase: false,
+      expected: realRefs,
+    },
+    {
+      name: "an ordinary checkout",
+      currentRefName: "main",
+      workspace: undefined,
+      isSelectingWorktreeBase: false,
+      expected: realRefs,
+    },
+    {
+      name: "a new worktree without the but CLI",
+      currentRefName: "gitbutler/workspace",
+      workspace: undefined,
+      isSelectingWorktreeBase: true,
+      expected: realRefs,
+    },
+  ])("keeps safe refs for $name", ({ name: _name, expected, ...options }) => {
+    const filtered = filterBranchPickerRefs(refs, options);
+    expect(filtered.map((ref) => ref.name)).toEqual(expected);
+    expect(refs).toHaveLength(8);
+  });
+});
+
+describe("gitButlerPickerSections", () => {
+  it("keeps stack order and offers only unapplied local and remote-only branches outside the target", () => {
+    const refs = [
+      "gitbutler/workspace",
+      "main",
+      "trunk",
+      "origin/main",
+      "api",
+      "origin/api",
+      "ui/base",
+      "ui/top",
+      "available",
+      "origin/available",
+      "upstream/remote-only",
+      "origin/gitbutler/target",
+      "my-org/upstream/ui/top",
+      "my-org/upstream/another",
+    ].map((name) => ({
+      name,
+      isRemote:
+        name.startsWith("origin/") ||
+        name.startsWith("upstream/") ||
+        name.startsWith("my-org/upstream/"),
+      ...(name.startsWith("my-org/upstream/") ? { remoteName: "my-org/upstream" } : {}),
+      current: false,
+      isDefault: name === "main",
+      worktreePath: null,
+    }));
+    const workspace = {
+      _tag: "gitbutler" as const,
+      targetRefs: ["origin/main", "main", "trunk"],
+      stacks: [
+        { branches: ["ui/top", "ui/base"], assignedChangeCount: 0 },
+        { branches: ["api"], assignedChangeCount: 0 },
+      ],
+      unassignedChangeCount: 0,
+    };
+    const sections = gitButlerPickerSections(refs, workspace);
+    expect(sections.appliedStacks).toEqual([["ui/top", "ui/base"], ["api"]]);
+    expect(sections.unappliedRefs.map((ref) => ref.name)).toEqual([
+      "available",
+      "upstream/remote-only",
+      "my-org/upstream/another",
+    ]);
+    const unapplied = { ...workspace, stacks: [workspace.stacks[1]!] };
+    expect(gitButlerPickerSections(refs, unapplied).unappliedRefs.map((ref) => ref.name)).toContain(
+      "ui/top",
+    );
+    expect(gitButlerPickerSections(refs, undefined).appliedStacks).toEqual([]);
+    expect(
+      gitButlerPickerSections(refs, { ...workspace, targetRefs: ["release"] }).unappliedRefs.map(
+        (ref) => ref.name,
+      ),
+    ).toContain("main");
+  });
+});
+
+describe("resolveVcsRefDisplayName", () => {
+  const workspace = (stacks: ReadonlyArray<ReadonlyArray<string>>) => ({
+    _tag: "gitbutler" as const,
+    stacks: stacks.map((branches) => ({ branches, assignedChangeCount: 0 })),
+    unassignedChangeCount: 0,
+  });
+
+  it("keeps ordinary refs as they are", () => {
+    expect(resolveVcsRefDisplayName("main", workspace([["feature/api"]]))).toBe("main");
+    expect(resolveVcsRefDisplayName(null)).toBeNull();
+  });
+
+  it("prefers a thread association even while workspace status is unavailable", () => {
+    for (const status of [null, workspace([["feature/api"], ["feature/ui"]])]) {
+      expect(resolveVcsRefDisplayName("gitbutler/workspace", status, "feature/ui")).toBe(
+        "feature/ui",
+      );
+      expect(resolveVcsRefDisplayName("gitbutler/workspace", status, null)).toBe(
+        status ? "GitButler workspace" : "GitButler",
+      );
+    }
+    expect(
+      resolveVcsRefDisplayName("gitbutler/workspace", workspace([["feature/api"]]), "feature/ui"),
+    ).toBe("feature/ui (not applied)");
+    expect(
+      resolveVcsRefDisplayName(
+        "gitbutler/workspace",
+        workspace([["feature/api"], ["feature/ui"]]),
+        "feature/ui",
+      ),
+    ).toBe("feature/ui");
+  });
+
+  it("names the GitButler workspace by its applied branches", () => {
+    expect(resolveVcsRefDisplayName("gitbutler/workspace")).toBe("GitButler");
+    expect(resolveVcsRefDisplayName("gitbutler/workspace", workspace([]))).toBe("GitButler");
+    expect(resolveVcsRefDisplayName("gitbutler/workspace", workspace([["feature/api"]]))).toBe(
+      "feature/api",
+    );
+    expect(
+      resolveVcsRefDisplayName(
+        "gitbutler/workspace",
+        workspace([["feature/api"], ["ui/base", "ui/top"]]),
+      ),
+    ).toBe("GitButler workspace");
   });
 });
 

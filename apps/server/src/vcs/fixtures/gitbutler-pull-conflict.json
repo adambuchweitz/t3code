@@ -1,0 +1,46 @@
+{
+  "status": "completed_with_conflicts",
+  "upstreamUrl": "https://github.com/acme/repo.git",
+  "upstreamCommitsFound": 1,
+  "recentCommits": [
+    {
+      "id": "cd455556c89ee2da0f4bc44c35cebd5c73d9ad1e",
+      "message": "upstream"
+    }
+  ],
+  "branchesToUpdate": [
+    {
+      "name": "feature/two",
+      "status": "conflicted_rebasable",
+      "commitCount": 0,
+      "conflicts": []
+    },
+    {
+      "name": "feature/one",
+      "status": "updatable",
+      "commitCount": 0,
+      "conflicts": []
+    }
+  ],
+  "integratedBranches": [],
+  "conflicts": [
+    {
+      "branch": "feature/two",
+      "files": [],
+      "upstreamCommit": null,
+      "commits": [
+        {
+          "id": "pzpw",
+          "message": "[conflict] local"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "branchesUpdated": 1,
+    "branchesConflicted": 1,
+    "branchesIntegrated": 0,
+    "branchesUnchanged": 0
+  },
+  "undoCommand": "but undo"
+}

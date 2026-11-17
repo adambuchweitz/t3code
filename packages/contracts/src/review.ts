@@ -17,12 +17,23 @@ export const ReviewDiffChangeType = Schema.Literals([
 ]);
 export type ReviewDiffChangeType = typeof ReviewDiffChangeType.Type;
 
+export const ReviewDiffPreviewSourceKind = Schema.Literals([
+  "working-tree",
+  "branch-range",
+  "commit",
+  // One applied GitButler branch: its commits plus the uncommitted changes
+  // assigned to it, against the GitButler target.
+  "gitbutler-branch",
+]);
+export type ReviewDiffPreviewSourceKind = typeof ReviewDiffPreviewSourceKind.Type;
 export const ReviewDiffPreviewInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   baseRef: Schema.optional(GitRefName),
   // A branch-range file read reuses its preview's merge base instead of resolving it again.
   mergeBase: Schema.optionalKey(ReviewMergeBase),
   commitSha: Schema.optional(TrimmedNonEmptyString),
+  // Limits the result to this applied GitButler branch's source.
+  gitbutlerBranch: Schema.optionalKey(GitRefName),
   ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
   sourceKind: Schema.optionalKey(Schema.Literals(["working-tree", "branch-range"])),
   trackedOnly: Schema.optionalKey(Schema.Boolean),
@@ -33,7 +44,7 @@ export const ReviewDiffPreviewInput = Schema.Struct({
     Schema.Struct({
       path: Schema.NonEmptyString,
       previousPath: Schema.NullOr(Schema.NonEmptyString),
-      sourceKind: Schema.Literals(["working-tree", "branch-range", "commit"]),
+      sourceKind: ReviewDiffPreviewSourceKind,
       // The preview's change type; the server still confirms a tracked path before relying on it.
       changeType: Schema.optionalKey(ReviewDiffChangeType),
     }),
@@ -59,12 +70,6 @@ export const ReviewBranchCommitsResult = Schema.Struct({
 });
 export type ReviewBranchCommitsResult = typeof ReviewBranchCommitsResult.Type;
 
-export const ReviewDiffPreviewSourceKind = Schema.Literals([
-  "working-tree",
-  "branch-range",
-  "commit",
-]);
-export type ReviewDiffPreviewSourceKind = typeof ReviewDiffPreviewSourceKind.Type;
 
 export const ReviewDiffFileStat = Schema.Struct({
   path: Schema.String,

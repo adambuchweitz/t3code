@@ -38,7 +38,11 @@ import {
   type VcsRef,
 } from "@t3tools/contracts";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
-import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
+import {
+  dedupeRemoteBranchesWithLocalMatches,
+  gitButlerWorkspaceBaseMessage,
+  isGitButlerWorkspaceRef,
+} from "@t3tools/shared/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
@@ -74,12 +78,41 @@ const legacyBranchBaseConfigKey = (branch: string) => `branch.${branch}.gh-merge
 const isAliasOfUpstreamHead = (branch: string, upstreamBranch: string, upstreamRef: string) =>
   branch === upstreamBranch ||
   (branch.endsWith(`/${upstreamBranch}`) && upstreamRef.endsWith(`/${branch}`));
+// Follows the branch through renames and goes when it's deleted, so comparisons can't go stale.
+const worktreeStartConfigKey = (branch: string) => `branch.${branch}.t3-start-commit`;
+// Outlives the branch for recovery and keeps the commit from being pruned. `but push` sends branch
+// refs only, and encoding keeps `a` and `a/b` from colliding once `a` is deleted.
+const worktreeStartRef = (branch: string) =>
+  `refs/t3/worktree-starts/${encodeURIComponent(branch.toWellFormed())}`;
+const worktreeStartNote = (parentSha: string) =>
+  `T3 Code starts this branch one empty commit above ${parentSha}`;
+// Whitespace aside, because a commit-msg hook may rewrap the body.
+const hasWorktreeStartNote = (message: string, parentSha: string) =>
+  message.replace(/\s+/g, " ").includes(worktreeStartNote(parentSha));
+const normalizeSpace = (message: string) => message.replace(/\s+/g, " ").trim();
+/** Whether a message reads as a start commit's, whichever parent id a rewrite has left it naming. */
+const isWorktreeStartMessage = (message: string) =>
+  /T3 Code starts this branch one empty commit above [0-9a-f]{40,64}/.test(
+    message.replace(/\s+/g, " "),
+  );
+const worktreeStartStackNote = (label: string) =>
+  `so that GitButler keeps it out of the ${label} stack.`;
+// A hook that broke the name inside the sentence leaves no match, rather than half a name.
+const readWorktreeStartParentRef = (message: string, parentSha: string) => {
+  const normalized = message.replace(/\s+/g, " ");
+  const noteEnd = normalized.indexOf(worktreeStartNote(parentSha));
+  if (noteEnd < 0) return null;
+  const rest = normalized.slice(noteEnd + worktreeStartNote(parentSha).length);
+  return /^ so that GitButler keeps it out of the (\S+) stack\./.exec(rest)?.[1] ?? null;
+};
 const gitProcesses = Semaphore.makeUnsafe(8);
 const backgroundGitProcesses = Semaphore.makeUnsafe(2);
 // The fetch before `git worktree add` downloads everything the remote gained since
 // the last fetch; on busy repositories that alone outlasts the 30s default.
 const FETCH_REMOTE_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
 const WORKTREE_INDEX_REFRESH_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
+const START_COMMIT_TIMEOUT_MS = Duration.toMillis(Duration.minutes(2));
+const START_COMMIT_CHECKOUT_TIMEOUT_MS = Duration.toMillis(Duration.minutes(10));
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REF_SNAPSHOT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
@@ -2709,6 +2742,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     options?: { readonly allowRemoteOfCurrent?: boolean },
     trace?: { dependsOnRemoteOfCurrent: boolean; degraded: boolean },
   ) {
+    const startCommit = yield* readConfigValue(cwd, worktreeStartConfigKey(refName));
+    if (startCommit !== null) {
+      const exists = yield* executeGit(
+        "GitVcsDriver.resolveBaseBranchForNoUpstream.startCommit",
+        cwd,
+        ["cat-file", "-e", `${startCommit}^{commit}`],
+        { allowNonZeroExit: true },
+      );
+      if (exists.exitCode === 0) {
+        return {
+          baseRef: startCommit.slice(0, 12),
+          comparisonRef: startCommit,
+          isWorktreeStart: true as const,
+        };
+      }
+    }
+
     const configuredBaseRef = yield* readConfigValue(cwd, `branch.${refName}.t3-merge-base-ref`);
     if (
       configuredBaseRef?.startsWith("refs/heads/") ||
@@ -4535,6 +4585,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const comparableBaseBranch = yield* resolveBaseBranchForNoUpstream(cwd, branch).pipe(
         Effect.orElseSucceed(() => null),
       );
+      // Publishing now would send only the parent's commits and the empty start commit.
+      if (comparableBaseBranch !== null && "isWorktreeStart" in comparableBaseBranch) {
+        return {
+          status: "skipped_up_to_date" as const,
+          branch,
+        };
+      }
       if (comparableBaseBranch) {
         if (!destination) {
           return {
@@ -4575,8 +4632,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
     if (destination?.publishes) {
       const { remoteName, branchName: publishBranch, upstream } = destination;
-      // Publishing retargets the upstream, so preserve its comparison base first.
-      if (upstream && (yield* readBranchBase(cwd, branch)) === null) {
+      // Publishing retargets the upstream, so preserve its comparison base first. A branch with a
+      // start commit compares against that, and a base recorded here would read as someone's choice.
+      const startRecord = yield* readWorktreeStart({ cwd, branch }).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (upstream && startRecord === null && (yield* readBranchBase(cwd, branch)) === null) {
         yield* writeConfigValue({
           cwd,
           key: branchBaseConfigKey(branch),
@@ -6594,11 +6655,796 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
   });
 
+  const isGitButlerWorkspaceBase: GitVcsDriver.GitVcsDriver["Service"]["isGitButlerWorkspaceBase"] =
+    Effect.fn("isGitButlerWorkspaceBase")(function* (input) {
+      const read = (args: ReadonlyArray<string>) =>
+        runGitStdout("GitVcsDriver.isGitButlerWorkspaceBase", input.cwd, args, true).pipe(
+          Effect.map((stdout) => stdout.trim()),
+        );
+      const workspaceRef = "refs/heads/gitbutler/workspace";
+      const workspaceTip = yield* read([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `${workspaceRef}^{commit}`,
+      ]);
+      if (workspaceTip === "") return false;
+      // `git worktree add` reads `-` as the previous checkout.
+      const revision = input.refName === "-" ? "@{-1}" : input.refName;
+      // `:/text` is a commit search, which cannot be asked for a commit type.
+      const commit = yield* read([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        revision.startsWith(":") ? revision : `${revision}^{commit}`,
+      ]);
+      if (commit !== workspaceTip) return false;
+      // A suffix that lands on this commit (`^0`, `~0`, `@{0}`) still means the ref it follows.
+      const namedRevision = revision.startsWith(":")
+        ? revision
+        : revision.replace(/(?:\^|~|@\{(?!-)).*$/, "") || "HEAD";
+      const fullName = yield* read(["rev-parse", "--symbolic-full-name", namedRevision]);
+      if (fullName.startsWith("refs/")) return fullName === workspaceRef;
+      // A commit or detached HEAD names no ref; another ref there means it is a real commit.
+      const refsAtCommit = yield* read([
+        "for-each-ref",
+        "--format=%(refname)",
+        `--points-at=${workspaceTip}`,
+        "refs/heads",
+        "refs/remotes",
+        "refs/tags",
+      ]);
+      return !refsAtCommit
+        .split("\n")
+        .some((refName) => refName !== "" && !refName.startsWith("refs/heads/gitbutler/"));
+    });
+
+  /**
+   * Makes the empty commit a new worktree starts from with a real `git commit`, so commit hooks,
+   * signing, and identity apply as they do anywhere else. It runs in a detached checkout of its own
+   * because only a checkout at the parent can commit on it, and no ref ever points at the parent.
+   */
+  const createStartCommit = Effect.fn("createStartCommit")(function* (input: {
+    readonly cwd: string;
+    readonly parentSha: string;
+    readonly label: string;
+  }) {
+    const operation = "GitVcsDriver.createStartCommit";
+    const { cwd, parentSha, label } = input;
+    const refuse = (command: string, detail: string) =>
+      new GitCommandError({ operation, command, cwd, detail });
+    const refuseWithOutput = (command: string, result: GitVcsDriver.ExecuteGitResult) => {
+      const output = `${result.stderr.trim()}\n${result.stdout.trim()}`.trim();
+      return refuse(
+        command,
+        output === "" ? `${command} exited with code ${result.exitCode}.` : output.slice(-800),
+      );
+    };
+    const gitCommonDir = (yield* runGitStdout(operation, cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ])).trim();
+    // Same disk as the repository, and out of sight of anything that scans the working tree.
+    const makeCheckoutDirectory = fileSystem
+      .makeTempDirectory({ directory: gitCommonDir, prefix: "t3-start-commit-" })
+      .pipe(
+        Effect.mapError((cause) =>
+          refuse("mkdtemp", `Couldn't make a temporary checkout: ${cause.message}`),
+        ),
+      );
+    const removeCheckout = (checkout: string) =>
+      executeGit(operation, cwd, ["worktree", "remove", "--force", "--", checkout], {
+        allowNonZeroExit: true,
+        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      }).pipe(
+        Effect.andThen(fileSystem.remove(checkout, { recursive: true, force: true })),
+        Effect.catch((cause) =>
+          Effect.logWarning("could not remove a worktree start commit's checkout", {
+            checkout,
+            cause,
+          }),
+        ),
+      );
+    return yield* Effect.acquireUseRelease(
+      makeCheckoutDirectory,
+      (checkout) =>
+        Effect.gen(function* () {
+          const checkoutWorkers = (yield* readConfigValue(cwd, "checkout.workers")) ?? "0";
+          const added = yield* executeGitWithStableDiagnostics(
+            operation,
+            cwd,
+            [
+              "-c",
+              `checkout.workers=${checkoutWorkers}`,
+              "worktree",
+              "add",
+              "--detach",
+              "--",
+              checkout,
+              parentSha,
+            ],
+            {
+              allowNonZeroExit: true,
+              timeoutMs: START_COMMIT_CHECKOUT_TIMEOUT_MS,
+            },
+          ).pipe(
+            Effect.mapError((error) =>
+              error.detail === "Git command timed out."
+                ? refuse(
+                    "git worktree add",
+                    "The temporary checkout or its post-checkout hook didn't finish in time, so the start commit wasn't made.",
+                  )
+                : error,
+            ),
+          );
+          if (added.exitCode !== 0) return yield* refuseWithOutput("git worktree add", added);
+          const readConfig = Effect.fnUntraced(function* (
+            directory: string,
+            args: ReadonlyArray<string>,
+          ) {
+            const result = yield* executeGit(operation, directory, ["config", ...args], {
+              allowNonZeroExit: true,
+            });
+            if (result.exitCode === 0) return result.stdout.trim();
+            // Exit 1 is an unset key. Anything else, like a bad boolean, isn't "signing is off".
+            if (result.exitCode === 1) return "";
+            return yield* refuseWithOutput("git config", result);
+          });
+          // Config included only on the workspace branch doesn't reach this detached checkout.
+          const hooksPath = ["--get", "core.hooksPath"];
+          if ((yield* readConfig(cwd, hooksPath)) !== (yield* readConfig(checkout, hooksPath))) {
+            return yield* refuse(
+              "git config",
+              "core.hooksPath applies only to the current branch, so commit hooks wouldn't run for the start commit.",
+            );
+          }
+          const signs = (key: string) =>
+            readConfig(cwd, ["--type=bool", "--get", key]).pipe(
+              Effect.map((value) => value === "true"),
+            );
+          // The checkout's own config could say otherwise; GitButler keeps its switch beside Git's.
+          const signed =
+            (yield* signs("commit.gpgsign")) || (yield* signs("gitbutler.signcommits"));
+          const commit = yield* executeGit(
+            operation,
+            checkout,
+            [
+              "commit",
+              "--quiet",
+              "--allow-empty",
+              signed ? "--gpg-sign" : "--no-gpg-sign",
+              "-m",
+              `chore(worktree): start from ${label}`,
+              "-m",
+              `${worktreeStartNote(parentSha)} ${worktreeStartStackNote(label)} Once this branch has commits of its own, this one can be dropped when rebasing.`,
+            ],
+            {
+              allowNonZeroExit: true,
+              timeoutMs: START_COMMIT_TIMEOUT_MS,
+            },
+          ).pipe(
+            Effect.mapError((error) =>
+              error.detail === "Git command timed out."
+                ? refuse(
+                    "git commit",
+                    "A commit hook or signing prompt didn't finish in time, so the start commit wasn't made.",
+                  )
+                : error,
+            ),
+          );
+          if (commit.exitCode !== 0) return yield* refuseWithOutput("git commit", commit);
+          const made = (yield* runGitStdout(operation, checkout, [
+            "rev-list",
+            "--parents",
+            "--max-count=1",
+            "HEAD",
+          ]))
+            .trim()
+            .split(" ");
+          const [commitSha, ...parents] = made;
+          const trees = (yield* runGitStdout(operation, checkout, [
+            "rev-parse",
+            "HEAD^{tree}",
+            `${parentSha}^{tree}`,
+          ]))
+            .trim()
+            .split("\n");
+          if (
+            commitSha === undefined ||
+            parents.length !== 1 ||
+            parents[0] !== parentSha ||
+            trees[0] !== trees[1]
+          ) {
+            return yield* refuse(
+              "git commit",
+              "A commit hook changed the start commit, so it no longer sits empty on the base.",
+            );
+          }
+          const raw = yield* runGitStdout(operation, checkout, ["cat-file", "commit", commitSha]);
+          const headersEnd = raw.indexOf("\n\n");
+          if (signed) {
+            const headers = raw.slice(0, headersEnd).split("\n");
+            if (!headers.some((header) => header.startsWith("gpgsig"))) {
+              return yield* refuse(
+                "git commit",
+                "Signing is configured, but the start commit ended up unsigned, so it wasn't used.",
+              );
+            }
+          }
+          if (!hasWorktreeStartNote(raw.slice(headersEnd), parentSha)) {
+            return yield* refuse(
+              "git commit",
+              "A commit hook removed T3 Code's note from the start commit's message, so the branch couldn't be recognized as starting there.",
+            );
+          }
+          return commitSha;
+        }),
+      removeCheckout,
+    );
+  });
+
+  const pinBranchForWorktree: GitVcsDriver.GitVcsDriver["Service"]["pinBranchForWorktree"] =
+    Effect.fn("pinBranchForWorktree")(function* ({ cwd, branch }) {
+      const operation = "GitVcsDriver.pinBranchForWorktree";
+      if (isGitButlerWorkspaceRef(branch)) return { status: "missing" };
+      const branchCommitSha = (yield* runGitStdout(
+        operation,
+        cwd,
+        // An exact ref, so a link like `feature~1` can't silently pin something else.
+        ["show-ref", "--verify", "--hash", "--", `refs/heads/${branch}`],
+        true,
+      )).trim();
+      if (branchCommitSha === "") return { status: "missing" };
+      // GitButler stores a conflicted commit's sides in its tree, so a checkout would plant them.
+      const conflictEntries = yield* runGitStdout(operation, cwd, [
+        "ls-tree",
+        "--full-tree",
+        "--name-only",
+        branchCommitSha,
+        "--",
+        ".conflict-files",
+        ".conflict-side-0",
+      ]);
+      if (conflictEntries.trim() !== "") return { status: "conflicted", branchCommitSha };
+      return yield* createStartCommit({ cwd, parentSha: branchCommitSha, label: branch }).pipe(
+        Effect.map((commitSha) => ({ status: "pinned" as const, commitSha, branchCommitSha })),
+        Effect.catchTags({
+          GitCommandError: (error) =>
+            Effect.succeed({
+              status: "refused" as const,
+              detail: error.detail,
+              branchCommitSha,
+            }),
+        }),
+      );
+    });
+
+  const pinAppliedStackWorktreeBase: GitVcsDriver.GitVcsDriver["Service"]["pinAppliedStackWorktreeBase"] =
+    Effect.fn("pinAppliedStackWorktreeBase")(function* ({ cwd, refName, baseRefName }) {
+      const operation = "GitVcsDriver.pinAppliedStackWorktreeBase";
+      const read = (args: ReadonlyArray<string>) =>
+        runGitStdout(operation, cwd, args, true).pipe(Effect.map((stdout) => stdout.trim()));
+      const workspaceRef = "refs/heads/gitbutler/workspace";
+      if ((yield* read(["symbolic-ref", "--quiet", "HEAD"])) !== workspaceRef) return null;
+      const targetRef = yield* readConfigValue(cwd, "gitbutler.project.targetref");
+      if (targetRef === null) return null;
+      // A pin would launder the workspace commit past createWorktree's refusal of it.
+      if (yield* isGitButlerWorkspaceBase({ cwd, refName })) return null;
+      // `git worktree add` reads `-` as the previous checkout; `:/text` can't take a commit type.
+      const revision = refName === "-" ? "@{-1}" : refName;
+      const parentCommitSha = yield* read([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "--end-of-options",
+        revision.startsWith(":") ? revision : `${revision}^{commit}`,
+      ]);
+      if (parentCommitSha === "") return null;
+      const isAncestor = Effect.fnUntraced(function* (ref: string) {
+        const { exitCode } = yield* executeGit(
+          operation,
+          cwd,
+          ["merge-base", "--is-ancestor", parentCommitSha, ref],
+          { allowNonZeroExit: true },
+        );
+        if (exitCode === 0 || exitCode === 1) return exitCode === 0;
+        // Proceeding could put the new branch straight on a stack's commit.
+        return yield* new GitCommandError({
+          operation,
+          command: "git merge-base",
+          cwd,
+          detail: `Couldn't tell whether "${refName}" is on a GitButler stack, because "${ref}" can't be compared.`,
+        });
+      });
+      if (!(yield* isAncestor(workspaceRef)) || (yield* isAncestor(targetRef))) return null;
+      // The label is how a clone finds the parent, and `-` names nothing once the checkout moves on.
+      const previousRef =
+        !baseRefName && refName === "-"
+          ? yield* read(["rev-parse", "--symbolic-full-name", revision])
+          : "";
+      const commitSha = yield* createStartCommit({
+        cwd,
+        parentSha: parentCommitSha,
+        label:
+          baseRefName ??
+          (refName === "-"
+            ? previousRef.replace(/^refs\/heads\//, "") || parentCommitSha
+            : refName),
+      });
+      return { commitSha, parentCommitSha };
+    });
+
+  const readWorktreeStartCommit: GitVcsDriver.GitVcsDriver["Service"]["readWorktreeStartCommit"] =
+    Effect.fn("readWorktreeStartCommit")(function* ({ cwd, branch }) {
+      const sha = yield* runGitStdout(
+        "GitVcsDriver.readWorktreeStartCommit",
+        cwd,
+        ["rev-parse", "--verify", "--quiet", `${worktreeStartRef(branch)}^{commit}`],
+        true,
+      );
+      return sha.trim() === "" ? null : sha.trim();
+    });
+
+  // With `expected`, a record someone has since replaced stays where it is.
+  const forgetWorktreeStart = (cwd: string, branch: string, expected?: string) =>
+    executeGit(
+      "GitVcsDriver.forgetWorktreeStart",
+      cwd,
+      ["update-ref", "-d", worktreeStartRef(branch), ...(expected ? [expected] : [])],
+      { allowNonZeroExit: true },
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("could not remove a worktree's start commit record", { cause }),
+      ),
+    );
+
+  /**
+   * A pin crosses launches and retries as a bare commit id, so the commit is what identifies it. The
+   * parent's id in the message, the single parent, and the matching tree rule out a lookalike.
+   */
+  const readWorktreeStartCommitDetails = Effect.fn("readWorktreeStartCommitDetails")(function* (
+    cwd: string,
+    refName: string,
+  ) {
+    if (!/^[0-9a-f]{40,64}$/.test(refName)) return null;
+    const operation = "GitVcsDriver.readWorktreeStartCommitDetails";
+    const raw = yield* runGitStdout(operation, cwd, ["cat-file", "commit", refName], true);
+    const headersEnd = raw.indexOf("\n\n");
+    const headers = raw.slice(0, headersEnd).split("\n");
+    const parents = headers.filter((header) => header.startsWith("parent "));
+    const tree = headers.find((header) => header.startsWith("tree "))?.slice("tree ".length);
+    const parent = parents[0]?.slice("parent ".length);
+    if (headersEnd < 0 || parents.length !== 1 || tree === undefined || parent === undefined) {
+      return null;
+    }
+    const message = raw.slice(headersEnd);
+    if (!hasWorktreeStartNote(message, parent)) return null;
+    const parentTree = yield* runGitStdout(
+      operation,
+      cwd,
+      ["rev-parse", "--verify", "--quiet", `${parent}^{tree}`],
+      true,
+    );
+    if (parentTree.trim() !== tree) return null;
+    return { parentSha: parent, parentRef: readWorktreeStartParentRef(message, parent) };
+  });
+
+  const isWorktreeStartCommit = (cwd: string, refName: string) =>
+    readWorktreeStartCommitDetails(cwd, refName).pipe(Effect.map((details) => details !== null));
+
+  const revisionExists = (operation: string, cwd: string, ref: string) =>
+    runGitStdout(
+      operation,
+      cwd,
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
+      true,
+    ).pipe(Effect.map((sha) => sha.trim() !== ""));
+
+  // A rebase or `but pull` replays a start commit with a new parent, so its note names an older one.
+  // One with files of its own counts while its note still starts a line, as in a squash into the
+  // start. `git merge --squash` indents what it quotes, and that isn't one.
+  const readReplayedStartCommitDetails = Effect.fn("readReplayedStartCommitDetails")(function* (
+    cwd: string,
+    commitSha: string,
+  ) {
+    const operation = "GitVcsDriver.readReplayedStartCommitDetails";
+    const raw = yield* runGitStdout(operation, cwd, ["cat-file", "commit", commitSha], true);
+    const headersEnd = raw.indexOf("\n\n");
+    const headers = raw.slice(0, headersEnd).split("\n");
+    const parents = headers.filter((header) => header.startsWith("parent "));
+    const tree = headers.find((header) => header.startsWith("tree "))?.slice("tree ".length);
+    const parent = parents[0]?.slice("parent ".length);
+    const message = raw.slice(headersEnd);
+    if (parents.length !== 1 || parent === undefined || !isWorktreeStartMessage(message)) {
+      return null;
+    }
+    const parentTree = yield* runGitStdout(
+      operation,
+      cwd,
+      ["rev-parse", "--verify", "--quiet", `${parent}^{tree}`],
+      true,
+    );
+    const noteStartsLine = /^T3\s+Code\s+starts\s+this\s+branch/m.test(message);
+    if (parentTree.trim() !== tree && !noteStartsLine) return null;
+    const parentRef =
+      /one empty commit above [0-9a-f]{40,64} so that GitButler keeps it out of the (\S+) stack\./.exec(
+        message.replace(/\s+/g, " "),
+      )?.[1] ?? null;
+    return { commitSha, parentSha: parent, parentRef };
+  });
+
+  /**
+   * What landed on the default branch or GitButler's target is settled, so it doesn't count, even
+   * with no remote HEAD to say which branch that is.
+   */
+  const readSettledRevisions = Effect.fn("readSettledRevisions")(function* (cwd: string) {
+    const operation = "GitVcsDriver.readSettledRevisions";
+    const exists = (ref: string) => revisionExists(operation, cwd, ref);
+    const targetRef = yield* readConfigValue(cwd, "gitbutler.project.targetref");
+    // The primary remote says what landed, and in a fork so does the project it forked: a remote
+    // named upstream by convention. Another's main may be anyone's, and a local main may not be
+    // pushed. Local history is all there is to go on with no remote.
+    // Read once with the same primary rule, so worktree creation does no repository discovery here.
+    const remoteNames = yield* listRemoteNames(cwd).pipe(
+      Effect.orElseSucceed((): ReadonlyArray<string> => []),
+    );
+    const remote = remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
+    // A branch merely named main or master may be anyone's, so these only stand in for a known
+    // default. Without a wildcard, git reads a pattern as the directory `<pattern>/*`.
+    const defaultOf = Effect.fnUntraced(function* (name: string) {
+      const head = `refs/remotes/${name}/HEAD`;
+      return (yield* exists(head))
+        ? [head]
+        : [`--glob=refs/remotes/${name}/[m]ain`, `--glob=refs/remotes/${name}/[m]aster`];
+    });
+    const settled =
+      remote === null
+        ? ["--glob=refs/heads/[m]ain", "--glob=refs/heads/[m]aster"]
+        : yield* defaultOf(remote);
+    const upstream =
+      remote !== null && remote !== "upstream" && remoteNames.includes("upstream")
+        ? yield* defaultOf("upstream")
+        : [];
+    // A remote rename can leave the target naming nothing.
+    const target = targetRef && (yield* exists(targetRef)) ? [targetRef] : [];
+    return [...settled, ...upstream, ...target];
+  });
+
+  /** These words survive a hook rewrapping the note; the message itself decides what matches. */
+  const scanStartCommits = Effect.fn("scanStartCommits")(function* (
+    cwd: string,
+    revision: string,
+    excluded: ReadonlyArray<string>,
+  ) {
+    const log = yield* runGitStdout("GitVcsDriver.scanStartCommits", cwd, [
+      "log",
+      "--no-show-signature",
+      "--format=%H%x00%B%x00",
+      "--topo-order",
+      "--fixed-strings",
+      "--grep=T3 Code",
+      "--grep=starts this",
+      "--grep=empty commit",
+      revision,
+      "--not",
+      ...excluded,
+      // A branch can share its name with a directory.
+      "--",
+    ]);
+    const fields = log.split("\0");
+    const found: Array<{ readonly commitSha: string; readonly message: string }> = [];
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const message = fields[index + 1]!;
+      if (isWorktreeStartMessage(message)) {
+        found.push({ commitSha: fields[index]!.trim(), message });
+      }
+    }
+    return found;
+  });
+
+  const readHistoryStarts: GitVcsDriver.GitVcsDriver["Service"]["readHistoryStarts"] = Effect.fn(
+    "readHistoryStarts",
+  )(function* ({ cwd, revision, above, branch }) {
+    const operation = "GitVcsDriver.readHistoryStarts";
+    const none = { builtOn: null, starts: [], governing: null, parents: [] };
+    // Nothing to read yet on an unborn branch.
+    if (!(yield* revisionExists(operation, cwd, revision))) return none;
+    const settled = yield* readSettledRevisions(cwd);
+    const found: Array<GitVcsDriver.WorktreeStartDetails> = [];
+    for (const { commitSha } of yield* scanStartCommits(cwd, revision, settled)) {
+      const details = yield* readReplayedStartCommitDetails(cwd, commitSha);
+      if (details !== null) found.push(details);
+    }
+    if (found.length === 0) return none;
+    const line = new Set(
+      (yield* runGitStdout(operation, cwd, [
+        "rev-list",
+        "--first-parent",
+        revision,
+        "--not",
+        ...settled,
+        "--",
+      ]))
+        .trim()
+        .split("\n"),
+    );
+    // A branch can't start above itself, so a start naming it belongs to a child merged back.
+    const ownNames = new Set<string>(
+      branch === undefined
+        ? []
+        : [
+            branch,
+            `refs/heads/${branch}`,
+            ...(yield* listRemoteNames(cwd)).flatMap((remote) => [
+              `${remote}/${branch}`,
+              `refs/remotes/${remote}/${branch}`,
+            ]),
+          ],
+    );
+    const isOwnLabel = (start: GitVcsDriver.WorktreeStartDetails) =>
+      start.parentRef !== null && ownNames.has(start.parentRef);
+    // The log lists children first, so this is the nearest, whose parent holds those of the rest.
+    const builtOn = found.find((start) => line.has(start.commitSha) && !isOwnLabel(start));
+    if (builtOn === undefined) return none;
+    const isAncestor = (ancestor: string, descendant: string) =>
+      executeGit(operation, cwd, ["merge-base", "--is-ancestor", ancestor, descendant], {
+        allowNonZeroExit: true,
+      }).pipe(Effect.map(({ exitCode }) => exitCode === 0));
+    // A merged start is this branch's own child's if it sits on the line above the branch's start, or
+    // above another such child.
+    // One under the start's parent brings nothing. Only the name can place a child a rebase left behind.
+    const inherited = [builtOn];
+    const own: Array<string> = [];
+    for (const start of found.toReversed()) {
+      if (line.has(start.commitSha)) continue;
+      let isOwn =
+        isOwnLabel(start) ||
+        (line.has(start.parentSha) && (yield* isAncestor(builtOn.commitSha, start.parentSha)));
+      for (const ownStart of own) {
+        isOwn ||= yield* isAncestor(ownStart, start.parentSha);
+      }
+      if (isOwn) own.push(start.commitSha);
+      else if (!(yield* isAncestor(start.parentSha, builtOn.parentSha))) inherited.push(start);
+    }
+    const parents = [...new Set(inherited.map((start) => start.parentSha))];
+    const independent =
+      parents.length === 1
+        ? parents
+        : (yield* executeGit(operation, cwd, ["merge-base", "--independent", ...parents], {
+            allowNonZeroExit: true,
+          })).stdout
+            .trim()
+            .split("\n");
+    const governing =
+      independent.length === 1
+        ? (inherited.find((start) => start.parentSha === independent[0]) ?? null)
+        : null;
+    const held =
+      above !== undefined && (yield* revisionExists(operation, cwd, above)) ? [above] : settled;
+    const starts: Array<GitVcsDriver.WorktreeStartDetails> = [];
+    for (const start of inherited) {
+      // A shallow clone can lack the parent, which then can't be shown to be held.
+      const unheld = yield* executeGit(
+        operation,
+        cwd,
+        ["rev-list", "--max-count=1", start.parentSha, "--not", ...held, "--"],
+        { allowNonZeroExit: true },
+      );
+      if (unheld.exitCode !== 0 || unheld.stdout.trim() !== "") starts.push(start);
+    }
+    return { builtOn, starts, governing, parents };
+  });
+
+  const readWorktreeStart: GitVcsDriver.GitVcsDriver["Service"]["readWorktreeStart"] = Effect.fn(
+    "readWorktreeStart",
+  )(function* ({ cwd, branch }) {
+    const commitSha = yield* readConfigValue(cwd, worktreeStartConfigKey(branch));
+    if (commitSha === null) return null;
+    const details = yield* readWorktreeStartCommitDetails(cwd, commitSha);
+    const args = ["merge-base", "--is-ancestor", commitSha, `refs/heads/${branch}`];
+    const { exitCode } =
+      details === null
+        ? { exitCode: 1 }
+        : yield* executeGit("GitVcsDriver.readWorktreeStart", cwd, args, {
+            allowNonZeroExit: true,
+          });
+    if (exitCode === 1) {
+      // Only its own start commit, replayed: an older one further down names an older parent. The
+      // replay keeps its message, and the record's ref keeps the original to compare with.
+      const replayOf = yield* runGitStdout(
+        "GitVcsDriver.readWorktreeStart",
+        cwd,
+        ["log", "-1", "--no-show-signature", "--format=%B", commitSha, "--"],
+        true,
+      );
+      if (replayOf.trim() === "") return null;
+      const revision = `refs/heads/${branch}`;
+      const excluded = yield* readSettledRevisions(cwd);
+      for (const { commitSha: replay, message } of yield* scanStartCommits(
+        cwd,
+        revision,
+        excluded,
+      )) {
+        if (normalizeSpace(message) !== normalizeSpace(replayOf)) continue;
+        const replayed = yield* readReplayedStartCommitDetails(cwd, replay);
+        if (replayed !== null) return replayed;
+      }
+      return null;
+    }
+    if (exitCode !== 0) {
+      return yield* new GitCommandError({
+        ...gitCommandContext({ operation: "GitVcsDriver.readWorktreeStart", cwd, args }),
+        detail: `Couldn't compare '${branch}' with its start commit.`,
+      });
+    }
+    return details === null ? null : { commitSha, ...details };
+  });
+
+  const readRemoteBranchContains: GitVcsDriver.GitVcsDriver["Service"]["readRemoteBranchContains"] =
+    Effect.fn("readRemoteBranchContains")(function* ({ cwd, branch, commitSha }) {
+      const operation = "GitVcsDriver.readRemoteBranchContains";
+      const remoteName = yield* resolvePrimaryRemoteName(cwd);
+      const ref = `refs/heads/${branch}`;
+      const args = ["ls-remote", "--exit-code", "--", remoteName, ref];
+      const listed = yield* executeGit(operation, cwd, args, { allowNonZeroExit: true });
+      if (listed.exitCode === 2) return { status: "missing" as const };
+      // The pattern also matches a branch whose name merely ends with this ref.
+      const exact = listed.stdout.split("\n").find((line) => line.split(/\s+/)[1] === ref);
+      if (listed.exitCode === 0 && exact === undefined) return { status: "missing" as const };
+      const tipSha = exact?.split(/\s/, 1)[0] ?? "";
+      if (listed.exitCode !== 0 || tipSha === "") {
+        return yield* new GitCommandError({
+          ...gitCommandContext({ operation, cwd, args }),
+          detail: listed.stderr.trim() || `Couldn't read '${branch}' from ${remoteName}.`,
+        });
+      }
+      const known = yield* executeGit(operation, cwd, ["cat-file", "-e", `${tipSha}^{commit}`], {
+        allowNonZeroExit: true,
+      });
+      if (known.exitCode !== 0) {
+        // Only for the objects: without these, fetch also moves the remote-tracking ref and honors
+        // fetch.prune. FETCH_HEAD could be another fetch's by now, so it isn't read.
+        yield* runGit(operation, cwd, [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-prune",
+          "--refmap=",
+          "--",
+          remoteName,
+          ref,
+        ]);
+      }
+      const compare = ["merge-base", "--is-ancestor", commitSha, tipSha];
+      const { exitCode } = yield* executeGit(operation, cwd, compare, { allowNonZeroExit: true });
+      if (exitCode === 0) return { status: "contains" as const, tipSha };
+      if (exitCode === 1) return { status: "lacks" as const, tipSha };
+      return yield* new GitCommandError({
+        ...gitCommandContext({ operation, cwd, args: compare }),
+        detail: `Couldn't compare '${branch}' on ${remoteName} with ${commitSha}.`,
+      });
+    });
+
+  /**
+   * A record whose start commit a rewrite took out of the branch, which is how a branch asks to be
+   * looked at before its pull request. A branch cut from it has to keep asking.
+   */
+  const readUnresolvedStart = Effect.fn("readUnresolvedStart")(function* (
+    cwd: string,
+    branch: string,
+  ) {
+    const recorded = yield* readConfigValue(cwd, worktreeStartConfigKey(branch));
+    if (recorded === null) return null;
+    const known = yield* runGitStdout(
+      "GitVcsDriver.readUnresolvedStart",
+      cwd,
+      ["rev-parse", "--verify", "--quiet", `${recorded}^{commit}`],
+      true,
+    );
+    return known.trim() === "" ? null : recorded;
+  });
+
+  const copyBranchBase = Effect.fn("GitVcsDriver.copyBranchBase")(function* (
+    cwd: string,
+    source: string,
+    target: string,
+  ) {
+    const base = yield* readBranchBase(cwd, source);
+    const baseRef = yield* readConfigValue(cwd, `branch.${source}.t3-merge-base-ref`);
+    if (base !== null) {
+      yield* writeConfigValue({ cwd, key: branchBaseConfigKey(target), value: base });
+    }
+    if (baseRef !== null) {
+      yield* writeConfigValue({ cwd, key: `branch.${target}.t3-merge-base-ref`, value: baseRef });
+    }
+  });
+
+  /**
+   * The commit a new branch counts as starting from: the one it's made at, its own earlier one, or
+   * that of the branch it's cut from, which holds the same parent's commits.
+   */
+  const resolveWorktreeStart = Effect.fn("resolveWorktreeStart")(function* (
+    cwd: string,
+    refName: string,
+    newRefName: string,
+    baseRefName: string | undefined,
+  ) {
+    if (yield* isWorktreeStartCommit(cwd, refName)) {
+      return { commit: refName, isStale: false, inheritedFrom: null };
+    }
+    const isAncestor = (ancestor: string, descendant: string) =>
+      executeGit(
+        "GitVcsDriver.resolveWorktreeStart",
+        cwd,
+        ["merge-base", "--is-ancestor", ancestor, descendant],
+        { allowNonZeroExit: true },
+      ).pipe(Effect.map((result) => result.exitCode));
+
+    // A launch from a remote's ref or a fetched commit may name the branch only that way. Its local
+    // namesake is the same branch only if that one's start commit is in the history being launched.
+    const source = yield* Effect.gen(function* () {
+      for (const name of baseRefName ? [refName, baseRefName] : [refName]) {
+        const named = yield* resolveBranchBase(cwd, name);
+        if (!named || named.branchName === newRefName) continue;
+        const start = yield* readWorktreeStart({ cwd, branch: named.branchName });
+        if (start !== null && (yield* isAncestor(start.commitSha, refName)) === 0) {
+          return { branch: named.branchName, commit: start.commitSha };
+        }
+        if (
+          start === null &&
+          (yield* isAncestor(`refs/heads/${named.branchName}`, refName)) === 0
+        ) {
+          const unresolved = yield* readUnresolvedStart(cwd, named.branchName);
+          if (unresolved !== null) return { branch: named.branchName, commit: unresolved };
+        }
+      }
+      // Several parents with no one holding the rest leave nothing to record. The PR check reads the
+      // same history and refuses, so the branch can still be made and worked on.
+      const { builtOn, governing } = yield* readHistoryStarts({ cwd, revision: refName });
+      if (builtOn === null) return null;
+      const named = yield* resolveBranchBase(cwd, refName);
+      const isSameBranch =
+        named !== null &&
+        named.branchName !== newRefName &&
+        (yield* isAncestor(builtOn.commitSha, `refs/heads/${named.branchName}`)) === 0;
+      return {
+        branch: isSameBranch ? named.branchName : null,
+        commit: governing?.commitSha ?? null,
+      };
+    });
+
+    const recorded = yield* readWorktreeStartCommit({ cwd, branch: newRefName });
+    const recordedFit = recorded === null ? 1 : yield* isAncestor(recorded, refName);
+    if (recorded !== null && recordedFit === 0) {
+      // An older record than the source's would drop the parent the source started above.
+      if (source?.commit == null || (yield* isAncestor(source.commit, recorded)) === 0) {
+        return { commit: recorded, isStale: false, inheritedFrom: null };
+      }
+    }
+    if (source?.commit != null) {
+      return { commit: source.commit, isStale: false, inheritedFrom: source.branch };
+    }
+    return {
+      commit: null,
+      isStale: recorded !== null && recordedFit === 1,
+      inheritedFrom: source?.branch ?? null,
+    };
+  });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
     yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.refName);
     yield* refuseOptionLikeRefName("GitVcsDriver.createWorktree", input.cwd, input.newRefName);
+    if (yield* isGitButlerWorkspaceBase({ cwd: input.cwd, refName: input.refName })) {
+      return yield* new GitCommandError({
+        operation: "GitVcsDriver.createWorktree",
+        command: "git worktree add",
+        cwd: input.cwd,
+        detail: gitButlerWorkspaceBaseMessage(input.refName),
+      });
+    }
     const targetBranch = input.newRefName ?? input.refName;
     // Resolve sub/.. before taking the basename.
     const repoName = path.basename(path.resolve(input.cwd));
@@ -6682,12 +7528,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       : {};
 
     // Both reads leave the repository alone, so they share one round trip before the checkout.
-    const [configuredCheckoutWorkers, base] = yield* Effect.all(
+    const [configuredCheckoutWorkers, base, worktreeStart] = yield* Effect.all(
       [
         readConfigValue(input.cwd, "checkout.workers"),
         input.newRefName && input.baseRefName
           ? resolveBranchBase(input.cwd, input.baseRefName)
           : Effect.succeed(null),
+        input.newRefName
+          ? resolveWorktreeStart(
+              input.cwd,
+              // `git worktree add` reads `-` as the previous checkout.
+              input.refName === "-" ? "@{-1}" : input.refName,
+              input.newRefName,
+              input.baseRefName,
+            )
+          : Effect.succeed({ commit: null, isStale: false, inheritedFrom: null }),
       ],
       { concurrency: "unbounded" },
     );
@@ -6696,6 +7551,63 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const fastCheckout =
       checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
+    const previousStart =
+      newRefName && worktreeStart.commit
+        ? yield* readWorktreeStartCommit({ cwd: input.cwd, branch: newRefName })
+        : null;
+    const removeNewBranch = newRefName
+      ? deleteLocalBranch({ cwd: input.cwd, refName: newRefName, force: true }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("could not remove the branch of a failed worktree", { cause }),
+          ),
+        )
+      : Effect.void;
+    // A branch still here means a hook failed after the checkout, and that worktree needs the record.
+    const restorePreviousStart = Effect.gen(function* () {
+      const startCommit = worktreeStart.commit;
+      if (!newRefName || startCommit === null || previousStart === startCommit) return;
+      const { exitCode } = yield* executeGit(
+        "GitVcsDriver.createWorktree.restoreStart",
+        input.cwd,
+        ["show-ref", "--verify", "--quiet", `refs/heads/${newRefName}`],
+        { allowNonZeroExit: true },
+      );
+      if (exitCode === 0) return;
+      if (previousStart === null) {
+        yield* forgetWorktreeStart(input.cwd, newRefName, startCommit);
+        return;
+      }
+      yield* runGit("GitVcsDriver.createWorktree.restoreStart", input.cwd, [
+        "update-ref",
+        worktreeStartRef(newRefName),
+        previousStart,
+        startCommit,
+      ]);
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("could not restore a worktree's earlier start record", { cause }),
+      ),
+    );
+    const abandonNewBranch = removeNewBranch.pipe(Effect.andThen(restorePreviousStart));
+    // Before checkout, because a failing post-checkout hook leaves a usable worktree behind. Without
+    // these the branch would quietly compare against the parent's work, so failing to write them fails.
+    if (newRefName && worktreeStart.commit) {
+      yield* runGit("GitVcsDriver.createWorktree.recordStart", input.cwd, [
+        "update-ref",
+        worktreeStartRef(newRefName),
+        worktreeStart.commit,
+      ]).pipe(
+        Effect.andThen(
+          writeConfigValue({
+            cwd: input.cwd,
+            key: worktreeStartConfigKey(newRefName),
+            value: worktreeStart.commit,
+          }),
+        ),
+        Effect.onError(() => abandonNewBranch),
+      );
+    }
+
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
       input.cwd,
@@ -6796,9 +7708,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 : Effect.void
               : Effect.void
             ).pipe(
-              Effect.andThen(
-                deleteLocalBranch({ cwd: input.cwd, refName: newRefName, force: true }),
-              ),
+              Effect.andThen(abandonNewBranch),
               Effect.catch((cause) =>
                 Effect.logWarning("could not clean up a failed worktree or its branch", { cause }),
               ),
@@ -6967,7 +7877,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
     );
 
-    if (newRefName && base) {
+    // A failure leaves the start commit's own parent to go by, which is still checked.
+    if (newRefName && !base && worktreeStart.inheritedFrom) {
+      yield* copyBranchBase(input.cwd, worktreeStart.inheritedFrom, newRefName).pipe(
+        Effect.catchTags({
+          GitCommandError: () => Effect.logWarning("worktree base configuration failed"),
+        }),
+      );
+    }
+
+    // On a started branch a base that reads as a full ref means someone chose it, so none is written
+    // for a branch whose name only looks like one. The start commit still names the parent.
+    if (newRefName && base && !(worktreeStart.commit && base.branchName.startsWith("refs/"))) {
       yield* Effect.gen(function* () {
         yield* writeConfigValue({
           cwd: input.cwd,
@@ -6989,6 +7910,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         }),
       );
     }
+
+    // Only now: a failed attempt must leave another thread's recovery record alone.
+    if (newRefName && worktreeStart.isStale) yield* forgetWorktreeStart(input.cwd, newRefName);
 
     return {
       worktree: {
@@ -7526,13 +8450,53 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ),
         );
 
+        const worktreeStart = yield* readConfigValue(
+          input.cwd,
+          worktreeStartConfigKey(targetBranch),
+        );
+        if (worktreeStart !== null) {
+          yield* runGit("GitVcsDriver.renameBranch.moveStart", input.cwd, [
+            "update-ref",
+            worktreeStartRef(targetBranch),
+            worktreeStart,
+          ]).pipe(
+            Effect.andThen(forgetWorktreeStart(input.cwd, input.oldBranch, worktreeStart)),
+            Effect.catchTags({
+              GitCommandError: (cause) =>
+                Effect.logWarning("could not move a worktree's start commit record", { cause }),
+            }),
+          );
+        }
+
         return { branch: targetBranch };
       }),
     );
   });
 
+  const ensureCanCheckoutRef = Effect.fn("GitVcsDriver.ensureCanCheckoutRef")(function* (
+    cwd: string,
+    refName: string,
+  ) {
+    const currentRef = yield* runGitStdout(
+      "GitVcsDriver.ensureCanCheckoutRef.currentRef",
+      cwd,
+      ["symbolic-ref", "--quiet", "HEAD"],
+      true,
+    ).pipe(Effect.map((stdout) => stdout.trim()));
+    if (currentRef === "refs/heads/gitbutler/workspace" && !isGitButlerWorkspaceRef(refName)) {
+      return yield* new GitCommandError({
+        operation: "GitVcsDriver.switchRef",
+        command: "git checkout",
+        cwd,
+        detail:
+          "Use GitButler or create a new worktree to change branches in a GitButler workspace.",
+      });
+    }
+  });
+
   const switchRef: GitVcsDriver.GitVcsDriver["Service"]["switchRef"] = Effect.fn("switchRef")(
     function* (input) {
+      yield* ensureCanCheckoutRef(input.cwd, input.refName);
       const [localInputExists, remoteExists] = yield* Effect.all(
         [
           executeGit(
@@ -7697,14 +8661,82 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  /**
+   * A branch cut from one started above a stack holds the same parent's commits, so it needs the same
+   * records, and its own copy of them: each branch's rename and delete only touches what it owns.
+   * With no source to read them from, the start commit is still in the history.
+   */
+  const readInheritedStart = Effect.fn("readInheritedStart")(function* (cwd: string) {
+    const head = yield* runGitStdout(
+      "GitVcsDriver.createRef.readHead",
+      cwd,
+      ["symbolic-ref", "--quiet", "HEAD"],
+      true,
+    );
+    const source = head.startsWith("refs/heads/") ? head.trim().slice("refs/heads/".length) : null;
+    const start = source === null ? null : yield* readWorktreeStart({ cwd, branch: source });
+    if (start !== null) return { commitSha: start.commitSha, source };
+    const unresolved = source === null ? null : yield* readUnresolvedStart(cwd, source);
+    if (unresolved !== null) return { commitSha: unresolved, source };
+    const { parents, governing } = yield* readHistoryStarts({ cwd, revision: "HEAD" });
+    if (governing !== null) return { commitSha: governing.commitSha, source };
+    // No one start to record, but a base named in full for the source has to follow the new branch.
+    return parents.length > 0 && source !== null ? { commitSha: null, source } : null;
+  });
+
   const createRef: GitVcsDriver.GitVcsDriver["Service"]["createRef"] = Effect.fn("createRef")(
     function* (input) {
+      if (input.switchRef) yield* ensureCanCheckoutRef(input.cwd, input.refName);
+      const inherited = yield* readInheritedStart(input.cwd);
+      const startCommit = inherited?.commitSha ?? null;
+      const previousStart = startCommit
+        ? yield* readWorktreeStartCommit({ cwd: input.cwd, branch: input.refName })
+        : null;
       yield* executeGit("GitVcsDriver.createRef", input.cwd, ["branch", "--", input.refName], {
         timeoutMs: 10_000,
         fallbackErrorDetail: "git branch create failed",
         // `branch.autoSetupMerge=always` records HEAD's branch as the upstream.
         writesSharedConfig: true,
       });
+      if (inherited) {
+        // Without these its pull request would quietly target the default branch, so failing fails.
+        yield* Effect.gen(function* () {
+          if (startCommit !== null) {
+            yield* runGit("GitVcsDriver.createRef.recordStart", input.cwd, [
+              "update-ref",
+              worktreeStartRef(input.refName),
+              startCommit,
+            ]);
+            yield* writeConfigValue({
+              cwd: input.cwd,
+              key: worktreeStartConfigKey(input.refName),
+              value: startCommit,
+            });
+          }
+          if (inherited.source !== null) {
+            yield* copyBranchBase(input.cwd, inherited.source, input.refName);
+          }
+        }).pipe(
+          Effect.onError(() =>
+            deleteLocalBranch({ cwd: input.cwd, refName: input.refName, force: true }).pipe(
+              Effect.andThen(
+                startCommit === null
+                  ? Effect.void
+                  : previousStart === null
+                    ? forgetWorktreeStart(input.cwd, input.refName, startCommit)
+                    : runGit("GitVcsDriver.createRef.restoreStart", input.cwd, [
+                        "update-ref",
+                        worktreeStartRef(input.refName),
+                        previousStart,
+                      ]),
+              ),
+              Effect.catch((cause) =>
+                Effect.logWarning("could not remove a branch whose start record failed", { cause }),
+              ),
+            ),
+          ),
+        );
+      }
       if (input.switchRef) {
         yield* switchRef({ cwd: input.cwd, refName: input.refName });
       }
@@ -7868,6 +8900,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteBranchExists,
     resolveRemoteTrackingCommit,
     resolveWorktreeBaseRemote,
+    isGitButlerWorkspaceBase,
+    pinBranchForWorktree,
+    pinAppliedStackWorktreeBase,
+    readWorktreeStartCommit,
+    readHistoryStarts,
+    readWorktreeStart,
+    readRemoteBranchContains,
     fetchWorktreeBaseCommit: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, fetchWorktreeBaseCommit(input));
     }),
@@ -7891,7 +8930,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(input.cwd, pruneWorktrees(input));
     }),
     deleteLocalBranch: Effect.fnUntraced(function* (input) {
-      return yield* withListRefsInvalidation(input.cwd, deleteLocalBranch(input));
+      // Only this branch's own record: one it doesn't name is waiting for an earlier branch's recovery.
+      const start = yield* readConfigValue(input.cwd, worktreeStartConfigKey(input.refName)).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      yield* withListRefsInvalidation(input.cwd, deleteLocalBranch(input));
+      if (start !== null) yield* forgetWorktreeStart(input.cwd, input.refName, start);
     }),
     renameBranch: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, renameBranch(input));

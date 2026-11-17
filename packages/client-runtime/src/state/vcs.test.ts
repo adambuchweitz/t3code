@@ -8,6 +8,8 @@ import {
   type VcsListRefsResult,
   type VcsStatusResult,
   type ServerConfig,
+  type VcsStatusLocalResult,
+  type VcsStatusStreamEvent,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -395,6 +397,9 @@ describe("cached VCS refs", () => {
           Ref.get(refsDigest).pipe(Effect.map((digest) => ({ refsDigest: digest }))),
         [WS_METHODS.gitPreparePullRequestThread]: () =>
           Effect.succeed({ branch: "feature/pr", worktreePath: null }),
+        [WS_METHODS.vcsGitButlerApply]: () => Effect.succeed({ branch: "feature" }),
+        [WS_METHODS.vcsGitButlerUnapply]: () => Effect.fail(expectedError),
+        [WS_METHODS.vcsGitButlerCreateBranch]: () => Effect.succeed({ branch: "feature" }),
       } as unknown as WsRpcProtocolClient;
       const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
         target: TARGET,
@@ -481,6 +486,21 @@ describe("cached VCS refs", () => {
       expect(Exit.isSuccess(prepareResult)).toBe(true);
       expect(yield* Ref.get(clears)).toBe(4);
       expect(registry.get(vcsRefsCacheStateAtom(TARGET)).revision).toBe(4);
+
+      for (const command of [
+        createVcsEnvironmentAtoms(runtime).gitButlerApply,
+        createVcsEnvironmentAtoms(runtime).gitButlerUnapply,
+        createVcsEnvironmentAtoms(runtime).gitButlerCreateBranch,
+      ]) {
+        yield* Effect.exit(
+          command.run(registry, {
+            environmentId: TARGET.environmentId,
+            input: { cwd: "/repo", branch: "feature" },
+          }),
+        );
+      }
+      expect(yield* Ref.get(clears)).toBe(7);
+      expect(registry.get(vcsRefsCacheStateAtom(TARGET)).revision).toBe(7);
     }),
   );
 
@@ -543,6 +563,114 @@ describe("cached VCS refs", () => {
       yield* Deferred.succeed(releaseRefresh, undefined);
       expect(Exit.isSuccess(yield* Fiber.join(refresh))).toBe(true);
     }),
+  );
+
+  it.effect(
+    "invalidates other clients' ref lists on stack changes without refreshing on assigned-file counts",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const local: VcsStatusLocalResult = {
+            isRepo: true,
+            hasPrimaryRemote: true,
+            isDefaultRef: false,
+            refName: "gitbutler/workspace",
+            hasWorkingTreeChanges: false,
+            workingTree: { files: [], insertions: 0, deletions: 0 },
+            workspace: {
+              _tag: "gitbutler",
+              stacks: [{ branches: ["first"], assignedChangeCount: 0 }],
+              unassignedChangeCount: 0,
+            },
+          };
+          const events: VcsStatusStreamEvent[] = [
+            { _tag: "snapshot", local, remote: null },
+            {
+              _tag: "localUpdated",
+              local: {
+                ...local,
+                workspace: {
+                  _tag: "gitbutler",
+                  stacks: [{ branches: ["first"], assignedChangeCount: 3 }],
+                  unassignedChangeCount: 1,
+                },
+              },
+            },
+            {
+              _tag: "localUpdated",
+              local: {
+                ...local,
+                workspace: {
+                  _tag: "gitbutler",
+                  stacks: [{ branches: ["first"], assignedChangeCount: 3 }],
+                  publications: { first: "up_to_date" },
+                  unassignedChangeCount: 1,
+                },
+              },
+            },
+            {
+              _tag: "localUpdated",
+              local: {
+                ...local,
+                workspace: {
+                  _tag: "gitbutler",
+                  stacks: [{ branches: ["second"], assignedChangeCount: 0 }],
+                  publications: { first: "up_to_date" },
+                  unassignedChangeCount: 0,
+                },
+              },
+            },
+          ];
+          const client = {
+            [WS_METHODS.subscribeVcsStatus]: () =>
+              Stream.fromIterable(events).pipe(Stream.concat(Stream.never)),
+          } as unknown as WsRpcProtocolClient;
+          const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+            target: TARGET,
+            state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+            session: yield* SubscriptionRef.make(Option.some(session(client))),
+            prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+            connect: Effect.void,
+            disconnect: Effect.void,
+            retryNow: Effect.void,
+          });
+          const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+            followStream: (_environmentId, stream) =>
+              Stream.provideService(
+                stream,
+                EnvironmentSupervisor.EnvironmentSupervisor,
+                supervisor,
+              ),
+          } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+          const clears = yield* Ref.make(0);
+          const runtime = Atom.runtime(
+            Layer.merge(
+              Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+              Layer.succeed(
+                Persistence.EnvironmentCacheStore,
+                cacheWithRefs(Option.none(), {
+                  clearVcsRefs: () => Ref.update(clears, (count) => count + 1),
+                }),
+              ),
+            ),
+          );
+          const atoms = createVcsEnvironmentAtoms(runtime);
+          const registry = yield* Effect.acquireRelease(
+            Effect.sync(AtomRegistry.make),
+            (registry) => Effect.sync(() => registry.dispose()),
+          );
+          yield* AtomRegistry.toStreamResult(
+            registry,
+            atoms.status({ environmentId: TARGET.environmentId, input: { cwd: "/repo" } }),
+          ).pipe(
+            Stream.filter((status) => status.workspace?.stacks[0]?.branches[0] === "second"),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+          expect(yield* Ref.get(clears)).toBe(2);
+          expect(registry.get(vcsRefsCacheStateAtom(TARGET)).revision).toBe(2);
+        }),
+      ),
   );
 
   it.effect("suppresses persisted snapshots after an environment-wide clear fails", () =>

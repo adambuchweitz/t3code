@@ -41,12 +41,13 @@ const state = vi.hoisted(() => ({
   },
   toolCallItem: null as unknown,
   config: null as unknown as Atom.Atom<null>,
-  status: null as unknown as ResultAtom<VcsStatusResult>,
+  status: null as unknown as Atom.Writable<AsyncResult.AsyncResult<VcsStatusResult, Error>>,
   localRefs: null as unknown as ResultAtom<VcsListRefsResult>,
   remoteRefs: null as unknown as ResultAtom<VcsListRefsResult>,
   commits: null as unknown as ResultAtom<ReviewBranchCommitsResult>,
   checkpoints: [] as unknown[],
   checkpointDiff: null as Partial<OrchestrationGetTurnDiffResult> | null,
+  diffPreviewInputs: vi.fn(),
 }));
 
 vi.mock("~/state/server", () => ({
@@ -54,8 +55,10 @@ vi.mock("~/state/server", () => ({
 }));
 vi.mock("~/state/review", () => ({
   reviewEnvironment: {
-    diffPreview: ({ input }: { input: { baseRef?: string } }) =>
-      state.previews.get(input.baseRef ?? null)!,
+    diffPreview: ({ input }: { input: { baseRef?: string; gitbutlerBranch?: string } }) => {
+      state.diffPreviewInputs(input);
+      return state.previews.get(input.gitbutlerBranch ?? input.baseRef ?? null)!;
+    },
     branchCommits: () => state.commits,
     diffFilePatch: () => state.patch,
     diffFileContents: {},
@@ -178,7 +181,7 @@ function setup(failedBaseRef: string | null) {
   state.previews.set("main", Atom.make(AsyncResult.success(preview())));
   state.previews.set(failedBaseRef, Atom.make(AsyncResult.fail(new Error(errorMessage))));
   state.config = Atom.make(null);
-  state.status = Atom.make(
+  state.status = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, Error>>(
     AsyncResult.success({
       isRepo: true,
       hasPrimaryRemote: true,
@@ -270,7 +273,7 @@ it("opens a repository-relative file from a nested project without a remote", as
     files: [{ path, previousPath: null, additions: 1, deletions: 0 }],
   };
   state.previews.set("main", Atom.make(AsyncResult.success({ ...metadata, sources: [source] })));
-  state.status = Atom.make(
+  state.status = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, Error>>(
     AsyncResult.success({
       ...AsyncResult.getOrElse(context.registry.get(state.status), () => {
         throw new Error("Missing status");
@@ -425,7 +428,7 @@ it("says a turn diff cut off at the server's size limit is incomplete", async ()
 
 it("shows a turn's repositories in a folder that is not a Git repository", async () => {
   using context = setup("origin/orphan");
-  state.status = Atom.make(
+  state.status = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, Error>>(
     AsyncResult.success({
       isRepo: false,
       hasPrimaryRemote: false,
@@ -540,7 +543,7 @@ it("opens a file from a tool call's diff by the path its agent recorded", async 
   state.thread = { ...state.thread!, worktreePath: null };
   state.project = { workspaceRoot: "/repo/apps/web", repositoryIdentity: { rootPath: "/repo" } };
   const status = AsyncResult.getOrThrow(context.registry.get(state.status));
-  state.status = Atom.make(
+  state.status = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, Error>>(
     AsyncResult.success({ ...status, workingTree: { ...status.workingTree, rootPath: "/repo" } }),
   );
   // Claude's Edit can record a path relative to the workspace, unlike the repository's diffs.
@@ -566,5 +569,70 @@ it("opens a file from a tool call's diff by the path its agent recorded", async 
     expect(
       selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, context.threadRef),
     ).toMatchObject({ activeSurfaceId: "file:src/a.ts" }),
+  );
+});
+
+it("reviews an applied GitButler branch and returns to the remembered base when unapplied", async () => {
+  using context = setup("origin/orphan");
+  state.previews.set("origin/release", Atom.make(AsyncResult.success(preview())));
+  state.previews.set(
+    "feature/api",
+    Atom.make(
+      AsyncResult.success({
+        ...preview(),
+        sources: [
+          {
+            ...preview().sources[0]!,
+            id: "gitbutler-branch:feature/api",
+            kind: "gitbutler-branch" as const,
+            title: "feature/api",
+            baseRef: null,
+            headRef: "feature/api",
+          },
+        ],
+      }),
+    ),
+  );
+  state.diffPreviewInputs.mockClear();
+  const currentStatus = context.registry.get(state.status);
+  if (!AsyncResult.isSuccess(currentStatus)) throw new Error("Expected status");
+  const status = {
+    ...currentStatus.value,
+    refName: "gitbutler/workspace",
+    workspace: {
+      _tag: "gitbutler" as const,
+      stacks: [{ branches: ["feature/api"], assignedChangeCount: 0 }],
+      unassignedChangeCount: 0,
+    },
+  };
+  context.registry.set(state.status, AsyncResult.success(status));
+  useDiffPanelStore.getState().selectBranchBaseRef(context.threadRef, "origin/release");
+  await using screen = await render(
+    <RegistryContext.Provider value={context.registry}>
+      <DiffPanel composerDraftTarget={context.threadRef} workspaceMutationId={null} visible />
+    </RegistryContext.Provider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Diff scope: Changes" }));
+  await userEvent.click(page.getByRole("menuitemradio", { name: "feature/api" }));
+  await expect
+    .element(screen.getByRole("button", { name: "Diff scope: feature/api" }))
+    .toBeVisible();
+  expect(state.diffPreviewInputs).toHaveBeenLastCalledWith({
+    cwd,
+    gitbutlerBranch: "feature/api",
+    metadataOnly: true,
+  });
+  await act(async () =>
+    context.registry.set(
+      state.status,
+      AsyncResult.success({
+        ...status,
+        workspace: { ...status.workspace, stacks: [] },
+      }),
+    ),
+  );
+  await expect.element(screen.getByRole("button", { name: "Diff scope: Changes" })).toBeVisible();
+  expect(state.diffPreviewInputs).toHaveBeenLastCalledWith(
+    expect.objectContaining({ cwd, baseRef: "origin/release" }),
   );
 });

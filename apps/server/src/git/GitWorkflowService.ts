@@ -6,6 +6,15 @@ import * as FileSystem from "effect/FileSystem";
 import {
   GitManagerError,
   GitCommandError,
+  type GitButlerBranchChangeRequestResult,
+  type GitButlerCommitChangesInput,
+  type GitButlerCommitChangesResult,
+  type GitButlerHoldsInput,
+  type GitButlerHoldsResult,
+  type GitButlerResolveHoldsInput,
+  type VcsError,
+  type GitButlerBranchInput,
+  type GitButlerBranchResult,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -15,6 +24,7 @@ import {
   type VcsListRefsInput,
   type VcsListRefsResult,
   type GitManagerServiceError,
+  type VcsWorkspaceStatus,
   type GitPreparePullRequestThreadInput,
   type GitPreparePullRequestThreadResult,
   type GitPullRequestRefInput,
@@ -28,12 +38,40 @@ import {
   type VcsStatusRemoteResult,
   type VcsStatusResult,
 } from "@t3tools/contracts";
+import { gitButlerAppliedBranches, isGitButlerWorkspaceRef } from "@t3tools/shared/git";
 
 import { trimAsciiWhitespace } from "@t3tools/contracts";
 import * as GitManager from "./GitManager.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+
+/** GitButler's target, then the remote default, from refs already on disk; null when neither exists. */
+export const resolveRemoteWorktreeBase = Effect.fn("resolveRemoteWorktreeBase")(function* (
+  git: Pick<GitWorkflowService["Service"], "hasCommit" | "resolveRemoteTrackingCommit">,
+  input: { readonly cwd: string; readonly workspace?: VcsWorkspaceStatus | undefined },
+) {
+  const { cwd } = input;
+  const target = input.workspace?.targetRefs?.[0];
+  if (target !== undefined && (yield* git.hasCommit({ cwd, refName: `refs/remotes/${target}` }))) {
+    const { commitSha, remoteRefName } = yield* git.resolveRemoteTrackingCommit({
+      cwd,
+      refName: target,
+      fallbackRemoteName: "origin",
+    });
+    return { commitSha, baseRefName: `refs/remotes/${remoteRefName}` };
+  }
+  if (yield* git.hasCommit({ cwd, refName: "refs/remotes/origin/HEAD" })) {
+    const { commitSha } = yield* git.resolveRemoteTrackingCommit({
+      cwd,
+      refName: "HEAD",
+      fallbackRemoteName: "origin",
+    });
+    return { commitSha, baseRefName: "refs/remotes/origin/HEAD" };
+  }
+  return null;
+});
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
@@ -52,7 +90,7 @@ export class GitWorkflowService extends Context.Service<
     ) => Effect.Effect<VcsStatusResult, GitManagerServiceError>;
     readonly localStatus: (
       input: VcsStatusInput,
-      options?: GitManager.GitLocalStatusOptions,
+      options?: GitManager.GitLocalStatusOptions & { readonly includeWorkspace?: boolean },
     ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
     readonly currentBranch: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
     readonly upstreamDivergence: (cwd: string) => Effect.Effect<
@@ -77,6 +115,9 @@ export class GitWorkflowService extends Context.Service<
     /** The checkout's own HEAD file, inside a linked worktree's admin directory when there is one. */
     readonly headPath: (cwd: string) => Effect.Effect<string | null, never>;
     readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
+    readonly autoPullCurrentBranch: (
+      cwd: string,
+    ) => Effect.Effect<VcsPullResult | null, GitCommandError>;
     readonly runStackedAction: (
       input: GitRunStackedActionInput,
       options?: GitManager.GitRunStackedActionOptions,
@@ -119,6 +160,10 @@ export class GitWorkflowService extends Context.Service<
       GitCommandError
     >;
     readonly resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"];
+    readonly isGitButlerWorkspaceBase: GitVcsDriver.GitVcsDriver["Service"]["isGitButlerWorkspaceBase"];
+    readonly pinBranchForWorktree: GitVcsDriver.GitVcsDriver["Service"]["pinBranchForWorktree"];
+    readonly pinAppliedStackWorktreeBase: GitVcsDriver.GitVcsDriver["Service"]["pinAppliedStackWorktreeBase"];
+    readonly readWorktreeStartCommit: GitVcsDriver.GitVcsDriver["Service"]["readWorktreeStartCommit"];
     readonly fetchWorktreeBaseCommit: (input: {
       readonly cwd: string;
       readonly refName: string;
@@ -146,6 +191,28 @@ export class GitWorkflowService extends Context.Service<
     readonly switchRef: (
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+    readonly gitButlerApply: (
+      input: GitButlerBranchInput,
+    ) => Effect.Effect<GitButlerBranchResult, GitCommandError>;
+    readonly gitButlerUnapply: (
+      input: GitButlerBranchInput,
+    ) => Effect.Effect<void, GitCommandError>;
+    readonly gitButlerCreateBranch: (
+      input: GitButlerBranchInput,
+    ) => Effect.Effect<GitButlerBranchResult, GitCommandError>;
+    /** Reads a change request by the applied branch; the workspace ref never has its own. */
+    readonly gitButlerBranchChangeRequest: (
+      input: GitButlerBranchInput,
+    ) => Effect.Effect<GitButlerBranchChangeRequestResult, GitManagerServiceError | VcsError>;
+    readonly gitButlerCommitChanges: (
+      input: GitButlerCommitChangesInput,
+    ) => Effect.Effect<GitButlerCommitChangesResult, GitManagerServiceError | VcsError>;
+    readonly gitButlerHolds: (
+      input: GitButlerHoldsInput,
+    ) => Effect.Effect<GitButlerHoldsResult, GitCommandError>;
+    readonly gitButlerResolveHolds: (
+      input: GitButlerResolveHoldsInput,
+    ) => Effect.Effect<void, GitCommandError>;
     readonly renameBranch: (input: {
       readonly exactName?: boolean;
       readonly cwd: string;
@@ -197,6 +264,23 @@ export const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const fileSystem = yield* FileSystem.FileSystem;
+  const gitButler = yield* GitButlerWorkspace.GitButlerWorkspace;
+
+  // A GitButler checkout reports the synthetic workspace ref; its applied
+  // branches come from `but`. Status stays usable when that CLI cannot answer.
+  const withWorkspace = Effect.fn("GitWorkflowService.withWorkspace")(function* <
+    Status extends VcsStatusLocalResult,
+  >(cwd: string, status: Status) {
+    if (status.refName === null || !isGitButlerWorkspaceRef(status.refName)) return status;
+    return yield* gitButler.readStatus(cwd).pipe(
+      Effect.map((workspace): Status => ({ ...status, workspace })),
+      Effect.catch((error) =>
+        Effect.logDebug("GitButler workspace status unavailable", { errorTag: error._tag }).pipe(
+          Effect.as(status),
+        ),
+      ),
+    );
+  });
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
@@ -342,17 +426,23 @@ export const make = Effect.gen(function* () {
     status: Effect.fn("GitWorkflowService.status")(function (input) {
       return detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.status(input) : Effect.succeed(nonRepositoryStatus()),
+          isGitRepository
+            ? gitManager
+                .status(input)
+                .pipe(Effect.flatMap((status) => withWorkspace(input.cwd, status)))
+            : Effect.succeed(nonRepositoryStatus()),
         ),
       );
     }),
     localStatus: Effect.fn("GitWorkflowService.localStatus")(function (input, options) {
       return detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository
-            ? gitManager.localStatus(input, options)
-            : Effect.succeed(nonRepositoryLocalStatus()),
-        ),
+        Effect.flatMap((isGitRepository) => {
+          if (!isGitRepository) return Effect.succeed(nonRepositoryLocalStatus());
+          const status = gitManager.localStatus(input, options);
+          return options?.includeWorkspace === false
+            ? status
+            : status.pipe(Effect.flatMap((value) => withWorkspace(input.cwd, value)));
+        }),
       );
     }),
     currentBranch: Effect.fn("GitWorkflowService.currentBranch")(function* (cwd) {
@@ -399,12 +489,16 @@ export const make = Effect.gen(function* () {
         ),
       );
     }),
-    invalidateLocalStatus: gitManager.invalidateLocalStatus,
+    invalidateLocalStatus: Effect.fn("GitWorkflowService.invalidateLocalStatus")(function (cwd) {
+      return gitManager.invalidateLocalStatus(cwd).pipe(Effect.andThen(gitButler.invalidate(cwd)));
+    }),
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
     readStatusRefreshRefs: git.readStatusRefreshRefs,
     readStatusPoll: git.readStatusPoll,
     readRefSnapshot: git.readRefSnapshot,
-    invalidateStatus: gitManager.invalidateStatus,
+    invalidateStatus: Effect.fn("GitWorkflowService.invalidateStatus")(function (cwd) {
+      return gitManager.invalidateStatus(cwd).pipe(Effect.andThen(gitButler.invalidate(cwd)));
+    }),
     headPath: Effect.fn("GitWorkflowService.headPath")(function* (cwd) {
       // Clients keep watching threads whose worktree was removed; spawning there fails noisily.
       if (!(yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true)))) return null;
@@ -420,10 +514,53 @@ export const make = Effect.gen(function* () {
           Effect.orElseSucceed(() => null),
         );
     }),
-    pullCurrentBranch: Effect.fn("GitWorkflowService.pullCurrentBranch")(function (cwd) {
-      return ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
-        Effect.andThen(git.pullCurrentBranch(cwd)),
+    pullCurrentBranch: Effect.fn("GitWorkflowService.pullCurrentBranch")(function* (cwd) {
+      const handle = yield* ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd);
+      return yield* withCheckoutLease(
+        handle.repository.rootPath,
+        Effect.gen(function* () {
+          const status = yield* git.statusDetails(cwd);
+          return yield* status.branch !== null && isGitButlerWorkspaceRef(status.branch)
+            ? gitButler.pull(cwd)
+            : git.pullCurrentBranch(cwd);
+        }),
+      ).pipe(
+        Effect.ensuring(
+          gitManager.invalidateStatus(cwd).pipe(Effect.andThen(gitButler.invalidate(cwd))),
+        ),
       );
+    }),
+    autoPullCurrentBranch: Effect.fn("GitWorkflowService.autoPullCurrentBranch")(function* (cwd) {
+      const status = yield* git.statusDetails(cwd);
+      if (status.branch !== null && isGitButlerWorkspaceRef(status.branch)) {
+        return yield* withCheckoutLease(
+          status.workingTree.rootPath ?? cwd,
+          gitButler.autoPull(cwd),
+        ).pipe(
+          Effect.ensuring(
+            gitManager.invalidateStatus(cwd).pipe(Effect.andThen(gitButler.invalidate(cwd))),
+          ),
+        );
+      }
+      const reason = !status.isRepo
+        ? "not-a-repository"
+        : !status.isDefaultBranch
+          ? "not-on-default-branch"
+          : !status.hasUpstream
+            ? "no-upstream"
+            : status.hasWorkingTreeChanges
+              ? "working-tree-changes"
+              : status.aheadCount > 0
+                ? "local-commits"
+                : null;
+      if (reason !== null) {
+        yield* Effect.logDebug("Skipped automatic project pull", { reason });
+        return null;
+      }
+      if (status.behindCount <= 0) return null;
+      return yield* git
+        .pullCurrentBranch(cwd)
+        .pipe(Effect.ensuring(gitManager.invalidateStatus(cwd)));
     }),
     runStackedAction: Effect.fn("GitWorkflowService.runStackedAction")(function (input, options) {
       return ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
@@ -506,6 +643,32 @@ export const make = Effect.gen(function* () {
         );
       },
     ),
+    pinBranchForWorktree: Effect.fn("GitWorkflowService.pinBranchForWorktree")(function (input) {
+      return ensureGitCommand("GitWorkflowService.pinBranchForWorktree", input.cwd).pipe(
+        Effect.andThen(git.pinBranchForWorktree(input)),
+      );
+    }),
+    pinAppliedStackWorktreeBase: Effect.fn("GitWorkflowService.pinAppliedStackWorktreeBase")(
+      function (input) {
+        return ensureGitCommand("GitWorkflowService.pinAppliedStackWorktreeBase", input.cwd).pipe(
+          Effect.andThen(git.pinAppliedStackWorktreeBase(input)),
+        );
+      },
+    ),
+    readWorktreeStartCommit: Effect.fn("GitWorkflowService.readWorktreeStartCommit")(
+      function (input) {
+        return ensureGitCommand("GitWorkflowService.readWorktreeStartCommit", input.cwd).pipe(
+          Effect.andThen(git.readWorktreeStartCommit(input)),
+        );
+      },
+    ),
+    isGitButlerWorkspaceBase: Effect.fn("GitWorkflowService.isGitButlerWorkspaceBase")(
+      function (input) {
+        return ensureGitCommand("GitWorkflowService.isGitButlerWorkspaceBase", input.cwd).pipe(
+          Effect.andThen(git.isGitButlerWorkspaceBase(input)),
+        );
+      },
+    ),
     fetchWorktreeBaseCommit: Effect.fn("GitWorkflowService.fetchWorktreeBaseCommit")(
       function (input) {
         return ensureGitCommand("GitWorkflowService.fetchWorktreeBaseCommit", input.cwd).pipe(
@@ -541,6 +704,80 @@ export const make = Effect.gen(function* () {
           input.switchRef
             ? withCheckoutLease(handle.repository.rootPath, git.createRef(input))
             : git.createRef(input),
+        ),
+      );
+    }),
+    gitButlerApply: Effect.fn("GitWorkflowService.gitButlerApply")(function (input) {
+      return ensureGitCommand("GitWorkflowService.gitButlerApply", input.cwd).pipe(
+        Effect.flatMap((handle) =>
+          withCheckoutLease(
+            handle.repository.rootPath,
+            gitButler.apply(input).pipe(Effect.ensuring(gitManager.invalidateStatus(input.cwd))),
+          ),
+        ),
+      );
+    }),
+    gitButlerUnapply: Effect.fn("GitWorkflowService.gitButlerUnapply")(function (input) {
+      return ensureGitCommand("GitWorkflowService.gitButlerUnapply", input.cwd).pipe(
+        Effect.flatMap((handle) =>
+          withCheckoutLease(
+            handle.repository.rootPath,
+            gitButler.unapply(input).pipe(Effect.ensuring(gitManager.invalidateStatus(input.cwd))),
+          ),
+        ),
+      );
+    }),
+    gitButlerCommitChanges: Effect.fn("GitWorkflowService.gitButlerCommitChanges")(
+      function* (input) {
+        return yield* gitButler.readCommitChanges(input);
+      },
+    ),
+    gitButlerHolds: Effect.fn("GitWorkflowService.gitButlerHolds")(function (input) {
+      return gitButler.readHolds(input.cwd);
+    }),
+    gitButlerResolveHolds: Effect.fn("GitWorkflowService.gitButlerResolveHolds")(function (input) {
+      return gitButler
+        .resolveHolds(input)
+        .pipe(Effect.ensuring(gitManager.invalidateStatus(input.cwd)));
+    }),
+    gitButlerBranchChangeRequest: Effect.fn("GitWorkflowService.gitButlerBranchChangeRequest")(
+      function* (input) {
+        const workspace = yield* gitButler.readStatus(input.cwd);
+        if (!gitButlerAppliedBranches(workspace).includes(input.branch)) {
+          return yield* new GitCommandError({
+            operation: "GitWorkflowService.gitButlerBranchChangeRequest",
+            command: "but status",
+            cwd: input.cwd,
+            detail: "This GitButler branch is no longer applied. Refresh and try again.",
+          });
+        }
+        const pr = yield* gitManager.branchPullRequest(input);
+        if (pr === null) return { pr, association: null };
+        // A failed read cannot prove the link, so it leaves the change request a candidate.
+        const confirmed =
+          !!pr.headSha &&
+          (yield* gitButler
+            .branchHasRevision({ ...input, sha: pr.headSha })
+            .pipe(Effect.orElseSucceed(() => false)));
+        const {
+          closedAt: _closedAt,
+          mergedAt: _mergedAt,
+          headSha: _sha,
+          repositoryKey: _key,
+          ...change
+        } = pr;
+        return { pr: change, association: confirmed ? "confirmed" : "candidate" };
+      },
+    ),
+    gitButlerCreateBranch: Effect.fn("GitWorkflowService.gitButlerCreateBranch")(function (input) {
+      return ensureGitCommand("GitWorkflowService.gitButlerCreateBranch", input.cwd).pipe(
+        Effect.flatMap((handle) =>
+          withCheckoutLease(
+            handle.repository.rootPath,
+            gitButler
+              .createBranch(input)
+              .pipe(Effect.ensuring(gitManager.invalidateStatus(input.cwd))),
+          ),
         ),
       );
     }),

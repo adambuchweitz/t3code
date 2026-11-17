@@ -125,8 +125,14 @@ describe("sameThreadStructure", () => {
   });
 
   it("sees other thread changes", () => {
-    const thread = { ...before.thread, title: "Renamed" };
-    expect(sameThreadStructure(before, { ...before, thread })).toBe(false);
+    for (const patch of [
+      { title: "Renamed" },
+      { gitbutlerBranch: "feature/api" },
+      { gitbutlerBranch: null },
+    ]) {
+      const thread = { ...before.thread, ...patch };
+      expect(sameThreadStructure(before, { ...before, thread })).toBe(false);
+    }
   });
 
   it("sees changes outside the turn items", () => {

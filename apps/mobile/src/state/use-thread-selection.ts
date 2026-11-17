@@ -76,6 +76,7 @@ function threadDetailToShell(
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
     branch: thread.branch,
+    gitbutlerBranch: thread.gitbutlerBranch ?? null,
     worktreePath: thread.worktreePath,
     linkedPullRequest: thread.linkedPullRequest ?? null,
     pullRequests: thread.pullRequests,

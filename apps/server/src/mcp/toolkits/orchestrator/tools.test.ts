@@ -21,6 +21,11 @@ it("refuses a t3_thread_update whose fields do not fit its action", () => {
   const decode = Schema.decodeUnknownExit(
     OrchestratorToolkit.tools.t3_thread_update.parametersSchema,
   );
+  for (const gitbutlerBranch of ["feature/api", null]) {
+    expect(Exit.isSuccess(decode({ action: "set_gitbutler_branch", gitbutlerBranch }))).toBe(true);
+    expect(Exit.isFailure(decode({ action: "rename", title: "New", gitbutlerBranch }))).toBe(true);
+  }
+  expect(Exit.isFailure(decode({ action: "set_gitbutler_branch" }))).toBe(true);
   expect(Exit.isFailure(decode({ action: "rename" }))).toBe(true);
   expect(Exit.isFailure(decode({ action: "regenerate_title", title: "New" }))).toBe(true);
   expect(Exit.isSuccess(decode({ action: "rename", title: "New", environmentId: undefined }))).toBe(

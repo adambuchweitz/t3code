@@ -61,6 +61,7 @@ const makeScope = (
 interface ThreadFixture {
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
+  readonly gitbutlerBranch?: string | null;
   readonly archivedAt?: string | null;
   readonly deletedAt?: string | null;
 }
@@ -119,6 +120,12 @@ interface HarnessOptions {
   readonly deleteLocalBranchFails?: boolean;
   readonly createWorktreeGate?: Effect.Effect<void>;
   readonly existsFails?: boolean;
+  readonly workspace?: {
+    readonly _tag: "gitbutler";
+    readonly targetRefs: ReadonlyArray<string>;
+    readonly stacks: ReadonlyArray<never>;
+    readonly unassignedChangeCount: number;
+  };
 }
 
 const makeHarness = (options: HarnessOptions = {}) => {
@@ -249,6 +256,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
       refName: options.currentBranch === undefined ? "dev" : options.currentBranch,
       hasWorkingTreeChanges: false,
       workingTree: { files: [], insertions: 0, deletions: 0 },
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
     }),
   );
   const refreshStatus = vi.fn((_: string) => Effect.die("refreshStatus stub"));
@@ -308,6 +316,8 @@ const makeHarness = (options: HarnessOptions = {}) => {
           createWorktree,
           removeWorktree,
           deleteLocalBranch,
+          isGitButlerWorkspaceBase: () => Effect.succeed(false),
+          pinAppliedStackWorktreeBase: () => Effect.succeed(null),
           ...options.git,
         } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
         Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
@@ -511,6 +521,253 @@ describe("t3_worktree_handoff", () => {
       }
       expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
       expect(harness.removeWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  const gitButlerWorkspace = (targetRefs: ReadonlyArray<string>) =>
+    ({ _tag: "gitbutler", targetRefs, stacks: [], unassignedChangeCount: 0 }) as const;
+  const remoteRefs = (known: ReadonlyArray<string>) =>
+    ({
+      hasCommit: ({ refName }) => Effect.succeed(known.includes(refName)),
+      resolveRemoteTrackingCommit: ({ refName, fallbackRemoteName }) =>
+        Effect.succeed({
+          commitSha: `sha-of-${refName}`,
+          remoteRefName: refName.includes("/") ? refName : `${fallbackRemoteName}/${refName}`,
+        }),
+    }) satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>;
+
+  it.effect.each([
+    {
+      label: "GitButler's target",
+      targetRefs: ["origin/develop"],
+      known: ["refs/remotes/origin/develop", "refs/remotes/origin/HEAD"],
+      expected: { refName: "sha-of-origin/develop", baseRefName: "refs/remotes/origin/develop" },
+    },
+    {
+      label: "the remote default when GitButler can't name a usable target",
+      targetRefs: ["origin/gone"],
+      known: ["refs/remotes/origin/HEAD"],
+      expected: { refName: "sha-of-HEAD", baseRefName: "refs/remotes/origin/HEAD" },
+    },
+  ])("defaults a GitButler handoff to $label without fetching", (scenario) => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      workspace: gitButlerWorkspace(scenario.targetRefs),
+      git: remoteRefs(scenario.known),
+    });
+    return Effect.gen(function* () {
+      const result = yield* runHandoff(harness, {
+        branch: "feature/from-target",
+        startFromOrigin: true,
+      });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ newRefName: "feature/from-target", ...scenario.expected }),
+      );
+      expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+      expect(result.startedFromOrigin).toBe(false);
+      expect(result.baseRef).toBe(scenario.expected.baseRefName);
+    });
+  });
+
+  const linkedPin = (status: "pinned" | "missing" | "conflicted" = "pinned") =>
+    vi.fn(() =>
+      Effect.succeed(
+        status === "pinned"
+          ? ({ status, commitSha: "pin-sha", branchCommitSha: "tip-sha" } as const)
+          : status === "conflicted"
+            ? ({ status, branchCommitSha: "tip-sha" } as const)
+            : ({ status } as const),
+      ),
+    );
+
+  it.effect.each(["gitbutler/workspace", "stack/linked", null])(
+    "starts a linked thread's handoff from its branch with %s checked out, without fetching",
+    (currentBranch) => {
+      const pinBranchForWorktree = linkedPin();
+      const harness = makeHarness({
+        currentBranch,
+        thread: { gitbutlerBranch: "stack/linked" },
+        newWorktreesStartFromOrigin: true,
+        git: { pinBranchForWorktree },
+      });
+      return Effect.gen(function* () {
+        const result = yield* runHandoff(harness, { branch: "feature/from-link" });
+        expect(pinBranchForWorktree).toHaveBeenCalledWith({
+          cwd: workspaceRoot,
+          branch: "stack/linked",
+        });
+        expect(harness.createWorktree).toHaveBeenCalledWith(
+          expect.objectContaining({
+            refName: "pin-sha",
+            newRefName: "feature/from-link",
+            baseRefName: "refs/heads/stack/linked",
+          }),
+        );
+        expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+        expect(result.baseRef).toBe("refs/heads/stack/linked");
+        expect(result.note).toContain("tip-sha");
+      });
+    },
+  );
+
+  it.effect.each([
+    { label: "an explicit base", input: { baseRef: "stack/other", startFromOrigin: false } },
+    { label: "an explicit start from origin", input: { startFromOrigin: true } },
+  ])("$label overrides a linked branch", ({ input }) => {
+    const pinBranchForWorktree = linkedPin();
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      workspace: gitButlerWorkspace(["origin/main"]),
+      thread: { gitbutlerBranch: "stack/linked" },
+      git: { ...remoteRefs(["refs/remotes/origin/main"]), pinBranchForWorktree },
+    });
+    return Effect.gen(function* () {
+      yield* runHandoff(harness, { branch: "feature/override", ...input });
+      expect(pinBranchForWorktree).not.toHaveBeenCalled();
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({
+          refName: input.baseRef ?? "sha-of-origin/main",
+        }),
+      );
+    });
+  });
+
+  it.effect.each(["missing", "conflicted"] as const)(
+    "fails a handoff from a %s linked branch before any side effect",
+    (status) => {
+      const harness = makeHarness({
+        currentBranch: "gitbutler/workspace",
+        workspace: gitButlerWorkspace(["origin/main"]),
+        thread: { gitbutlerBranch: "stack/gone" },
+        git: {
+          ...remoteRefs(["refs/remotes/origin/main"]),
+          pinBranchForWorktree: linkedPin(status),
+        },
+      });
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/no-link" }));
+        expectTypedFailure(exit, {
+          code: "invalid_request",
+          message: expect.stringContaining("stack/gone"),
+        });
+        expect(harness.createWorktree).not.toHaveBeenCalled();
+        expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+        expect(harness.dispatch).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it.effect("names why Git refused a linked branch's start commit, before any side effect", () => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      thread: { gitbutlerBranch: "stack/linked" },
+      git: {
+        pinBranchForWorktree: () =>
+          Effect.succeed({
+            status: "refused",
+            detail: "pre-commit said no",
+            branchCommitSha: "tip-sha",
+          }),
+      },
+    });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/refused" }));
+      expectTypedFailure(exit, {
+        code: "operation_failed",
+        message: expect.stringContaining("pre-commit said no"),
+      });
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("starts above a named base on an applied stack and says so", () => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      git: {
+        pinAppliedStackWorktreeBase: () =>
+          Effect.succeed({ commitSha: "pin-sha", parentCommitSha: "tip-sha" }),
+      },
+    });
+    return Effect.gen(function* () {
+      const result = yield* runHandoff(harness, {
+        branch: "feature/named",
+        baseRef: "stack/other",
+        startFromOrigin: false,
+      });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ refName: "pin-sha", baseRefName: "stack/other" }),
+      );
+      expect(result.note).toContain("tip-sha");
+    });
+  });
+
+  it.effect("fails a GitButler handoff before any side effect when no real base exists", () => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      workspace: gitButlerWorkspace([]),
+      git: remoteRefs([]),
+    });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/no-base" }));
+      expectTypedFailure(exit, {
+        code: "invalid_request",
+        message: expect.stringContaining("GitButler workspace"),
+      });
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+      expect(harness.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("refuses an explicit GitButler workspace base before fetching or creating", () => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      workspace: gitButlerWorkspace(["origin/main"]),
+      git: { isGitButlerWorkspaceBase: () => Effect.succeed(true) },
+    });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        runHandoff(harness, {
+          branch: "feature/combined",
+          baseRef: "gitbutler/workspace",
+          startFromOrigin: true,
+        }),
+      );
+      expectTypedFailure(exit, {
+        code: "invalid_request",
+        message: expect.stringContaining("GitButler"),
+      });
+      expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("keeps an explicit real branch in a GitButler workspace", () => {
+    const harness = makeHarness({
+      currentBranch: "gitbutler/workspace",
+      workspace: gitButlerWorkspace(["origin/main"]),
+    });
+    return Effect.gen(function* () {
+      yield* runHandoff(harness, {
+        branch: "feature/stacked",
+        baseRef: "stack/one",
+        startFromOrigin: false,
+      });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ refName: "stack/one", baseRefName: "stack/one" }),
+      );
+    });
+  });
+
+  it.effect("defaults an ordinary handoff to the checked-out branch", () => {
+    const harness = makeHarness({ currentBranch: "dev" });
+    return Effect.gen(function* () {
+      yield* runHandoff(harness, { branch: "feature/ordinary", startFromOrigin: false });
+      expect(harness.createWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ refName: "dev", baseRefName: "dev" }),
+      );
     });
   });
 

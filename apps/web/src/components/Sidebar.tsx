@@ -2838,6 +2838,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             const result = await settlePromise(() =>
               handleNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
                 branch: thread.branch,
+                gitbutlerBranch: thread.gitbutlerBranch ?? null,
                 worktreePath: thread.worktreePath,
                 envMode: thread.worktreePath ? "worktree" : "local",
                 startFromOrigin: false,

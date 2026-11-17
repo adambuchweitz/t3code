@@ -35,7 +35,7 @@ import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
-import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 
 it.effect("parks automatic pull until activation without delaying command readiness", () =>
   Effect.gen(function* () {
@@ -153,8 +153,8 @@ it.effect("parks automatic pull until activation without delaying command readin
             Effect.as(undefined),
           ),
       }),
-      Layer.mock(GitVcsDriver.GitVcsDriver)({
-        statusDetails: (root) =>
+      Layer.mock(GitWorkflowService.GitWorkflowService)({
+        autoPullCurrentBranch: (root) =>
           Deferred.succeed(statusCalled, root).pipe(
             Effect.andThen(Effect.never),
             Effect.onInterrupt(() => Deferred.succeed(statusInterrupted, undefined)),

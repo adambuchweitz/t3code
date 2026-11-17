@@ -32,6 +32,7 @@ import {
   parseGitCloneProgressLine,
   type GitCloneProgressLine,
 } from "../project/gitCloneProgress.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
@@ -204,6 +205,7 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const gitButler = yield* GitButlerWorkspace.GitButlerWorkspace;
   const path = yield* Path.Path;
   const providers = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
 
@@ -534,6 +536,27 @@ export const make = Effect.gen(function* () {
         provider: input.provider,
       });
       const provider = yield* providers.get(providerKind);
+      // A repository can't be taken back, so a push that's bound to stop stops before it's created.
+      // Holds are checked again before the push, in case a commit lands while this one is created.
+      yield* gitButler
+        .publishOutsideWorkspace(
+          { cwd: input.cwd, branch: input.remoteName?.trim() || "origin" },
+          Effect.void,
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new SourceControlRepositoryError({
+                operation: "publishRepository",
+                provider: providerKind,
+                detail:
+                  cause._tag === "GitButlerPublicationHoldError"
+                    ? `Nothing was created. This checkout has commits T3 Code couldn't confirm. Review them from the Git menu. If it doesn't list them, as outside GitButler's workspace, see them with \`git for-each-ref refs/t3/gitbutler-holds/\` and end one with \`git update-ref -d <ref>\`. Then publish again.`
+                    : `Nothing was created. ${cause.detail}`,
+                cause,
+              }),
+          ),
+        );
       const urls = yield* provider.createRepository({
         cwd: input.cwd,
         repository: input.repository.trim(),
@@ -590,22 +613,51 @@ export const make = Effect.gen(function* () {
       // Like clone, an auto-selected SSH remote switches to HTTPS when SSH is refused;
       // otherwise the remote keeps failing every later fetch and push.
       const canSwitchToHttps = input.protocol !== "ssh" && remoteUrl === urls.sshUrl;
-      const pushed = yield* push(remoteUrl).pipe(
-        Effect.catchIf(
-          (error) => canSwitchToHttps && isSshRejection(error),
-          (sshError) =>
-            git
-              .execute({
-                operation: "SourceControlRepositoryService.publishRepository.switchToHttps",
-                cwd: input.cwd,
-                args: ["remote", "set-url", remoteName, urls.url],
-              })
-              .pipe(
-                Effect.mapError(() => sshError),
-                Effect.andThen(push(urls.url)),
+      const pushed = yield* gitButler
+        .publishOutsideWorkspace(
+          { cwd: input.cwd, branch: remoteName },
+          push(remoteUrl).pipe(
+            Effect.catchIf(
+              (error) => canSwitchToHttps && isSshRejection(error),
+              (sshError) =>
+                git
+                  .execute({
+                    operation: "SourceControlRepositoryService.publishRepository.switchToHttps",
+                    cwd: input.cwd,
+                    args: ["remote", "set-url", remoteName, urls.url],
+                  })
+                  .pipe(
+                    Effect.mapError(() => sshError),
+                    Effect.andThen(push(urls.url)),
+                  ),
+            ),
+          ),
+        )
+        .pipe(
+          // The remote exists by now, so the Git menu's push can review the hold and finish this.
+          Effect.catchTags({
+            GitButlerPublicationHoldError: (cause) =>
+              Effect.fail(
+                new SourceControlRepositoryError({
+                  operation: "publishRepository",
+                  provider: providerKind,
+                  detail:
+                    "The repository was created, but this checkout has commits T3 Code couldn't confirm, so nothing was pushed. Push from the Git menu to review them.",
+                  cause,
+                }),
               ),
-        ),
-      );
+            GitCommandError: (cause) =>
+              Effect.fail(
+                new SourceControlRepositoryError({
+                  operation: "publishRepository",
+                  provider: providerKind,
+                  detail:
+                    "The repository was created, but T3 Code could not check for commits held from publishing, so nothing was pushed.",
+                  cause,
+                }),
+              ),
+          }),
+        );
 
       return {
         repository: toRepositoryInfo(providerKind, urls),

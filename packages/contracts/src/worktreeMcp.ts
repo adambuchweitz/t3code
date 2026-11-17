@@ -7,7 +7,8 @@ export const WorktreeMcpHandoffInput = Schema.Struct({
   branch: GitRefName,
   baseRef: Schema.optional(
     GitRefName.annotate({
-      description: "Default: checked-out branch.",
+      description:
+        "Default: this thread's linked GitButler branch; otherwise the checked-out branch, or GitButler's target from its workspace.",
     }),
   ),
   startFromOrigin: Schema.optional(

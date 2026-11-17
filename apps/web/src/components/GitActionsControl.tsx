@@ -4,6 +4,20 @@ import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
 import { changeRequestTermKind } from "./pullRequest/changeRequestTerm";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
+import {
+  gitButlerActionStatus,
+  gitButlerChangeRequestLookup,
+  gitButlerChangeRequestUrl,
+  gitButlerCommitSelectionView,
+  GIT_BUTLER_END_HOLD_LABEL,
+  gitButlerForcePushRetryAction,
+  gitButlerHoldReview,
+  gitButlerLinkedBranch,
+  gitButlerPublishConfirmation,
+  reviewedGitButlerCommitSelection,
+  type GitButlerPublishConfirmation,
+} from "@t3tools/client-runtime/state/vcs";
+import { isGitButlerWorkspaceRef } from "@t3tools/shared/git";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
@@ -59,7 +73,8 @@ import {
   type GitQuickAction,
   type DefaultBranchConfirmableAction,
   requiresDefaultBranchConfirmation,
-  resolveChangesTotals,
+  gitButlerChangesRevision,
+  resolveChangesSummary,
   resolveDefaultBranchActionDialogCopy,
   resolveFeatureBranchUnavailableReason,
   resolveGitActionProgressPresentation,
@@ -71,6 +86,7 @@ import {
   resolveThreadBranchUpdate,
 } from "./GitActionsControl.logic";
 import { WizardPopup, WizardHeader, WizardSteps, WizardPanel, WizardFooter } from "./ui/wizard";
+import { GitButlerCommitFiles } from "./GitButlerCommitFiles";
 import { StartTruncatedPath } from "./StartTruncatedPath";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -102,7 +118,9 @@ import {
 import { useQuietThreadProjection, useQuietThreadShell } from "~/state/entities";
 import { useProjectClone } from "~/state/projectClones";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { useEnvironmentQuery } from "~/state/query";
+import { readLocalApi } from "~/localApi";
 import { useFilesystemReadAccess } from "~/state/filesystem";
 import { reviewEnvironment } from "~/state/review";
 import { revisionedQuery } from "~/state/revisionedQuery";
@@ -173,6 +191,22 @@ interface GitActionsControlProps extends GitActionsViewProps {
   quietUntilWork?: boolean;
   /** The ref the Changes row compares against, when the viewer picked one. */
   changesBaseRef?: string | null;
+  /** The owning thread's GitButler link; absent when no thread owns the folder. */
+  gitButler?: GitActionsGitButlerLink;
+}
+
+/** A thread's link to a GitButler branch in the folder the actions run in. */
+export interface GitActionsGitButlerLink {
+  /** The branch the thread or its draft is linked to. */
+  readonly linkedBranch: string | null;
+  /** A draft's link, sent with each action because the server has no thread to read it from. */
+  readonly draftBranch: string | null;
+  /** Records a branch an action created on a draft. */
+  readonly onBranchCreated: (branch: string) => void;
+  /** Revises the branch's change totals when the thread's run changes. */
+  readonly latestRun: { readonly runId: string; readonly status: string } | null | undefined;
+  /** Threads share a GitButler checkout, so a pending push belongs to one of them. */
+  readonly scopeKey: string;
 }
 
 interface ThreadGitActionsControlProps extends GitActionsViewProps {
@@ -199,6 +233,21 @@ interface RunGitActionWithToastInput {
   statusOverride?: VcsStatusResult | null;
   featureBranch?: boolean;
   filePaths?: string[];
+  gitbutlerChangeIds?: string[];
+  publishApproval?: GitButlerPublishConfirmation["approval"];
+  gitbutlerBranch?: string;
+}
+
+interface PendingGitButlerPublish {
+  readonly scopeKey: string;
+  readonly title: string;
+  readonly description: string;
+  readonly resolutions: readonly string[];
+  /** Null when only reviewing what's held. */
+  readonly publish: {
+    readonly action: GitStackedAction;
+    readonly confirmation: GitButlerPublishConfirmation;
+  } | null;
 }
 
 interface InlineGitActionSuccess {
@@ -310,6 +359,7 @@ function GitQuickActionIcon({
   const messages = useMessages();
   if (quickAction.kind === "open_publish") return <CloudUploadIcon className={className} />;
   if (quickAction.kind === "run_pull") return <CloudDownloadIcon className={className} />;
+  if (quickAction.kind === "open_pr") return <SourceControlIcon className={className} />;
   if (quickAction.kind === "run_action") {
     if (quickAction.action === "commit") return <GitCommitIcon className={className} />;
     if (quickAction.action === "push" || quickAction.action === "commit_push") {
@@ -1001,6 +1051,7 @@ function CheckoutGitActionsControl({
   branchFollower,
   quietUntilWork = false,
   changesBaseRef = null,
+  gitButler,
   compact = false,
   showActions = true,
   showChanges = true,
@@ -1026,16 +1077,24 @@ function CheckoutGitActionsControl({
   const threadToastData = activeThreadRef ? { threadRef: activeThreadRef } : undefined;
   const canCreateFeatureBranch = canWriteSourceControl && (branchFollower?.canFollow() ?? true);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  // Fixed at opening. If the checkout's mode changes underneath, what was chosen must not become a
+  // plain commit of everything; the server refuses the mismatch instead.
+  const [commitDialogUsesGitButler, setCommitDialogUsesGitButler] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [featureCommitSelection, setFeatureCommitSelection] = useState<{
     readonly createdBranch: string | null;
   } | null>(null);
+  const [gitButlerSelection, setGitButlerSelection] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [inlineSuccess, setInlineSuccess] = useState<InlineGitActionSuccess | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<PendingDefaultBranchAction | null>(null);
+  const [storedPublish, setPendingPublish] = useState<PendingGitButlerPublish | null>(null);
+  // Threads share a GitButler checkout, so the thread is part of what was asked to push.
+  const publishScopeKey = gitButler?.scopeKey ?? "";
+  const pendingPublish = storedPublish?.scopeKey === publishScopeKey ? storedPublish : null;
   const sourceControlScope = { environmentId: activeEnvironmentId, cwd: gitCwd };
   const vcsActionState = useAtomValue(vcsActionManager.stateAtom(sourceControlScope));
   const inlineSuccessExpired = useDeadlinePassed(inlineSuccess?.expiresAtMs ?? null);
@@ -1052,13 +1111,58 @@ function CheckoutGitActionsControl({
   const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
     reportFailure: false,
   });
+  const readGitButlerHolds = useAtomCommand(vcsEnvironment.gitButlerHolds, {
+    reportFailure: false,
+  });
+  const resolveGitButlerHolds = useAtomCommand(vcsEnvironment.gitButlerResolveHolds, {
+    reportFailure: false,
+  });
   const { data: gitStatus, error: gitStatusError } = gitStatusQuery;
   const sourceControlPresentation = getSourceControlPresentation(gitStatus?.sourceControlProvider);
   const changeRequestTerminology = sourceControlPresentation.terminology;
   const SourceControlIcon = sourceControlPresentation.Icon;
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
-  const gitStatusForActions = gitStatus;
+  const isGitButler = isGitButlerWorkspaceRef(gitStatus?.refName ?? "");
+  const linkedGitButlerBranch = gitButler?.linkedBranch ?? null;
+  const appliedGitButlerBranch = gitButlerLinkedBranch(gitStatus, linkedGitButlerBranch);
+  const branchChangeRequestQuery = useEnvironmentQuery(
+    showActions &&
+      activeEnvironmentId !== null &&
+      gitCwd !== null &&
+      appliedGitButlerBranch !== null
+      ? vcsEnvironment.gitButlerBranchChangeRequest({
+          environmentId: activeEnvironmentId,
+          input: { cwd: gitCwd, branch: appliedGitButlerBranch },
+        })
+      : null,
+  );
+  useLiveRefresh(appliedGitButlerBranch === null ? null : branchChangeRequestQuery.refresh, {
+    key: `gitbutler-change-request:${activeEnvironmentId ?? ""}:${gitCwd ?? ""}:${appliedGitButlerBranch ?? ""}`,
+    intervalMs: null,
+  });
+  const gitStatusForActions = gitButlerActionStatus(
+    gitStatus,
+    linkedGitButlerBranch,
+    gitButlerChangeRequestLookup(branchChangeRequestQuery),
+  );
+  const changesBranch = showChanges ? appliedGitButlerBranch : null;
+  // Same input as the diff panel's preview, so both read one stats-only query.
+  const branchChangesQuery = useEnvironmentQuery(
+    activeEnvironmentId !== null && gitCwd !== null && gitStatus && changesBranch !== null
+      ? revisionedQuery(
+          reviewEnvironment.diffPreview({
+            environmentId: activeEnvironmentId,
+            input: { cwd: gitCwd, metadataOnly: true, gitbutlerBranch: changesBranch },
+          }),
+          gitButlerChangesRevision(gitStatus, gitButler?.latestRun),
+        )
+      : null,
+  );
+  useLiveRefresh(changesBranch === null ? null : branchChangesQuery.refresh, {
+    key: `gitbutler-changes:${activeEnvironmentId ?? ""}:${gitCwd ?? ""}:${changesBranch ?? ""}`,
+    intervalMs: null,
+  });
   const ignoreWhitespaceSetting = useClientSettings((settings) => settings.diffIgnoreWhitespace);
   const ignoreWhitespace =
     useDiffPanelSessionStore((state) => state.ignoreWhitespace) ?? ignoreWhitespaceSetting;
@@ -1099,17 +1203,20 @@ function CheckoutGitActionsControl({
         )
       : null,
   );
-  const resolvedChangesTotals = resolveChangesTotals(
-    gitStatusForActions,
-    changesPreview.data?.sources.find((source) => source.kind === "branch-range"),
-  );
-  const changesTotals = resolvedChangesTotals ?? { insertions: 0, deletions: 0 };
-  const changesBreakdown = resolvedChangesTotals?.breakdown ?? null;
-  const changesBaseLabel = resolvedChangesTotals
-    ? resolvedChangesTotals.baseRef === null
-      ? gt("Uncommitted")
-      : gt("vs {ref}", { ref: resolvedChangesTotals.baseRef })
-    : null;
+  const changesSummary = resolveChangesSummary({
+    status: gitStatus,
+    linkedBranch: linkedGitButlerBranch,
+    branchPreview: branchChangesQuery,
+    combinedPreview: changesPreview.data?.sources.find((source) => source.kind === "branch-range"),
+  });
+  const changesTotals = changesSummary.totals ?? { insertions: 0, deletions: 0 };
+  const changesBreakdown = changesSummary.totals?.breakdown ?? null;
+  const changesBaseLabel =
+    changesSummary.totals?.baseRef === undefined
+      ? null
+      : changesSummary.totals.baseRef === null
+        ? gt("Uncommitted")
+        : gt("vs {ref}", { ref: changesSummary.totals.baseRef });
 
   const [selectionBranch, setSelectionBranch] = useState(gitStatusForActions?.refName ?? null);
   // Status can announce the checkout before the commit action reports its outcome.
@@ -1132,6 +1239,29 @@ function CheckoutGitActionsControl({
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = selectedFiles.length === allFiles.length;
   const noneSelected = selectedFiles.length === 0;
+  const commitChangesQuery = useEnvironmentQuery(
+    isCommitDialogOpen &&
+      commitDialogUsesGitButler &&
+      activeEnvironmentId !== null &&
+      gitCwd !== null
+      ? vcsEnvironment.gitButlerCommitChanges({
+          environmentId: activeEnvironmentId,
+          input: {
+            cwd: gitCwd,
+            ...(appliedGitButlerBranch === null ? {} : { branch: appliedGitButlerBranch }),
+          },
+        })
+      : null,
+  );
+  const gitButlerCommitView = commitChangesQuery.data
+    ? gitButlerCommitSelectionView(commitChangesQuery.data.files, gitButlerSelection)
+    : null;
+  const canSubmitCommit = commitDialogUsesGitButler
+    ? gitButlerCommitView?.canCommit === true
+    : !noneSelected;
+  const canSubmitCommitOnNewBranch = commitDialogUsesGitButler
+    ? gitButlerCommitView?.canCommitOnNewBranch === true
+    : !noneSelected;
 
   const initAction = useVcsInitAction(sourceControlScope);
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
@@ -1155,11 +1285,17 @@ function CheckoutGitActionsControl({
     hasPrimaryRemote,
     messages,
   );
-  const quickActionDisabledReason = !canWriteSourceControl
-    ? gt("This connection cannot change source control.")
-    : quickAction.disabled
-      ? (quickAction.hint ?? gt("This action is currently unavailable."))
-      : null;
+  const openGitButlerChangeRequest = () => {
+    const url = gitButlerChangeRequestUrl(gitStatusForActions);
+    if (url) void readLocalApi()?.shell.openExternal(url);
+  };
+  const quickActionNeedsWrite = quickAction.kind !== "open_pr";
+  const quickActionDisabledReason =
+    quickActionNeedsWrite && !canWriteSourceControl
+      ? gt("This connection cannot change source control.")
+      : quickAction.disabled
+        ? (quickAction.hint ?? gt("This action is currently unavailable."))
+        : null;
   const gitActionProgress = resolveGitActionProgressPresentation(vcsActionState, messages);
   // A fresh draft or a thread with no turns hides commit, push, and diff rows until there is work.
   const quietEmptyDraft =
@@ -1167,6 +1303,7 @@ function CheckoutGitActionsControl({
     gitActionProgress === null &&
     !gitStatusError &&
     quickAction.disabled &&
+    changesSummary.placeholder === null &&
     !changesTotals.insertions &&
     !changesTotals.deletions;
   const pendingDefaultBranchActionCopy = pendingDefaultBranchAction
@@ -1208,6 +1345,9 @@ function CheckoutGitActionsControl({
     statusOverride,
     featureBranch = false,
     filePaths,
+    gitbutlerChangeIds,
+    publishApproval,
+    gitbutlerBranch,
   }: RunGitActionWithToastInput) {
     if (
       activeEnvironmentId === null ||
@@ -1255,6 +1395,7 @@ function CheckoutGitActionsControl({
       action === "commit" && featureBranch && filePaths ? { createdBranch: null } : null;
     let createdBranch: string | undefined;
     if (submittedSelection) setFeatureCommitSelection(submittedSelection);
+    const targetGitButlerBranch = gitbutlerBranch ?? gitButler?.draftBranch;
 
     const result = await runImmediateGitAction.run({
       actionId,
@@ -1262,7 +1403,10 @@ function CheckoutGitActionsControl({
       ...(commitMessage ? { commitMessage } : {}),
       ...(featureBranch ? { featureBranch } : {}),
       ...(filePaths ? { filePaths } : {}),
+      ...(gitbutlerChangeIds ? { gitbutlerChangeIds } : {}),
       ...(owner?.threadId ? { threadId: owner.threadId } : {}),
+      ...(targetGitButlerBranch ? { gitbutlerBranch: targetGitButlerBranch } : {}),
+      ...publishApproval,
       ...(owner?.projectId ? { projectId: owner.projectId } : {}),
       onProgress: (event) => {
         if (event.kind === "action_failed") createdBranch = event.createdBranch;
@@ -1285,6 +1429,17 @@ function CheckoutGitActionsControl({
       }
 
       const error = squashAtomCommandFailure(result);
+      const confirmation = gitButlerPublishConfirmation(error);
+      if (confirmation) {
+        setPendingPublish({
+          scopeKey: publishScopeKey,
+          title: confirmation.title,
+          description: confirmation.description,
+          resolutions: confirmation.resolutions,
+          publish: { action: gitButlerForcePushRetryAction(action), confirmation },
+        });
+        return;
+      }
       const errorToastTiming = resolveGitActionResultToastTiming("error");
       toastManager.add(
         stackedThreadToast({
@@ -1302,8 +1457,15 @@ function CheckoutGitActionsControl({
     if (actionResult.commit.status === "created") {
       setExcludedFiles((current) => (current === excludedFiles ? new Set() : current));
     }
-    const branchUpdate = resolveThreadBranchUpdate(actionResult);
-    if (branchUpdate) branchFollower?.follow(branchUpdate.branch);
+    if (actionResult.branch.gitbutler) {
+      // GitButler keeps the checkout on its workspace; the thread links the branch instead.
+      if (actionResult.branch.status === "created" && actionResult.branch.name) {
+        gitButler?.onBranchCreated(actionResult.branch.name);
+      }
+    } else {
+      const branchUpdate = resolveThreadBranchUpdate(actionResult);
+      if (branchUpdate) branchFollower?.follow(branchUpdate.branch);
+    }
     const createdPullRequest = actionResult.pr.status === "created";
     setInlineSuccess({
       title: createdPullRequest
@@ -1333,18 +1495,83 @@ function CheckoutGitActionsControl({
     });
   };
 
+  const confirmPendingPublish = () => {
+    if (!pendingPublish?.publish || !canWriteSourceControl) return;
+    const { action, confirmation } = pendingPublish.publish;
+    setPendingPublish(null);
+    void runGitActionWithToast({
+      action,
+      skipDefaultBranchPrompt: true,
+      publishApproval: confirmation.approval,
+      gitbutlerBranch: confirmation.branch,
+    });
+  };
+
+  const showHoldFailure = (error: unknown) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Could not update held commits",
+        description: error instanceof Error ? error.message : "An error occurred.",
+        ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+      }),
+    );
+  };
+
+  const reviewHeldCommits = async () => {
+    if (!activeEnvironmentId || !gitCwd) return;
+    const result = await readGitButlerHolds({
+      environmentId: activeEnvironmentId,
+      input: { cwd: gitCwd },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) showHoldFailure(squashAtomCommandFailure(result));
+      return;
+    }
+    setPendingPublish({
+      scopeKey: publishScopeKey,
+      ...gitButlerHoldReview(result.value.holds),
+      publish: null,
+    });
+  };
+
+  const endPendingHolds = async () => {
+    if (!pendingPublish || !activeEnvironmentId || !gitCwd || !canWriteSourceControl) return;
+    const { resolutions } = pendingPublish;
+    setPendingPublish(null);
+    const result = await resolveGitButlerHolds({
+      environmentId: activeEnvironmentId,
+      input: { cwd: gitCwd, resolutions: [...resolutions] },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      showHoldFailure(squashAtomCommandFailure(result));
+    }
+  };
+
+  const closeCommitDialog = () => {
+    setIsCommitDialogOpen(false);
+    setDialogCommitMessage("");
+    setGitButlerSelection(new Set());
+    setIsEditingFiles(false);
+  };
+
+  const dialogSelectionInput = commitDialogUsesGitButler
+    ? { gitbutlerChangeIds: [...gitButlerSelection] }
+    : !allSelected
+      ? { filePaths: selectedFiles.map((f) => f.path) }
+      : {};
+
   const runDialogAction = async (featureBranch: boolean) => {
     if (!isCommitDialogOpen) return;
     const commitMessage = dialogCommitMessage.trim();
+    const selectionInput = dialogSelectionInput;
 
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setIsEditingFiles(false);
+    closeCommitDialog();
 
     const committed = await runGitActionWithToast({
       action: "commit",
       ...(commitMessage ? { commitMessage } : {}),
-      ...(!allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
+      ...selectionInput,
       featureBranch,
       skipDefaultBranchPrompt: featureBranch,
     });
@@ -1354,50 +1581,58 @@ function CheckoutGitActionsControl({
     }
   };
 
+  const pullLatest = () => {
+    void (async () => {
+      setInlineSuccess(null);
+      const result = await pullAction.run();
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) {
+          return;
+        }
+        const error = squashAtomCommandFailure(result);
+        const errorToastTiming = resolveGitActionResultToastTiming("error");
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Pull failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+            timeout: errorToastTiming.timeout,
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+        return;
+      }
+
+      const pullResult = result.value;
+      const title = pullResult.status === "pulled" ? "Pulled" : "Already up to date";
+      const description =
+        pullResult.status === "pulled"
+          ? `Updated ${pullResult.refName} from ${pullResult.upstreamRef ?? "upstream"}`
+          : `${pullResult.refName} is already synchronized.`;
+      setInlineSuccess({
+        title,
+        description,
+        expiresAtMs: inlineSuccessExpiresAt(),
+      });
+    })();
+  };
+
   const runQuickAction = () => {
+    if (quickAction.kind === "open_pr") {
+      openGitButlerChangeRequest();
+      return;
+    }
+    if (quickAction.kind === "open_commit") {
+      setCommitDialogUsesGitButler(isGitButler);
+      setIsCommitDialogOpen(true);
+      return;
+    }
     if (quickAction.kind === "open_publish") {
       setIsPublishDialogOpen(true);
       return;
     }
     if (quickAction.kind === "run_pull") {
-      void (async () => {
-        setInlineSuccess(null);
-        const result = await pullAction.run();
-        if (result._tag === "Failure") {
-          if (isAtomCommandInterrupted(result)) {
-            return;
-          }
-          const error = squashAtomCommandFailure(result);
-          const errorToastTiming = resolveGitActionResultToastTiming("error");
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: gt("Pull failed"),
-              description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
-              timeout: errorToastTiming.timeout,
-              ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-            }),
-          );
-          return;
-        }
-
-        const pullResult = result.value;
-        const title = pullResult.status === "pulled" ? gt("Pulled") : gt("Already up to date");
-        const description =
-          pullResult.status === "pulled"
-            ? pullResult.upstreamRef
-              ? gt("Updated {ref} from {upstream}", {
-                  ref: pullResult.refName,
-                  upstream: pullResult.upstreamRef,
-                })
-              : gt("Updated {ref} from upstream", { ref: pullResult.refName })
-            : gt("{ref} is already synchronized.", { ref: pullResult.refName });
-        setInlineSuccess({
-          title,
-          description,
-          expiresAtMs: inlineSuccessExpiresAt(),
-        });
-      })();
+      pullLatest();
       return;
     }
     if (quickAction.kind === "show_hint") {
@@ -1416,6 +1651,14 @@ function CheckoutGitActionsControl({
 
   const openDialogForMenuItem = (item: GitActionMenuItem) => {
     if (item.disabled) return;
+    if (item.kind === "open_pr") {
+      openGitButlerChangeRequest();
+      return;
+    }
+    if (item.kind === "review_holds") {
+      void reviewHeldCommits();
+      return;
+    }
     if (item.dialogAction === "push") {
       void runGitActionWithToast({ action: "push" });
       return;
@@ -1425,6 +1668,7 @@ function CheckoutGitActionsControl({
       return;
     }
     setIsEditingFiles(false);
+    setCommitDialogUsesGitButler(isGitButler);
     setIsCommitDialogOpen(true);
   };
 
@@ -1527,7 +1771,7 @@ function CheckoutGitActionsControl({
         return (
           <MenuItem
             key={`${item.id}-${item.label}`}
-            disabled={!canWriteSourceControl || item.disabled}
+            disabled={(item.kind === "open_dialog" && !canWriteSourceControl) || item.disabled}
             onClick={() => {
               openDialogForMenuItem(item);
             }}
@@ -1537,6 +1781,12 @@ function CheckoutGitActionsControl({
           </MenuItem>
         );
       })}
+      {isGitButler && (
+        <MenuItem disabled={!canWriteSourceControl || isGitActionRunning} onClick={pullLatest}>
+          <CloudDownloadIcon />
+          <MenuItemLabel>Pull latest target</MenuItemLabel>
+        </MenuItem>
+      )}
       {canPublishRepository ? (
         <MenuItem
           disabled={isGitActionRunning}
@@ -1550,7 +1800,7 @@ function CheckoutGitActionsControl({
           </MenuItemLabel>
         </MenuItem>
       ) : null}
-      {isDetachedHead && (
+      {!isGitButler && isDetachedHead && (
         <p className="px-2 py-1.5 text-xs text-warning">
           {gt(
             "Detached HEAD: create and check out a branch to enable push and {term, select, mr {merge request} cr {change request} other {pull request}} actions.",
@@ -1657,7 +1907,11 @@ function CheckoutGitActionsControl({
                   size="xs"
                   part="primary"
                   panel
-                  disabled={!canWriteSourceControl || isGitActionRunning || quickAction.disabled}
+                  disabled={
+                    (quickActionNeedsWrite && !canWriteSourceControl) ||
+                    isGitActionRunning ||
+                    quickAction.disabled
+                  }
                   onClick={runQuickAction}
                 />
               }
@@ -1735,14 +1989,13 @@ function CheckoutGitActionsControl({
                 part="row"
                 disabled={!onOpenChanges}
                 onClick={onOpenChanges}
+                title={changesSummary.title}
               />
             }
           >
             <FileDiffIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
             <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-              <span className="shrink-0">
-                <T>Changes</T>
-              </span>
+              <span className="shrink-0">{changesSummary.label}</span>
               {changesBaseLabel ? (
                 <SharedTooltipTrigger
                   render={
@@ -1754,26 +2007,32 @@ function CheckoutGitActionsControl({
                   {changesBaseLabel}
                 </SharedTooltipTrigger>
               ) : null}
-              <span className="ml-auto flex shrink-0 items-baseline gap-2 ps-2 font-mono tabular-nums">
-                <span
-                  className={
-                    changesTotals.insertions
-                      ? "text-diff-addition-foreground"
-                      : "text-muted-foreground"
-                  }
-                >
-                  +{formatDiffCount(changesTotals.insertions)}
+              {changesSummary.placeholder !== null ? (
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {changesSummary.placeholder}
                 </span>
-                <span
-                  className={
-                    changesTotals.deletions
-                      ? "text-diff-deletion-foreground"
-                      : "text-muted-foreground"
-                  }
-                >
-                  -{formatDiffCount(changesTotals.deletions)}
+              ) : (
+                <span className="ml-auto flex shrink-0 items-baseline gap-2 ps-2 font-mono tabular-nums">
+                  <span
+                    className={
+                      changesTotals.insertions
+                        ? "text-diff-addition-foreground"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    +{formatDiffCount(changesTotals.insertions)}
+                  </span>
+                  <span
+                    className={
+                      changesTotals.deletions
+                        ? "text-diff-deletion-foreground"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    -{formatDiffCount(changesTotals.deletions)}
+                  </span>
                 </span>
-              </span>
+              )}
             </span>
           </TooltipTrigger>
           {changesBreakdown && (changesTotals.insertions > 0 || changesTotals.deletions > 0) ? (
@@ -1792,10 +2051,7 @@ function CheckoutGitActionsControl({
         open={isCommitDialogOpen}
         onOpenChange={(open) => {
           if (!open) {
-            setIsCommitDialogOpen(false);
-            setDialogCommitMessage("");
-            setExcludedFiles(new Set());
-            setIsEditingFiles(false);
+            closeCommitDialog();
           }
         }}
       >
@@ -1816,7 +2072,8 @@ function CheckoutGitActionsControl({
                 </span>
                 <span className="flex items-center justify-between gap-2">
                   <span className="font-medium">
-                    {gitStatusForActions?.refName ?? gt("(detached HEAD)")}
+                    {gitStatusForActions?.refName ??
+                      (isGitButler ? gt("New GitButler branch") : gt("(detached HEAD)"))}
                   </span>
                   {isDefaultRef && (
                     <span className="text-right text-warning">
@@ -1825,127 +2082,148 @@ function CheckoutGitActionsControl({
                   )}
                 </span>
               </div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {isEditingFiles && allFiles.length > 0 && (
-                      <Checkbox
-                        aria-label={gt("Include all files")}
-                        checked={allSelected}
-                        indeterminate={!allSelected && !noneSelected}
-                        onCheckedChange={() => {
-                          setExcludedFiles(
-                            allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
-                          );
-                        }}
-                      />
-                    )}
-                    <span className="text-muted-foreground">
-                      <T>Files</T>
-                    </span>
-                    {!allSelected && !isEditingFiles && (
+              {commitDialogUsesGitButler ? (
+                <GitButlerCommitFiles
+                  branch={appliedGitButlerBranch}
+                  view={gitButlerCommitView}
+                  error={commitChangesQuery.error}
+                  selected={gitButlerSelection}
+                  onChange={setGitButlerSelection}
+                  onReview={() =>
+                    setGitButlerSelection((selected) =>
+                      reviewedGitButlerCommitSelection(
+                        commitChangesQuery.data?.files ?? [],
+                        selected,
+                      ),
+                    )
+                  }
+                  canOpenFile={canOperateThread && workingTreeRoot !== null}
+                  onOpenFile={openChangedFileInEditor}
+                />
+              ) : (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {isEditingFiles && allFiles.length > 0 && (
+                        <Checkbox
+                          aria-label={gt("Include all files")}
+                          checked={allSelected}
+                          indeterminate={!allSelected && !noneSelected}
+                          onCheckedChange={() => {
+                            setExcludedFiles(
+                              allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
+                            );
+                          }}
+                        />
+                      )}
                       <span className="text-muted-foreground">
-                        {gt("({selected} of {total})", {
-                          selected: selectedFiles.length,
-                          total: allFiles.length,
-                        })}
+                        <T>Files</T>
                       </span>
+                      {!allSelected && !isEditingFiles && (
+                        <span className="text-muted-foreground">
+                          {gt("({selected} of {total})", {
+                            selected: selectedFiles.length,
+                            total: allFiles.length,
+                          })}
+                        </span>
+                      )}
+                    </div>
+                    {allFiles.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setIsEditingFiles((prev) => !prev)}
+                      >
+                        {isEditingFiles ? (
+                          <T context="button, finish editing the file list">Done</T>
+                        ) : (
+                          <T context="verb">Edit</T>
+                        )}
+                      </Button>
                     )}
                   </div>
-                  {allFiles.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => setIsEditingFiles((prev) => !prev)}
-                    >
-                      {isEditingFiles ? (
-                        <T context="button, finish editing the file list">Done</T>
-                      ) : (
-                        <T context="verb">Edit</T>
-                      )}
-                    </Button>
+                  {!gitStatusForActions || allFiles.length === 0 ? (
+                    <p className="font-medium">
+                      <T context="no files">none</T>
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
+                        <ScrollArea>
+                          <div className="space-y-1 p-1">
+                            {allFiles.map((file) => {
+                              const isExcluded = excludedFiles.has(file.path);
+                              return (
+                                <div
+                                  key={file.path}
+                                  className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
+                                >
+                                  {isEditingFiles && (
+                                    <Checkbox
+                                      aria-label={gt("Include {path}", { path: file.path })}
+                                      checked={!excludedFiles.has(file.path)}
+                                      onCheckedChange={() => {
+                                        setExcludedFiles((prev) => {
+                                          const next = new Set(prev);
+                                          if (next.has(file.path)) {
+                                            next.delete(file.path);
+                                          } else {
+                                            next.add(file.path);
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left enabled:cursor-pointer"
+                                    disabled={!canOperateThread || workingTreeRoot === null}
+                                    aria-label={gt("Open {path} in editor", { path: file.path })}
+                                    onClick={() => openChangedFileInEditor(file.path)}
+                                  >
+                                    <StartTruncatedPath
+                                      path={file.path}
+                                      className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
+                                    />
+                                    <span className="shrink-0">
+                                      {isExcluded ? (
+                                        <span className="text-muted-foreground">
+                                          <T>Excluded</T>
+                                        </span>
+                                      ) : (
+                                        <>
+                                          <span className="text-diff-addition">
+                                            +{formatDiffCount(file.insertions)}
+                                          </span>
+                                          <span className="text-muted-foreground"> / </span>
+                                          <span className="text-diff-deletion">
+                                            -{formatDiffCount(file.deletions)}
+                                          </span>
+                                        </>
+                                      )}
+                                    </span>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                      <div className="flex justify-end font-mono">
+                        <span className="text-diff-addition">
+                          +
+                          {formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.insertions, 0))}
+                        </span>
+                        <span className="text-muted-foreground"> / </span>
+                        <span className="text-diff-deletion">
+                          -{formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.deletions, 0))}
+                        </span>
+                      </div>
+                    </div>
                   )}
                 </div>
-                {!gitStatusForActions || allFiles.length === 0 ? (
-                  <p className="font-medium">
-                    <T context="no files">none</T>
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
-                      <ScrollArea>
-                        <div className="space-y-1 p-1">
-                          {allFiles.map((file) => {
-                            const isExcluded = excludedFiles.has(file.path);
-                            return (
-                              <div
-                                key={file.path}
-                                className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
-                              >
-                                {isEditingFiles && (
-                                  <Checkbox
-                                    aria-label={gt("Include {path}", { path: file.path })}
-                                    checked={!excludedFiles.has(file.path)}
-                                    onCheckedChange={() => {
-                                      setExcludedFiles((prev) => {
-                                        const next = new Set(prev);
-                                        if (next.has(file.path)) {
-                                          next.delete(file.path);
-                                        } else {
-                                          next.add(file.path);
-                                        }
-                                        return next;
-                                      });
-                                    }}
-                                  />
-                                )}
-                                <button
-                                  type="button"
-                                  className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left enabled:cursor-pointer"
-                                  disabled={!canOperateThread || workingTreeRoot === null}
-                                  aria-label={gt("Open {path} in editor", { path: file.path })}
-                                  onClick={() => openChangedFileInEditor(file.path)}
-                                >
-                                  <StartTruncatedPath
-                                    path={file.path}
-                                    className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
-                                  />
-                                  <span className="shrink-0">
-                                    {isExcluded ? (
-                                      <span className="text-muted-foreground">
-                                        <T>Excluded</T>
-                                      </span>
-                                    ) : (
-                                      <>
-                                        <span className="text-diff-addition">
-                                          +{formatDiffCount(file.insertions)}
-                                        </span>
-                                        <span className="text-muted-foreground"> / </span>
-                                        <span className="text-diff-deletion">
-                                          -{formatDiffCount(file.deletions)}
-                                        </span>
-                                      </>
-                                    )}
-                                  </span>
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                    <div className="flex justify-end font-mono">
-                      <span className="text-diff-addition">
-                        +{formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.insertions, 0))}
-                      </span>
-                      <span className="text-muted-foreground"> / </span>
-                      <span className="text-diff-deletion">
-                        -{formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.deletions, 0))}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium">
@@ -1964,10 +2242,7 @@ function CheckoutGitActionsControl({
               variant="outline"
               size="sm"
               onClick={() => {
-                setIsCommitDialogOpen(false);
-                setDialogCommitMessage("");
-                setExcludedFiles(new Set());
-                setIsEditingFiles(false);
+                closeCommitDialog();
               }}
             >
               <T>Cancel</T>
@@ -1975,14 +2250,14 @@ function CheckoutGitActionsControl({
             <Button
               variant="outline"
               size="sm"
-              disabled={!canCreateFeatureBranch || noneSelected}
+              disabled={!canCreateFeatureBranch || !canSubmitCommitOnNewBranch}
               onClick={() => void runDialogAction(true)}
             >
               <T>Commit on new branch</T>
             </Button>
             <Button
               size="sm"
-              disabled={!canWriteSourceControl || noneSelected}
+              disabled={!canWriteSourceControl || !canSubmitCommit}
               onClick={() => void runDialogAction(false)}
             >
               <T context="verb">Commit</T>
@@ -2002,6 +2277,47 @@ function CheckoutGitActionsControl({
           offeredProviders={serverConfig?.settings.offeredSourceControlProviders}
         />
       ) : null}
+
+      <Dialog
+        open={pendingPublish !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingPublish(null);
+        }}
+      >
+        <DialogPopup className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{pendingPublish?.title}</DialogTitle>
+            <DialogDescription className="whitespace-pre-wrap">
+              {pendingPublish?.description}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter variant="bare">
+            <Button variant="outline" size="sm" onClick={() => setPendingPublish(null)}>
+              Cancel
+            </Button>
+            {pendingPublish && pendingPublish.resolutions.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void endPendingHolds()}
+                disabled={!canWriteSourceControl}
+              >
+                {GIT_BUTLER_END_HOLD_LABEL}
+              </Button>
+            ) : null}
+            {pendingPublish?.publish ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={confirmPendingPublish}
+                disabled={!canWriteSourceControl}
+              >
+                {pendingPublish.publish.confirmation.confirmLabel}
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
 
       <Dialog
         open={pendingDefaultBranchAction !== null}
@@ -2193,6 +2509,18 @@ export default function ThreadGitActionsControl({
       }}
       quietUntilWork={draftId !== undefined || activeServerThreadShell?.latestRun === null}
       changesBaseRef={changesBaseRef}
+      gitButler={{
+        linkedBranch:
+          activeServerThread?.gitbutlerBranch ?? activeDraftThread?.gitbutlerBranch ?? null,
+        draftBranch: activeDraftThread?.gitbutlerBranch ?? null,
+        onBranchCreated: (branch) => {
+          if (activeDraftThread && activeThreadRef) {
+            setDraftThreadContext(draftId ?? activeThreadRef, { gitbutlerBranch: branch });
+          }
+        },
+        latestRun: activeServerThreadShell?.latestRun,
+        scopeKey: activeServerThread?.id ?? draftId ?? "",
+      }}
     />
   );
 }

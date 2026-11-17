@@ -10,7 +10,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type { ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
 import * as Schema from "effect/Schema";
 import { msg } from "gt-react";
-import { sanitizeNewRefName } from "@t3tools/shared/git";
+import { isGitButlerWorkspaceRef, sanitizeNewRefName } from "@t3tools/shared/git";
 import { workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { toSortableTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import { m, type MessageResolver } from "../i18n/messages";
@@ -327,7 +327,12 @@ export function resolveLocalCheckoutBranchMismatch(input: {
   if (effectiveEnvMode !== "local" || activeWorktreePath !== null) {
     return null;
   }
-  if (!activeThreadBranch || !currentGitBranch || activeThreadBranch === currentGitBranch) {
+  if (
+    !activeThreadBranch ||
+    !currentGitBranch ||
+    isGitButlerWorkspaceRef(currentGitBranch) ||
+    activeThreadBranch === currentGitBranch
+  ) {
     return null;
   }
   return { threadBranch: activeThreadBranch, currentBranch: currentGitBranch };

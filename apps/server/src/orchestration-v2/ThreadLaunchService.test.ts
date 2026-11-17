@@ -69,6 +69,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import type { GitWorktreeBranchPin } from "../vcs/GitVcsDriver.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
 import {
   approveLayoutCommands,
@@ -245,6 +246,7 @@ function makeHarness(options: HarnessOptions = {}) {
       resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
       resolvePrimaryRemoteName: () => Effect.succeed("origin"),
       resolveDefaultBranchName: () => Effect.succeed("main"),
+      isGitButlerWorkspaceBase: () => Effect.succeed(false),
       remoteExists: options.remoteExists ?? (() => Effect.succeed(true)),
       remoteBranchExists: () => Effect.succeed(true),
       listLocalBranchNames: () => Effect.succeed([]),
@@ -2811,6 +2813,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
           ),
         checkWorktreeBase: launches.checkWorktreeBase,
         isNonGitProject: launches.isNonGitProject,
+        resolveGitButlerWorktreeBase: launches.resolveGitButlerWorktreeBase,
         retryPreparation: launches.retryPreparation,
         prepareRun: launches.prepareRun,
       }),
@@ -4287,6 +4290,208 @@ it.effect.each([
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+it.effect.each(["gitbutler/workspace", ":/GitButler Workspace Commit"])(
+  "the early base check refuses %s as a GitButler workspace",
+  (baseRef) => {
+    const harness = makeHarness({
+      git: { isGitButlerWorkspaceBase: () => Effect.succeed(true) },
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const error = yield* launches
+        .checkWorktreeBase({
+          projectId,
+          workspaceStrategy: { type: "worktree", baseRef, startFromOrigin: false },
+        })
+        .pipe(Effect.flip);
+      assert.deepInclude(error, { _tag: "ThreadLaunchGitButlerBaseError", projectId, baseRef });
+      assert.include(error.message, "merges every applied branch");
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("fails a launch from a GitButler workspace before fetching or creating", () => {
+  const fetchWorktreeBaseCommit = vi.fn(() => Effect.succeed(null));
+  const harness = makeHarness({
+    fetchWorktreeBaseCommit,
+    git: { isGitButlerWorkspaceBase: () => Effect.succeed(true) },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:gitbutler-workspace",
+        thread: "thread:launch:gitbutler-workspace",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "gitbutler/workspace", startFromOrigin: true },
+      }),
+    );
+    const projection = yield* preparationSettled(launched.threadId);
+    assert.equal(projection.runs[0]?.status, "failed");
+    assert.isNull(projection.thread.worktreePath);
+    assert.equal(fetchWorktreeBaseCommit.mock.calls.length, 0);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("a launch asks to start above a named base on an applied stack", () => {
+  const harness = makeHarness({});
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:applied-stack",
+        thread: "thread:launch:applied-stack",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "stack/other", startFromOrigin: false },
+      }),
+    );
+    yield* preparationSettled(launched.threadId);
+    assert.isTrue(harness.createWorktree.mock.calls[0]?.[1]?.startAboveAppliedStack);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+const delegateBaseCases: ReadonlyArray<{
+  readonly label: string;
+  readonly refName: string;
+  readonly known: ReadonlyArray<string>;
+  readonly expected: { readonly commitSha: string } | null;
+}> = [
+  {
+    label: "reports no base in an ordinary checkout",
+    refName: "main",
+    known: [],
+    expected: null,
+  },
+  {
+    label: "uses GitButler's target",
+    refName: "gitbutler/workspace",
+    known: ["refs/remotes/origin/develop"],
+    expected: { commitSha: "sha-of-origin/develop" },
+  },
+];
+
+it.effect.each(delegateBaseCases)("the delegate base $label", ({ refName, known, expected }) => {
+  const harness = makeHarness({
+    git: {
+      invalidateLocalStatus: () => Effect.void,
+      localStatus: () =>
+        Effect.succeed({
+          isRepo: true,
+          hasPrimaryRemote: true,
+          isDefaultRef: false,
+          refName,
+          hasWorkingTreeChanges: false,
+          workingTree: { files: [], insertions: 0, deletions: 0 },
+          workspace: {
+            _tag: "gitbutler" as const,
+            targetRefs: ["origin/develop"],
+            stacks: [],
+            unassignedChangeCount: 0,
+          },
+        }),
+      resolveRemoteTrackingCommit: ({ refName: remoteRef }) =>
+        Effect.succeed({ commitSha: `sha-of-${remoteRef}`, remoteRefName: remoteRef }),
+    },
+    hasCommit: ({ refName: candidate }) => Effect.succeed(known.includes(candidate)),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const base = yield* launches.resolveGitButlerWorktreeBase("/repo");
+    if (expected === null) assert.isNull(base);
+    else assert.deepInclude(base, expected);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("the delegate base pins a thread's linked branch, whatever is checked out", () => {
+  const harness = makeHarness({
+    git: {
+      pinBranchForWorktree: ({ branch }) =>
+        Effect.succeed({ status: "pinned", commitSha: `pin-of-${branch}`, branchCommitSha: "tip" }),
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const base = yield* launches.resolveGitButlerWorktreeBase("/repo", "stack/linked");
+    assert.deepInclude(base, { commitSha: "pin-of-stack/linked", branchCommitSha: "tip" });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each<{
+  readonly reason: "missing" | "conflicted" | "unreadable";
+  readonly pin: Effect.Effect<GitWorktreeBranchPin, GitCommandError>;
+}>([
+  { reason: "missing", pin: Effect.succeed({ status: "missing" }) },
+  {
+    reason: "conflicted",
+    pin: Effect.succeed({ status: "conflicted", branchCommitSha: "tip" }),
+  },
+  {
+    reason: "unreadable",
+    pin: Effect.fail(
+      new GitCommandError({
+        operation: "pin",
+        command: "git",
+        cwd: "/repo",
+        detail: "locked",
+      }),
+    ),
+  },
+])("the delegate base never drops a declared link: $reason", ({ reason, pin }) => {
+  const harness = makeHarness({ git: { pinBranchForWorktree: () => pin } });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches
+      .resolveGitButlerWorktreeBase("/repo", "stack/linked")
+      .pipe(Effect.flip);
+    assert.deepInclude(error, {
+      _tag: "ThreadLaunchGitButlerLinkedBranchError",
+      branch: "stack/linked",
+      reason,
+    });
+    assert.include(error.message, "stack/linked");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("the delegate base reports why Git refused a linked branch's start commit", () => {
+  const harness = makeHarness({
+    git: {
+      pinBranchForWorktree: () =>
+        Effect.succeed({ status: "refused", detail: "signing failed", branchCommitSha: "tip" }),
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches
+      .resolveGitButlerWorktreeBase("/repo", "stack/linked")
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "ThreadLaunchGitButlerStartCommitError");
+    assert.include(error.message, "signing failed");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("the delegate base fails in a GitButler workspace with nothing real to use", () => {
+  const harness = makeHarness({
+    git: {
+      invalidateLocalStatus: () => Effect.void,
+      localStatus: () =>
+        Effect.succeed({
+          isRepo: true,
+          hasPrimaryRemote: false,
+          isDefaultRef: false,
+          refName: "gitbutler/workspace",
+          hasWorkingTreeChanges: false,
+          workingTree: { files: [], insertions: 0, deletions: 0 },
+        }),
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches.resolveGitButlerWorktreeBase("/repo").pipe(Effect.flip);
+    assert.equal(error._tag, "ThreadLaunchGitButlerNoBaseError");
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();

@@ -2277,6 +2277,9 @@ export const layerWsRpc = (
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
                           workspaceStrategy: input.workspaceStrategy,
+                          ...(input.gitbutlerBranch === undefined
+                            ? {}
+                            : { gitbutlerBranch: input.gitbutlerBranch }),
                           ...(input.initialMessage === undefined
                             ? {}
                             : {
@@ -2379,6 +2382,13 @@ export const layerWsRpc = (
                         cause,
                       }),
                     TaskFolderError: (cause) =>
+                      new OrchestrationV2ThreadLaunchError({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        message: cause.message,
+                        cause,
+                      }),
+                    ThreadLaunchGitButlerBaseError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,
                         projectId: input.projectId,
@@ -3410,7 +3420,7 @@ export const layerWsRpc = (
             ),
             Effect.filterOrElse(
               (created) => created !== null,
-              () => gitWorkflow.createWorktree(input),
+              () => gitWorkflow.createWorktree(input, { startAboveAppliedStack: true }),
             ),
             Effect.tap(() => refreshGitStatus(input.cwd)),
           ),
@@ -3457,6 +3467,23 @@ export const layerWsRpc = (
             Effect.andThen(gitWorkflow.switchRef(input)),
             Effect.tap(() => vcsStatusBroadcaster.refreshAfterCheckout(input.cwd)),
           ),
+        [WS_METHODS.vcsGitButlerApply]: (input) =>
+          gitWorkflow.gitButlerApply(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
+        [WS_METHODS.vcsGitButlerUnapply]: (input) =>
+          gitWorkflow.gitButlerUnapply(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
+        [WS_METHODS.vcsGitButlerCreateBranch]: (input) =>
+          gitWorkflow
+            .gitButlerCreateBranch(input)
+            .pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
+        [WS_METHODS.vcsGitButlerBranchChangeRequest]: (input) =>
+          gitWorkflow.gitButlerBranchChangeRequest(input),
+        [WS_METHODS.vcsGitButlerCommitChanges]: (input) =>
+          gitWorkflow.gitButlerCommitChanges(input),
+        [WS_METHODS.vcsGitButlerHolds]: (input) => gitWorkflow.gitButlerHolds(input),
+        [WS_METHODS.vcsGitButlerResolveHolds]: (input) =>
+          gitWorkflow
+            .gitButlerResolveHolds(input)
+            .pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
         [WS_METHODS.vcsInit]: (input) =>
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetBranchCommits]: (input) => review.getBranchCommits(input),

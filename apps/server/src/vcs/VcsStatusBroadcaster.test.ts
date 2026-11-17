@@ -93,7 +93,7 @@ function layerTestFor(state: {
   beforeInvalidate?: Effect.Effect<void>;
   branchRead?: () => Effect.Effect<string | null, GitCommandError>;
   fileSystem?: FileSystem.FileSystem;
-  pullCurrentBranch?: GitWorkflowService.GitWorkflowService["Service"]["pullCurrentBranch"];
+  autoPullCurrentBranch?: GitWorkflowService.GitWorkflowService["Service"]["autoPullCurrentBranch"];
   headPath?: string;
   headPathCalls?: number;
   failLocalStatus?: boolean;
@@ -231,7 +231,9 @@ function layerTestFor(state: {
             state.localInvalidationCalls += 1;
             state.remoteInvalidationCalls += 1;
           }),
-        ...(state.pullCurrentBranch ? { pullCurrentBranch: state.pullCurrentBranch } : {}),
+        ...(state.autoPullCurrentBranch
+          ? { autoPullCurrentBranch: state.autoPullCurrentBranch }
+          : {}),
         headPath: () =>
           Effect.sync(() => {
             state.headPathCalls = (state.headPathCalls ?? 0) + 1;
@@ -1006,7 +1008,7 @@ describe("VcsStatusBroadcaster", () => {
             invalidateLocalStatus: () => Effect.void,
             invalidateRemoteStatus: () => Effect.void,
             invalidateStatus: () => Effect.void,
-            pullCurrentBranch: () =>
+            autoPullCurrentBranch: () =>
               Effect.sync(() => {
                 pullCalls += 1;
                 remoteStatus = { ...remoteStatus, behindCount: 0 };
@@ -1851,7 +1853,7 @@ describe("VcsStatusBroadcaster", () => {
       if (autoPull) {
         state.currentLocalStatus = { ...baseLocalStatus, isDefaultRef: true };
         state.currentRemoteStatus = { ...remoteStatusWithPr, aheadCount: 0, behindCount: 5 };
-        state.pullCurrentBranch = () =>
+        state.autoPullCurrentBranch = () =>
           operation === "autoPullFailure"
             ? Effect.fail(
                 new GitCommandError({

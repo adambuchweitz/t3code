@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import {
   CommandId,
+  GitRefName,
   IsoDateTime,
   NonNegativeInt,
   ThreadId,
@@ -40,19 +41,34 @@ const ThreadMetadataClientRequestId = TrimmedNonEmptyString.check(Schema.isMaxLe
   )
   .annotate({ description: "Stable idempotency key to reuse when retrying this mutation." });
 
-export const ThreadMetadataMcpAction = Schema.Literals(["rename", "regenerate_title"]);
+export const ThreadMetadataMcpAction = Schema.Literals([
+  "rename",
+  "regenerate_title",
+  "set_gitbutler_branch",
+]);
 export type ThreadMetadataMcpAction = typeof ThreadMetadataMcpAction.Type;
 
 export const ThreadMetadataMcpUpdateInput = Schema.Struct({
   threadId: Schema.optional(ThreadId),
   action: ThreadMetadataMcpAction,
   title: Schema.optional(ThreadMetadataTitle),
+  gitbutlerBranch: Schema.optional(
+    Schema.NullOr(GitRefName).annotate({
+      description:
+        "Applied GitButler branch to associate with the thread, or null to clear it. Required only when action is set_gitbutler_branch. Does not check out the branch.",
+    }),
+  ),
   clientRequestId: Schema.optional(ThreadMetadataClientRequestId),
 }).check(
   Schema.makeFilter((input) =>
     (input.action === "rename") === (input.title !== undefined)
       ? true
-      : "rename requires title; regenerate_title does not accept one.",
+      : "Only rename accepts and requires title.",
+  ),
+  Schema.makeFilter((input) =>
+    (input.action === "set_gitbutler_branch") === (input.gitbutlerBranch !== undefined)
+      ? true
+      : "Only set_gitbutler_branch accepts and requires gitbutlerBranch; null clears it.",
   ),
 );
 export type ThreadMetadataMcpUpdateInput = typeof ThreadMetadataMcpUpdateInput.Type;
@@ -65,6 +81,7 @@ export const ThreadMetadataMcpUpdateResult = Schema.Struct({
   title: Schema.String,
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
+  gitbutlerBranch: Schema.NullOr(GitRefName),
   updatedAt: IsoDateTime,
 });
 export type ThreadMetadataMcpUpdateResult = typeof ThreadMetadataMcpUpdateResult.Type;

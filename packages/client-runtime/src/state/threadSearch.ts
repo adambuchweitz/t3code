@@ -214,7 +214,12 @@ export type ThreadSearchShell = Pick<
   | "latestUserAuthoredMessageAt"
   | "opens"
 > &
-  Partial<Pick<EnvironmentThreadShell, "pullRequests" | "linkedPullRequest" | "branchPullRequest">>;
+  Partial<
+    Pick<
+      EnvironmentThreadShell,
+      "pullRequests" | "linkedPullRequest" | "branchPullRequest" | "gitbutlerBranch"
+    >
+  >;
 
 /**
  * What the web and mobile palettes rank a thread shell by. Pass the
@@ -265,7 +270,7 @@ function buildThreadSearchSubject(
   return {
     id: thread.id,
     title: thread.title,
-    branch: thread.branch,
+    branch: thread.gitbutlerBranch ?? thread.branch,
     projectTitle: projectTitle ?? null,
     environmentLabel: environmentLabel ?? null,
     pullRequests: threadSearchPullRequests(thread),

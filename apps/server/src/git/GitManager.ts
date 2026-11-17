@@ -24,6 +24,7 @@ import {
   GitActionProgressEvent,
   GitActionProgressPhase,
   GitCommandError,
+  CommandId,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
@@ -53,6 +54,8 @@ import {
 } from "@t3tools/shared/projectSettings";
 import {
   mergeGitStatusParts,
+  gitButlerAppliedBranches,
+  isGitButlerWorkspaceRef,
   resolveAutoFeatureBranchName,
   sanitizeBranchFragment,
   sanitizeFeatureBranchName,
@@ -90,12 +93,18 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { createdPullRequestKey } from "./linkCreatedPullRequest.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
+import {
+  extractBranchNameFromRemoteRef,
+  parseRemoteNames as parseRemoteNamesLongestFirst,
+  parseRemoteRefWithRemoteNames,
+} from "./remoteRefs.ts";
 import { detachStackFrame } from "./detachStackFrame.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isNonRepositoryGitStderr } from "../vcs/GitVcsDriverCore.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -825,6 +834,8 @@ function toPullRequestHeadRemoteInfo(pr: {
 
 export const make = Effect.gen(function* () {
   const gitCore = yield* GitVcsDriver.GitVcsDriver;
+  const gitButler = yield* GitButlerWorkspace.GitButlerWorkspace;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -949,9 +960,13 @@ export const make = Effect.gen(function* () {
     cwd: string,
     branch: string,
   ) {
-    const baseBranch = yield* gitCore
-      .readBranchBase(cwd, branch)
-      .pipe(Effect.orElseSucceed(() => null));
+    const baseBranch = yield* Effect.gen(function* () {
+      const recorded = yield* gitCore.readBranchBase(cwd, branch);
+      if (recorded?.startsWith("refs/")) return yield* gitCore.resolveBranchName(cwd, recorded);
+      if (recorded !== null) return recorded;
+      const start = yield* gitCore.readWorktreeStart({ cwd, branch });
+      return start?.parentRef ? yield* gitCore.resolveBranchName(cwd, start.parentRef) : null;
+    }).pipe(Effect.orElseSucceed(() => null));
     if (baseBranch === null) return;
     const provider = yield* sourceControlProvider(cwd).pipe(Effect.orElseSucceed(() => null));
     yield* provider?.recordBranchBase?.({ cwd, branch, baseBranch }) ?? Effect.void;
@@ -1044,14 +1059,22 @@ export const make = Effect.gen(function* () {
             Effect.map(({ settings }) => settings.worktreeSubmodules),
             Effect.orElseSucceed(() => null),
           );
-    const result = yield* gitCore.createWorktree(input, {
+    const appliedStackPin =
+      input.newRefName && options?.startAboveAppliedStack
+        ? yield* gitCore.pinAppliedStackWorktreeBase({
+            cwd: input.cwd,
+            refName: input.refName,
+            baseRefName: input.baseRefName,
+          })
+        : null;
+    const start =
+      appliedStackPin === null ? input : { ...input, refName: appliedStackPin.commitSha };
+    const result = yield* gitCore.createWorktree(start, {
       ...(yield* readWorktreeCreationSettings),
       ...options,
       submodules,
     });
-    if (input.newRefName && input.baseRefName) {
-      yield* shareBranchBase(input.cwd, input.newRefName);
-    }
+    if (input.newRefName) yield* shareBranchBase(input.cwd, input.newRefName);
     return result;
   });
 
@@ -1913,6 +1936,19 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  const listRemoteNames = (cwd: string) =>
+    gitCore
+      .execute({
+        operation: "GitManager.listRemoteNames",
+        cwd,
+        args: ["remote"],
+        timeoutMs: 5_000,
+      })
+      .pipe(
+        Effect.map((result) => parseRemoteNamesLongestFirst(result.stdout)),
+        Effect.orElseSucceed((): ReadonlyArray<string> => []),
+      );
+
   const resolveHostingProvider = Effect.fn("resolveHostingProvider")(function* (
     cwd: string,
     branch: string | null,
@@ -2426,6 +2462,7 @@ export const make = Effect.gen(function* () {
   const buildCompletionToast = Effect.fn("buildCompletionToast")(function* (
     cwd: string,
     result: Pick<GitRunStackedActionResult, "action" | "branch" | "commit" | "push" | "pr">,
+    gitButlerBranch?: string | null,
   ) {
     const terms = yield* changeRequestTermsFor(cwd);
     const summary = summarizeGitActionResult(result, terms);
@@ -2438,12 +2475,14 @@ export const make = Effect.gen(function* () {
     } | null = null;
 
     const finalStatus =
-      result.action === "commit"
+      gitButlerBranch || result.action === "commit"
         ? null
         : yield* gitCore
             .statusDetailsRemote(cwd, { refreshUpstream: false, includeAheadOfDefault: false })
             .pipe(Effect.orElseSucceed(() => null));
-    if (finalStatus?.branch) {
+    if (gitButlerBranch) {
+      finalBranchContext = { branch: gitButlerBranch, upstreamRef: null, hasUpstream: false };
+    } else if (finalStatus?.branch) {
       finalBranchContext = {
         branch: finalStatus.branch,
         upstreamRef: finalStatus.upstreamRef,
@@ -2518,19 +2557,49 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  const resolvePrBase = Effect.fn("resolvePrBase")(function* (
+  const resolveDefaultPrBase = Effect.fn("resolveDefaultPrBase")(function* (cwd: string) {
+    const defaultFromProvider = yield* sourceControlProvider(cwd).pipe(
+      Effect.flatMap((provider) => provider.getDefaultBranch({ cwd })),
+      Effect.orElseSucceed(() => null),
+    );
+    if (defaultFromProvider) {
+      return { baseBranch: defaultFromProvider, baseRef: defaultFromProvider };
+    }
+
+    const defaultFromRemote = yield* gitCore.resolvePrimaryRemoteName(cwd).pipe(
+      Effect.flatMap((remoteName) => gitCore.resolveDefaultBranchName(cwd, remoteName)),
+      Effect.orElseSucceed(() => null),
+    );
+    if (defaultFromRemote) {
+      return { baseBranch: defaultFromRemote, baseRef: defaultFromRemote };
+    }
+
+    return { baseBranch: "main", baseRef: "main" };
+  });
+
+  const resolveNamedPrBase = Effect.fn("resolveNamedPrBase")(function* (
     cwd: string,
     branch: string,
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
+    startParentRef: string | null,
   ) {
     const configuredRef = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`);
     if (configuredRef?.startsWith("refs/heads/") || configuredRef?.startsWith("refs/remotes/")) {
       const configuredBranch = yield* gitCore.resolveBranchName(cwd, configuredRef);
-      if (configuredBranch) return { baseBranch: configuredBranch, baseRef: configuredRef };
+      // The base key is what someone retargeting a branch sets, so it outranks a ref naming another.
+      const chosenBranch = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base`);
+      if (
+        configuredBranch &&
+        (chosenBranch === null ||
+          chosenBranch === configuredBranch ||
+          chosenBranch === configuredRef.replace(/^refs\/(?:heads|remotes)\//, ""))
+      ) {
+        return { baseBranch: configuredBranch, baseRef: configuredRef };
+      }
     }
 
-    const configured = yield* gitCore.readBranchBase(cwd, branch);
+    const configured = (yield* gitCore.readBranchBase(cwd, branch)) ?? startParentRef;
     if (configured) {
       const localRef = configured.startsWith("refs/") ? configured : `refs/heads/${configured}`;
       const localBranch = yield* gitCore.resolveBranchName(cwd, localRef);
@@ -2562,23 +2631,393 @@ export const make = Effect.gen(function* () {
       }
     }
 
-    const defaultFromProvider = yield* sourceControlProvider(cwd).pipe(
-      Effect.flatMap((provider) => provider.getDefaultBranch({ cwd })),
-      Effect.orElseSucceed(() => null),
-    );
-    if (defaultFromProvider) {
-      return { baseBranch: defaultFromProvider, baseRef: defaultFromProvider };
+    return yield* resolveDefaultPrBase(cwd);
+  });
+
+  /** A recorded `origin/x` means x on that remote, unless a branch is really called that. */
+  const readRecordedPrBase = Effect.fnUntraced(function* (cwd: string, branch: string) {
+    const recorded = yield* gitCore.readBranchBase(cwd, branch);
+    if (recorded === null || recorded.startsWith("refs/")) return recorded;
+    if ((yield* gitCore.resolveBranchName(cwd, `refs/heads/${recorded}`)) !== null) return recorded;
+    return (yield* gitCore.resolveBranchName(cwd, `refs/remotes/${recorded}`)) ?? recorded;
+  });
+
+  /**
+   * A branch started above a stack holds that stack's commits, so its pull request belongs on the
+   * branch they came from. A host compares from the merge base, so any base without the parent
+   * commit would present those commits as this branch's work, and creating one is refused instead.
+   */
+  const resolveStartedBranchPrBase = Effect.fn("resolveStartedBranchPrBase")(function* (
+    cwd: string,
+    branch: string,
+    start: {
+      readonly commitSha: string;
+      readonly parentSha: string;
+      readonly parentRef: string | null;
+    },
+    base: { readonly baseBranch: string; readonly baseRef: string },
+  ) {
+    const remoteName = yield* gitCore.resolvePrimaryRemoteName(cwd);
+    const remoteNames = yield* listRemoteNames(cwd);
+    const localParent = start.parentRef
+      ? yield* gitCore.resolveBranchName(cwd, start.parentRef)
+      : null;
+    // A parent with no ref left here keeps its name; the remote can still have it.
+    const parentRef = start.parentRef;
+    // Only a remote's ref carries the remote's name; `refs/heads/origin/x` is a branch of that name.
+    const remoteParent = parentRef?.startsWith("refs/heads/")
+      ? null
+      : (parentRef?.replace(/^refs\/remotes\//, "") ?? null);
+    const parsedParent =
+      remoteParent === null ? null : parseRemoteRefWithRemoteNames(remoteParent, remoteNames);
+    const recordedRef = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`);
+    // The start commit keeps the name a remote had, which a rename or removal leaves behind.
+    const namesGoneRemote =
+      remoteParent !== null &&
+      localParent === null &&
+      parsedParent === null &&
+      (parentRef?.startsWith("refs/remotes/") === true ||
+        recordedRef === `refs/remotes/${remoteParent}`);
+    const parentName = parentRef?.startsWith("refs/heads/")
+      ? parentRef.slice("refs/heads/".length)
+      : namesGoneRemote
+        ? remoteParent.slice(remoteParent.indexOf("/") + 1)
+        : (parsedParent?.branchName ?? remoteParent);
+    const parentBranch = localParent ?? parentName ?? null;
+    const recorded = yield* readRecordedPrBase(cwd, branch);
+    // T3 Code only records short names, so a full ref is someone's choice, which skips the check. A
+    // branch's name can still look like one, since `refs/heads/main` is a legal name for a branch.
+    if (
+      recorded?.startsWith("refs/") === true &&
+      recorded !== parentBranch &&
+      remoteParent?.endsWith(`/${recorded}`) !== true &&
+      (yield* gitCore.resolveBranchName(cwd, `refs/heads/${recorded}`)) === null
+    ) {
+      if ((yield* gitCore.resolveBranchName(cwd, recorded)) === null) {
+        return yield* new GitManagerError({
+          operation: "runPrStep",
+          cwd,
+          detail: `'${recorded}', the base chosen for '${branch}', isn't a branch T3 Code can find here. Fetch it or choose another with: git config branch.${branch}.t3-merge-base refs/heads/<branch>`,
+        });
+      }
+      return base;
     }
 
-    const defaultFromRemote = yield* gitCore.resolvePrimaryRemoteName(cwd).pipe(
-      Effect.flatMap((remoteName) => gitCore.resolveDefaultBranchName(cwd, remoteName)),
-      Effect.orElseSucceed(() => null),
-    );
-    if (defaultFromRemote) {
-      return { baseBranch: defaultFromRemote, baseRef: defaultFromRemote };
+    const chooseBase = `To choose the base yourself, name it in full, which skips this check: git config branch.${branch}.t3-merge-base refs/heads/<branch>, or refs/remotes/<remote>/<branch>`;
+    const parent = start.parentSha.slice(0, 12);
+    const remote = yield* resolveRemoteRepositoryContext(cwd, remoteName);
+    // The check below can only ask a remote, so the pull request has to land in that repository.
+    if (remoteNames.length !== 1 || !(yield* targetsRemote(cwd, remoteName, remote))) {
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail: `'${branch}' started above ${parent}, and T3 Code can't check that commit against the repository this pull request would land in, because there may be more than one. ${chooseBase}`,
+      });
     }
+    const read = (candidate: string) =>
+      gitCore.readRemoteBranchContains({ cwd, branch: candidate, commitSha: start.parentSha }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitManagerError({
+              operation: "runPrStep",
+              cwd,
+              detail: `Couldn't check '${candidate}' on ${remoteName} for ${parent}, the commit '${branch}' started above: ${cause.detail}`,
+              cause,
+            }),
+        ),
+      );
+    // Whatever became of a named branch, commits on the default branch are nobody's work to present.
+    const readLanded = Effect.fnUntraced(function* () {
+      const defaultBase = yield* resolveDefaultPrBase(cwd);
+      return (yield* read(defaultBase.baseBranch)).status === "contains" ? defaultBase : null;
+    });
+    // A short name may be a choice, a source this was cut from, or the parent's name from before a
+    // remote was renamed. Nothing tells those apart, but a branch holding the commit is safe as any.
+    if (
+      parentBranch !== null &&
+      recorded !== null &&
+      recorded !== parentBranch &&
+      recorded !== parentRef
+    ) {
+      const onRecorded = yield* read(recorded);
+      if (onRecorded.status === "contains") {
+        return recorded === base.baseBranch
+          ? base
+          : { baseBranch: recorded, baseRef: onRecorded.tipSha };
+      }
+      const landed = yield* readLanded();
+      if (landed !== null) return landed;
+      const fullName =
+        (yield* gitCore.resolveBranchName(cwd, `refs/heads/${recorded}`)) === null
+          ? `refs/remotes/${remoteName}/${recorded}`
+          : `refs/heads/${recorded}`;
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail: `'${recorded}', the base recorded for '${branch}', doesn't hold ${parent} on ${remoteName}, the commit '${branch}' started above, so a pull request there would present that work as this branch's. To target it anyway, name it in full, which skips this check: git config branch.${branch}.t3-merge-base ${fullName}`,
+      });
+    }
+    const target = parentBranch ?? base.baseBranch;
+    const onTarget = yield* read(target);
+    if (onTarget.status === "lacks" && parentBranch !== null) {
+      const landed = yield* readLanded();
+      if (landed !== null) return landed;
+    }
+    if (onTarget.status === "contains") {
+      // Landed and left behind, the parent's branch has nothing more to merge into.
+      const landed = parentBranch === null ? null : yield* readLanded();
+      if (landed !== null) return landed;
+      return target === base.baseBranch ? base : { baseBranch: target, baseRef: onTarget.tipSha };
+    }
+    if (onTarget.status === "lacks" && parentBranch !== null) {
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail: `'${target}' on ${remoteName} no longer contains ${parent}, the commit '${branch}' started above, so it has been rewritten. Rebase '${branch}' onto '${target}'. ${chooseBase}`,
+      });
+    }
+    // A parent that landed and went away leaves its commits on the default branch.
+    const defaultBase = yield* resolveDefaultPrBase(cwd);
+    const others = [base, defaultBase].filter(
+      (other, index, all) =>
+        other.baseBranch !== target &&
+        all.findIndex((candidate) => candidate.baseBranch === other.baseBranch) === index,
+    );
+    for (const other of others) {
+      if ((yield* read(other.baseBranch)).status === "contains") return other;
+    }
+    const lastBase = others.at(-1)?.baseBranch ?? target;
+    return yield* new GitManagerError({
+      operation: "runPrStep",
+      cwd,
+      detail: `${
+        localParent !== null
+          ? `'${branch}' started above '${localParent}', which isn't on ${remoteName}. Push '${localParent}' first.`
+          : `'${branch}' started above ${parent}${start.parentRef ? ` from '${start.parentRef}'` : ""}${namesGoneRemote ? ", whose remote is no longer configured here," : ""} and that commit isn't on '${lastBase}', so a pull request there would present that work as this branch's.`
+      } ${chooseBase}`,
+    });
+  });
 
-    return { baseBranch: "main", baseRef: "main" };
+  const resolvePrBase = Effect.fn("resolvePrBase")(function* (
+    cwd: string,
+    branch: string,
+    upstreamRef: string | null,
+    headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
+    // What the pull request will hold, which is ahead of `branch` when a new branch is being cut.
+    revision = `refs/heads/${branch}`,
+  ) {
+    const recordedStart = yield* gitCore.readWorktreeStart({ cwd, branch });
+    // The start commit left its history but its record stayed, which only a rewrite does, and that
+    // may have carried the parent's commits along under new ids.
+    const record = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-start-commit`);
+    if (record !== null && recordedStart === null) {
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail: `'${branch}' no longer holds ${record.slice(0, 12)}, the start commit T3 Code recorded for it, so T3 Code can't tell whether it still carries its parent's commits. If it doesn't, run: git config --unset branch.${branch}.t3-start-commit`,
+      });
+    }
+    // A base has to hold every parent the history inherited, so the record alone can't decide it: a
+    // merge brings another child's start commit, and a clone has no records at all.
+    const ownRevision = revision === `refs/heads/${branch}`;
+    const history = yield* gitCore.readHistoryStarts({
+      cwd,
+      revision,
+      ...(ownRevision ? { branch } : {}),
+    });
+    const start = history.parents.length > 0 ? history.governing : recordedStart;
+    const base = yield* resolveNamedPrBase(
+      cwd,
+      branch,
+      upstreamRef,
+      headContext,
+      start?.parentRef ?? null,
+    );
+    const repositoryOf = Effect.fnUntraced(function* () {
+      const remote = yield* gitCore.resolvePrimaryRemoteName(cwd).pipe(
+        Effect.flatMap((remoteName) => resolveRemoteRepositoryContext(cwd, remoteName)),
+        Effect.orElseSucceed(() => null),
+      );
+      // By address, because renaming a remote doesn't change where a pull request lands.
+      return remote?.remoteUrlKey ?? remote?.remoteUrl ?? null;
+    });
+    if (history.parents.length > 0 && start === null) {
+      const parents = history.parents.map((parentSha) => parentSha.slice(0, 12)).join(", ");
+      const chooseFullName = `name it in full, which skips this check: git config branch.${branch}.t3-merge-base refs/heads/<branch>, or refs/remotes/<remote>/<branch>`;
+      const howToChoose =
+        branch === "HEAD"
+          ? "Check out a branch to choose a base."
+          : `To choose one, ${chooseFullName}`;
+      const recorded = branch === "HEAD" ? null : yield* readRecordedPrBase(cwd, branch);
+      if (
+        recorded?.startsWith("refs/") === true &&
+        (yield* gitCore.resolveBranchName(cwd, `refs/heads/${recorded}`)) === null
+      ) {
+        if ((yield* gitCore.resolveBranchName(cwd, recorded)) !== null) {
+          return { ...base, startedAbove: null };
+        }
+        return yield* new GitManagerError({
+          operation: "runPrStep",
+          cwd,
+          detail: `'${recorded}', the base chosen for '${branch}', isn't a branch T3 Code can find here. Fetch it, or ${chooseFullName}`,
+        });
+      }
+      const candidate = recorded ?? base.baseBranch;
+      const remoteName = yield* gitCore.resolvePrimaryRemoteName(cwd);
+      const remote = yield* resolveRemoteRepositoryContext(cwd, remoteName);
+      if (
+        (yield* listRemoteNames(cwd)).length !== 1 ||
+        !(yield* targetsRemote(cwd, remoteName, remote))
+      ) {
+        return yield* new GitManagerError({
+          operation: "runPrStep",
+          cwd,
+          detail: `This holds work inherited through start commits above ${parents}, and T3 Code can't check them against the repository this pull request would land in, because there may be more than one. ${howToChoose}`,
+        });
+      }
+      const reads = yield* Effect.forEach(history.parents, (commitSha) =>
+        gitCore.readRemoteBranchContains({ cwd, branch: candidate, commitSha }),
+      );
+      const tip = reads[0];
+      if (tip?.status === "contains" && reads.every((read) => read.status === "contains")) {
+        return {
+          ...(candidate === base.baseBranch
+            ? base
+            : { baseBranch: candidate, baseRef: tip.tipSha }),
+          startedAbove: {
+            parents: history.parents.join(","),
+            repository: yield* repositoryOf(),
+          },
+        };
+      }
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail: `This holds work inherited through start commits above ${parents}, and T3 Code can't name a base that keeps it out of this pull request: '${candidate}' on ${remoteName} doesn't hold them all, and no one parent holds the others. If a parent landed in a merge, fetch and run this again. ${howToChoose}`,
+      });
+    }
+    if (start === null) return { ...base, startedAbove: null };
+    const checked = yield* resolveStartedBranchPrBase(cwd, branch, start, base);
+    return {
+      ...checked,
+      startedAbove: { parents: start.parentSha, repository: yield* repositoryOf() },
+    };
+  });
+  type PrBase = Effect.Success<ReturnType<typeof resolvePrBase>>;
+
+  const nothingPublished = "No pull request was created, and nothing was committed or pushed";
+
+  // Says what became of the action, since the check's own reason can't know how far it got.
+  const reportingOutcome =
+    (cwd: string, outcome: string) =>
+    <A, E extends { readonly detail: string }, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.mapError(
+          (error) =>
+            new GitManagerError({
+              operation: "runPrStep",
+              cwd,
+              detail: `${outcome}: ${error.detail}`,
+              cause: error,
+            }),
+        ),
+      );
+
+  const ensurePrBaseUnchanged = (cwd: string, branch: string, expected: PrBase, current: PrBase) =>
+    expected.baseBranch === current.baseBranch &&
+    expected.startedAbove?.parents === current.startedAbove?.parents &&
+    expected.startedAbove?.repository === current.startedAbove?.repository
+      ? Effect.void
+      : Effect.fail(
+          new GitManagerError({
+            operation: "runPrStep",
+            cwd,
+            detail: `The base, the parent, or the repository for '${branch}' changed while its pull request was being prepared (base '${expected.baseBranch}' was to become '${current.baseBranch}'). Run the action again to check it afresh.`,
+          }),
+        );
+
+  /**
+   * Publishing a branch whose pull request is already refused helps no one, so this runs ahead of
+   * the push for a branch started above a stack. An open pull request needs no base, only the push.
+   * A branch about to be cut from this one inherits its start commit, but none of its pull requests.
+   */
+  const preflightPrBase = Effect.fn("preflightPrBase")(function* (
+    cwd: string,
+    branch: string,
+    upstreamRef: string | null,
+    cuttingNewBranch: boolean,
+  ) {
+    const hasRecord =
+      (yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-start-commit`)) !== null;
+    const revision = cuttingNewBranch ? "HEAD" : `refs/heads/${branch}`;
+    const history = yield* gitCore.readHistoryStarts({
+      cwd,
+      revision,
+      ...(cuttingNewBranch ? {} : { branch }),
+    });
+    if (!hasRecord && history.parents.length === 0) return null;
+    // Pushing moves a branch off a differently named upstream, as a base and not its own head, so
+    // that upstream's pull request and name say nothing about this branch's.
+    const remoteName = yield* readConfigValueNullable(cwd, `branch.${branch}.remote`);
+    const ownUpstreamRef =
+      !cuttingNewBranch &&
+      upstreamRef !== null &&
+      extractBranchNameFromRemoteRef(upstreamRef, { remoteName }) === branch
+        ? upstreamRef
+        : null;
+    const headContext = yield* resolveBranchHeadContext(cwd, {
+      branch,
+      upstreamRef: ownUpstreamRef,
+    });
+    if (!cuttingNewBranch && (yield* findOpenPr(cwd, headContext)) !== null) return null;
+    return yield* resolvePrBase(cwd, branch, ownUpstreamRef, headContext, revision).pipe(
+      reportingOutcome(cwd, nothingPublished),
+    );
+  });
+
+  /**
+   * GitButler bases each branch on the one below it, or the target, and `but pr new` publishes those
+   * below the selected one too. Each base has to hold every parent its branch inherited. This reads
+   * history rather than `but status`, whose commit list isn't the whole of what a merge brings.
+   */
+  const preflightGitButlerPr = Effect.fn("preflightGitButlerPr")(function* (
+    cwd: string,
+    selected: string,
+  ) {
+    const published = yield* gitButler.readPublishedBranches({ cwd, branch: selected });
+    for (const [index, branch] of published.entries()) {
+      const below = published[index + 1];
+      const { starts } = yield* gitCore.readHistoryStarts({
+        cwd,
+        revision: `refs/heads/${branch}`,
+        branch,
+        ...(below === undefined ? {} : { above: `refs/heads/${below}` }),
+      });
+      const unresolved =
+        starts.length === 0 &&
+        (yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-start-commit`)) !== null &&
+        (yield* gitCore.readWorktreeStart({ cwd, branch })) === null;
+      if (starts.length === 0 && !unresolved) continue;
+      const headContext = yield* resolveBranchHeadContext(cwd, { branch, upstreamRef: null });
+      if ((yield* findOpenPr(cwd, headContext)) !== null) continue;
+      if (unresolved) {
+        return yield* new GitManagerError({
+          operation: "runPrStep",
+          cwd,
+          detail: `${nothingPublished}: '${branch}' no longer holds the start commit T3 Code recorded for it, so T3 Code can't tell whether it still carries its parent's commits. If it doesn't, run: git config --unset branch.${branch}.t3-start-commit`,
+        });
+      }
+      const parents = [...new Set(starts.map(({ parentSha }) => parentSha))];
+      const parentSha = parents[0]!;
+      return yield* new GitManagerError({
+        operation: "runPrStep",
+        cwd,
+        detail:
+          parents.length === 1
+            ? `${nothingPublished}: '${branch}' holds ${parentSha.slice(0, 12)}, a commit a start commit in its history sits above, and its base in the stack doesn't, so a pull request would present it as this branch's work. If that commit is in the branch's own line, stack '${branch}' on it by giving it a branch: git branch <name> ${parentSha}. To publish it as is, run: but pr new ${branch}`
+            : `${nothingPublished}: '${branch}' holds start commits above more than one parent (${parents.map((sha) => sha.slice(0, 12)).join(", ")}) that its base in the stack doesn't, so a pull request would present their work as this branch's. To publish it as is, run: but pr new ${branch}`,
+      });
+    }
   });
 
   const resolveBaseRangeRef = Effect.fn("resolveBaseRangeRef")(function* (
@@ -2611,11 +3050,14 @@ export const make = Effect.gen(function* () {
       includeBranch?: boolean;
       filePaths?: readonly string[];
       settings: SourceControlTextGenerationSettings;
+      gitButlerSelection?: GitButlerWorkspace.GitButlerCommitSelection;
     }) {
       const customCommit = parseCustomCommitMessage(input.commitMessage ?? "");
-      const context = yield* gitCore.prepareCommitContext(input.cwd, input.filePaths, {
-        includePatch: customCommit === null,
-      });
+      const context = yield* input.gitButlerSelection
+        ? gitButler.readCommitContext(input.cwd, input.gitButlerSelection, customCommit === null)
+        : gitCore.prepareCommitContext(input.cwd, input.filePaths, {
+            includePatch: customCommit === null,
+          });
       if (!context) {
         return null;
       }
@@ -2669,6 +3111,11 @@ export const make = Effect.gen(function* () {
     filePaths?: readonly string[],
     progressReporter?: GitActionProgressReporter,
     actionId?: string,
+    gitButlerTarget?: {
+      readonly branch: string;
+      readonly createBranch: boolean;
+      readonly selection: GitButlerWorkspace.GitButlerCommitSelection;
+    },
   ) {
     const emit = (event: GitActionProgressPayload) =>
       progressReporter && actionId
@@ -2702,6 +3149,7 @@ export const make = Effect.gen(function* () {
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
         settings,
+        ...(gitButlerTarget ? { gitButlerSelection: gitButlerTarget.selection } : {}),
       });
     }
     if (!suggestion) {
@@ -2758,20 +3206,30 @@ export const make = Effect.gen(function* () {
             },
           }
         : null;
-    const committed = yield* gitCore
-      .commit(cwd, suggestion.subject, suggestion.body, {
-        timeoutMs: COMMIT_TIMEOUT_MS,
-        stage: {
-          ...(filePaths ? { filePaths } : {}),
-          ...(!preResolvedSuggestion && customCommit ? { unverified: true } : {}),
-        },
-        ...(commitProgress ? { progress: commitProgress } : {}),
-      })
-      .pipe(Effect.catchTags({ GitNothingToCommitError: () => Effect.succeed(null) }));
-    if (!committed) {
-      return { status: "skipped_no_changes" as const };
-    }
+    const committed = yield* gitButlerTarget
+      ? gitButler
+          .commit({
+            cwd,
+            branch: gitButlerTarget.branch,
+            createBranch: gitButlerTarget.createBranch,
+            message: suggestion.commitMessage,
+            changeIds: gitButlerTarget.selection.changeIds,
+          })
+          .pipe(Effect.ensuring(invalidateStatus(cwd)))
+      : gitCore
+          .commit(cwd, suggestion.subject, suggestion.body, {
+            timeoutMs: COMMIT_TIMEOUT_MS,
+            stage: {
+              ...(filePaths ? { filePaths } : {}),
+              ...(!preResolvedSuggestion && customCommit ? { unverified: true } : {}),
+            },
+            ...(commitProgress ? { progress: commitProgress } : {}),
+          })
+          .pipe(Effect.catchTags({ GitNothingToCommitError: () => Effect.succeed(null) }));
+    if (committed === null) return { status: "skipped_no_changes" as const };
     const { commitSha } = committed;
+    const selectionMismatch =
+      "selectionMismatch" in committed ? committed.selectionMismatch : undefined;
     if (currentHookName !== null) {
       yield* emit({
         kind: "hook_finished",
@@ -2785,6 +3243,7 @@ export const make = Effect.gen(function* () {
       status: "created" as const,
       commitSha,
       subject: suggestion.subject,
+      ...(selectionMismatch === undefined ? {} : { selectionMismatch }),
     };
   });
 
@@ -2801,13 +3260,12 @@ export const make = Effect.gen(function* () {
       remoteName: target.remoteName,
     });
     if (headContext.isCrossRepository) return;
-    const { baseBranch } = yield* resolvePrBase(
-      cwd,
-      status.branch,
-      status.upstreamRef,
-      headContext,
+    // A started branch whose parent can't be checked fails here; the PR step reports that itself.
+    const base = yield* resolvePrBase(cwd, status.branch, status.upstreamRef, headContext).pipe(
+      Effect.orElseSucceed(() => null),
     );
-    if (baseBranch !== target.branchName) return;
+    if (base === null || base.baseBranch !== target.branchName) return;
+    const { baseBranch } = base;
     if (yield* findOpenPr(cwd, headContext)) return;
     return yield* new GitManagerError({
       operation: "runStackedAction",
@@ -2820,6 +3278,7 @@ export const make = Effect.gen(function* () {
     cwd: string,
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
+    preflight: { readonly base: PrBase | null; readonly pushed: boolean },
     pushRemoteRef: { readonly remoteName: string; readonly upstreamRef: string } | undefined,
     requestedBase: string | undefined,
     draft: boolean,
@@ -2845,7 +3304,9 @@ export const make = Effect.gen(function* () {
       return yield* new GitManagerError({
         operation: "runPrStep",
         cwd,
-        detail: "Current branch has not been pushed. Push before creating a PR.",
+        detail: preflight.pushed
+          ? `'${branch}' was pushed, but it no longer tracks a remote branch, so no pull request was created.`
+          : "Current branch has not been pushed. Push before creating a PR.",
       });
     }
 
@@ -2877,14 +3338,35 @@ export const make = Effect.gen(function* () {
         detail: `The branch has ${details.aheadCount} unpushed commit${details.aheadCount === 1 ? "" : "s"}. Push before opening the PR.`,
       });
     }
-    const resolved = yield* resolvePrBase(cwd, branch, details.upstreamRef, headContext);
-    const baseBranch = requestedBase ?? resolved.baseBranch;
+    const refused = reportingOutcome(
+      cwd,
+      preflight.pushed
+        ? `'${branch}' was pushed, but no pull request was created`
+        : "No pull request was created",
+    );
+    const prBase = yield* resolvePrBase(cwd, branch, details.upstreamRef, headContext).pipe(
+      Effect.tap((current) =>
+        preflight.base === null || requestedBase !== undefined
+          ? Effect.void
+          : ensurePrBaseUnchanged(cwd, branch, preflight.base, current),
+      ),
+      refused,
+    );
+    const baseBranch = requestedBase ?? prBase.baseBranch;
     const generated = yield* content({
       provider,
       baseBranch,
-      baseRef: requestedBase ?? resolved.baseRef,
+      baseRef: requestedBase ?? prBase.baseRef,
       headBranch: headContext.headBranch,
     });
+
+    // Generating can take long enough for a parent to be rewritten.
+    if (requestedBase === undefined && prBase.startedAbove !== null) {
+      yield* resolvePrBase(cwd, branch, details.upstreamRef, headContext).pipe(
+        Effect.flatMap((current) => ensurePrBaseUnchanged(cwd, branch, prBase, current)),
+        refused,
+      );
+    }
     const bodyFile = path.join(
       tempDir,
       `t3code-pr-body-${process.pid}-${yield* randomUUIDv4(cwd)}.md`,
@@ -2960,12 +3442,14 @@ export const make = Effect.gen(function* () {
     fallbackBranch: string | null,
     threadId: ThreadId | undefined,
     emit: GitActionProgressEmitter,
+    preflight: { readonly base: PrBase | null; readonly pushed: boolean },
     pushRemoteRef?: { readonly remoteName: string; readonly upstreamRef: string },
   ) =>
     openPrFromBranch(
       cwd,
       fallbackBranch,
       emit,
+      preflight,
       pushRemoteRef,
       undefined,
       false,
@@ -3187,6 +3671,7 @@ export const make = Effect.gen(function* () {
         input.cwd,
         null,
         () => Effect.void,
+        { base: null, pushed: push?.status === "pushed" },
         push && "pushRemote" in push && push.pushRemote && push.upstreamBranch
           ? { remoteName: push.pushRemote, upstreamRef: push.upstreamBranch }
           : undefined,
@@ -3697,6 +4182,7 @@ export const make = Effect.gen(function* () {
       yield* invalidateRemoteStatusResultCache(cwd);
       yield* bumpPrLookupEpoch(cwd);
       yield* forgetPrLookupGitState(cwd);
+      yield* gitButler.invalidate(cwd);
     },
   );
 
@@ -3734,6 +4220,45 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const isOnGitButlerWorkspace = (cwd: string) =>
+    gitCore
+      .execute({
+        operation: "GitManager.preparePullRequestThread.currentRef",
+        cwd,
+        args: ["symbolic-ref", "--quiet", "HEAD"],
+        allowNonZeroExit: true,
+      })
+      .pipe(
+        Effect.map((result) =>
+          isGitButlerWorkspaceRef(result.stdout.trim().replace(/^refs\/heads\//, "")),
+        ),
+      );
+
+  // Git sees an applied branch as free, but moving it detaches its commits from GitButler's stack.
+  const ensureHeadBranchNotAppliedInGitButler = Effect.fn("ensureHeadBranchNotAppliedInGitButler")(
+    function* (cwd: string, branch: string) {
+      if (!(yield* isOnGitButlerWorkspace(cwd))) return;
+      yield* gitButler.invalidate(cwd);
+      const workspace = yield* gitButler.readStatus(cwd).pipe(
+        Effect.mapError(
+          () =>
+            new GitManagerError({
+              operation: "preparePullRequestThread",
+              cwd,
+              detail: `Could not check whether GitButler has '${branch}' applied, so it was left alone. Make sure the GitButler CLI works here, then try again.`,
+            }),
+        ),
+      );
+      if (gitButlerAppliedBranches(workspace).includes(branch)) {
+        return yield* new GitManagerError({
+          operation: "preparePullRequestThread",
+          cwd,
+          detail: `'${branch}' is applied in this GitButler workspace, so its worktree can't be updated to the pull request head. Unapply it in GitButler, then try again.`,
+        });
+      }
+    },
+  );
+
   // Some hosts only switch branches on checkout; use the existing lossless refresh to advance them.
   const moveToPullRequestHead = (cwd: string, headSha: string | undefined) =>
     headSha === undefined || !/^[0-9a-f]{7,64}$/i.test(headSha)
@@ -3770,6 +4295,15 @@ export const make = Effect.gen(function* () {
         );
     };
     return yield* Effect.gen(function* () {
+      // A host's checkout runs its own git, past the driver's guard, and would leave the workspace.
+      if (input.mode === "local" && (yield* isOnGitButlerWorkspace(input.cwd))) {
+        return yield* new GitManagerError({
+          operation: "preparePullRequestThread",
+          cwd: input.cwd,
+          detail:
+            "This repository is a GitButler workspace, so a pull request can't be checked out in place. Check it out in its own worktree instead.",
+        });
+      }
       const normalizedReference = normalizePullRequestReference(input.reference);
       const rootWorktreePath = yield* canonicalizeExistingPath(input.cwd);
       const pullRequestSummary = yield* (yield* sourceControlProvider(input.cwd)).getChangeRequest({
@@ -3842,8 +4376,13 @@ export const make = Effect.gen(function* () {
         worktreePath: string,
         checkedOutBranch: string,
       ) {
-        if (checkedOutBranch !== localPullRequestBranch) {
-          // Bare-name matches may be unrelated local branches; preserve their work and tracking config.
+        if (
+          checkedOutBranch !== localPullRequestBranch ||
+          (yield* Effect.result(ensureHeadBranchNotAppliedInGitButler(input.cwd, checkedOutBranch)))
+            ._tag === "Failure"
+        ) {
+          // Bare-name matches may be unrelated local branches, and GitButler may own this one;
+          // preserve their work and tracking config.
           return {
             pullRequest,
             branch: localPullRequestBranch,
@@ -4070,6 +4609,7 @@ export const make = Effect.gen(function* () {
       }
       // Materializing would force this branch onto the head.
       if (existingBranchBeforeFetch !== null) {
+        yield* ensureHeadBranchNotAppliedInGitButler(input.cwd, localPullRequestBranch);
         let isOnPullRequestHead = false;
         const worktree = yield* createPullRequestWorktree((cwd) =>
           refreshNewWorktree(cwd).pipe(
@@ -4165,6 +4705,7 @@ export const make = Effect.gen(function* () {
     recordCheckout: (branch: string) => Effect.Effect<void>,
     commitMessage?: string,
     filePaths?: readonly string[],
+    gitButlerSelection?: GitButlerWorkspace.GitButlerCommitSelection,
   ) {
     const suggestion = yield* resolveCommitAndBranchSuggestion({
       cwd,
@@ -4173,6 +4714,7 @@ export const make = Effect.gen(function* () {
       ...(filePaths ? { filePaths } : {}),
       includeBranch: true,
       settings,
+      ...(gitButlerSelection ? { gitButlerSelection } : {}),
     });
     if (!suggestion) {
       return yield* new GitManagerError({
@@ -4186,19 +4728,23 @@ export const make = Effect.gen(function* () {
     const existingBranchNames = yield* gitCore.listLocalBranchNames(cwd);
     const resolvedBranch = resolveAutoFeatureBranchName(existingBranchNames, preferredBranch);
 
-    yield* gitCore.createRef({ cwd, refName: resolvedBranch });
-    yield* Effect.scoped(gitCore.switchRef({ cwd, refName: resolvedBranch })).pipe(
-      Effect.tap(() => recordCheckout(resolvedBranch)),
-      // A failing post-checkout hook can leave HEAD on the new branch.
-      Effect.tapError(() =>
-        gitCore.readCurrentBranch(cwd).pipe(
-          Effect.flatMap((branch) =>
-            branch === resolvedBranch ? recordCheckout(resolvedBranch) : Effect.void,
+    // GitButler makes the branch inside its own commit, so nothing is checked out here.
+    if (!gitButlerSelection) {
+      yield* gitCore.createRef({ cwd, refName: resolvedBranch });
+      yield* shareBranchBase(cwd, resolvedBranch);
+      yield* Effect.scoped(gitCore.switchRef({ cwd, refName: resolvedBranch })).pipe(
+        Effect.tap(() => recordCheckout(resolvedBranch)),
+        // A failing post-checkout hook can leave HEAD on the new branch.
+        Effect.tapError(() =>
+          gitCore.readCurrentBranch(cwd).pipe(
+            Effect.flatMap((branch) =>
+              branch === resolvedBranch ? recordCheckout(resolvedBranch) : Effect.void,
+            ),
+            Effect.ignore,
           ),
-          Effect.ignore,
         ),
-      ),
-    );
+      );
+    }
 
     return {
       branchStep: { status: "created" as const, name: resolvedBranch },
@@ -4219,6 +4765,59 @@ export const make = Effect.gen(function* () {
       > {
         const initialStatus = yield* gitCore.statusDetails(input.cwd);
         const wantsCommit = isCommitAction(input.action);
+        const isGitButler =
+          initialStatus.branch !== null && isGitButlerWorkspaceRef(initialStatus.branch);
+        const linkedBranch =
+          isGitButler && input.threadId
+            ? ((yield* threads.getThreadShell(input.threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new GitManagerError({
+                      operation: "runStackedAction",
+                      cwd: input.cwd,
+                      detail: "Could not read the thread's GitButler branch.",
+                      cause,
+                    }),
+                ),
+              ))?.gitbutlerBranch ?? null)
+            : isGitButler
+              ? (input.gitbutlerBranch ?? null)
+              : null;
+        const createFeatureBranch =
+          input.featureBranch || (isGitButler && wantsCommit && linkedBranch === null);
+        if (isGitButler && !wantsCommit && linkedBranch === null) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail:
+              "Select an applied GitButler branch for this thread before pushing or creating a PR.",
+          });
+        }
+        // The checkout left GitButler after the choice was made; a plain commit would stage everything.
+        if (!isGitButler && input.gitbutlerChangeIds) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail: "This checkout is no longer a GitButler workspace, so nothing was committed.",
+          });
+        }
+        // A shared checkout's uncommitted changes may be anyone's, so nothing defaults to included.
+        if (isGitButler && wantsCommit && (!input.gitbutlerChangeIds || input.filePaths)) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail: "Choose the changes to commit from the GitButler commit dialog.",
+          });
+        }
+        const gitButlerSelection =
+          isGitButler && wantsCommit && input.gitbutlerChangeIds
+            ? yield* gitButler.prepareCommit({
+                cwd: input.cwd,
+                branch: createFeatureBranch ? null : linkedBranch,
+                changeIds: input.gitbutlerChangeIds,
+              })
+            : undefined;
+        const filePaths = gitButlerSelection?.filePaths ?? input.filePaths;
         const wantsPush =
           input.action === "push" ||
           input.action === "commit_push" ||
@@ -4235,9 +4834,9 @@ export const make = Effect.gen(function* () {
           });
         }
         const phases: GitActionProgressPhase[] = [
-          ...(input.featureBranch ? (["branch"] as const) : []),
+          ...(createFeatureBranch ? (["branch"] as const) : []),
           ...(wantsCommit ? (["commit"] as const) : []),
-          ...(wantsPush ? (["push"] as const) : []),
+          ...(wantsPush && (!isGitButler || !wantsPr) ? (["push"] as const) : []),
           ...(wantsPr ? (["pr"] as const) : []),
         ];
 
@@ -4259,6 +4858,19 @@ export const make = Effect.gen(function* () {
             cwd: input.cwd,
             detail: "Cannot create a pull request from detached HEAD.",
           });
+        }
+
+        const preflightBase =
+          wantsPr && !isGitButler && (initialStatus.branch || createFeatureBranch)
+            ? yield* preflightPrBase(
+                input.cwd,
+                initialStatus.branch ?? "HEAD",
+                initialStatus.upstreamRef,
+                createFeatureBranch,
+              )
+            : null;
+        if (wantsPr && isGitButler && !createFeatureBranch && linkedBranch !== null) {
+          yield* preflightGitButlerPr(input.cwd, linkedBranch);
         }
 
         let branchStep: { status: "created" | "skipped_not_requested"; name?: string };
@@ -4296,7 +4908,7 @@ export const make = Effect.gen(function* () {
           ),
         );
 
-        if (input.featureBranch) {
+        if (createFeatureBranch) {
           yield* Ref.set(currentPhase, Option.some("branch"));
           yield* progress.emit({
             kind: "phase_started",
@@ -4306,10 +4918,11 @@ export const make = Effect.gen(function* () {
           const result = yield* runFeatureBranchStep(
             textGenerationSettings,
             input.cwd,
-            initialStatus.branch,
+            isGitButler ? linkedBranch : initialStatus.branch,
             (branch) => Ref.set(createdBranch, branch),
             input.commitMessage,
-            input.filePaths,
+            filePaths,
+            gitButlerSelection,
           );
           branchStep = result.branchStep;
           commitMessageForStep = result.resolvedCommitMessage;
@@ -4318,7 +4931,8 @@ export const make = Effect.gen(function* () {
           branchStep = { status: "skipped_not_requested" as const };
         }
 
-        const currentBranch = branchStep.name ?? initialStatus.branch;
+        const currentBranch =
+          branchStep.name ?? (isGitButler ? linkedBranch : initialStatus.branch);
         const commitAction = isCommitAction(input.action) ? input.action : null;
         const changeRequestTerms = wantsPr ? yield* changeRequestTermsFor(input.cwd) : null;
         // A stale or missing origin/HEAD hides the default branch from status, so check here
@@ -4341,64 +4955,155 @@ export const make = Effect.gen(function* () {
                   currentBranch,
                   commitMessageForStep,
                   preResolvedCommitSuggestion,
-                  input.filePaths,
+                  filePaths,
                   options?.progressReporter,
                   progress.actionId,
+                  gitButlerSelection && currentBranch
+                    ? {
+                        branch: currentBranch,
+                        createBranch: branchStep.status === "created",
+                        selection: gitButlerSelection,
+                      }
+                    : undefined,
                 ),
               ),
             )
           : { status: "skipped_not_requested" as const };
 
-        const push = wantsPush
-          ? yield* progress
-              .emit({
-                kind: "phase_started",
-                phase: "push",
-                label: "Pushing...",
-              })
-              .pipe(
-                Effect.tap(() => Ref.set(currentPhase, Option.some("push"))),
-                Effect.flatMap(() => pushCurrentBranch(input.cwd, currentBranch)),
-              )
-          : { status: "skipped_not_requested" as const };
+        if (
+          isGitButler &&
+          branchStep.status === "created" &&
+          commit.status === "created" &&
+          input.threadId
+        ) {
+          yield* orchestrator
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`gitbutler-branch:${yield* randomUUIDv4(input.cwd)}`),
+              threadId: input.threadId,
+              gitbutlerBranch: currentBranch,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitManagerError({
+                    operation: "runStackedAction",
+                    cwd: input.cwd,
+                    detail: `${commit.selectionMismatch ?? "The commit succeeded."} T3 Code could not link its GitButler branch to the thread. Select it in the branch picker.`,
+                    cause,
+                  }),
+              ),
+            );
+        }
+
+        // Nothing past a commit that may hold another writer's bytes runs without a person's review.
+        if (commit.status === "created" && commit.selectionMismatch) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail: commit.selectionMismatch,
+          });
+        }
+
+        const push =
+          wantsPush && (!isGitButler || !wantsPr)
+            ? yield* progress
+                .emit({
+                  kind: "phase_started",
+                  phase: "push",
+                  label: "Pushing...",
+                })
+                .pipe(
+                  Effect.tap(() => Ref.set(currentPhase, Option.some("push"))),
+                  Effect.flatMap(() =>
+                    isGitButler
+                      ? gitButler
+                          .push({
+                            cwd: input.cwd,
+                            branch: currentBranch!,
+                            ...(input.gitbutlerForcePushApproval
+                              ? { forcePushApproval: input.gitbutlerForcePushApproval }
+                              : {}),
+                            ...(input.gitbutlerHoldApproval
+                              ? { holdApproval: input.gitbutlerHoldApproval }
+                              : {}),
+                          })
+                          .pipe(Effect.ensuring(invalidateStatus(input.cwd)))
+                      : // GitButler leaves workspace mode with one stack applied, on the same refs.
+                        gitButler.publishOutsideWorkspace(
+                          {
+                            cwd: input.cwd,
+                            branch: currentBranch ?? "HEAD",
+                            ...(input.gitbutlerHoldApproval
+                              ? { holdApproval: input.gitbutlerHoldApproval }
+                              : {}),
+                          },
+                          pushCurrentBranch(input.cwd, currentBranch),
+                        ),
+                  ),
+                )
+            : { status: "skipped_not_requested" as const };
 
         const pr = wantsPr
           ? yield* progress
               .emit({
                 kind: "phase_started",
                 phase: "pr",
-                label: `Preparing ${changeRequestTerms?.shortLabel ?? "PR"}...`,
+                label: `${isGitButler ? "Pushing and preparing" : "Preparing"} ${changeRequestTerms?.shortLabel ?? "PR"}...`,
               })
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("pr"))),
-                Effect.flatMap(() =>
-                  runPrStep(
-                    textGenerationSettings,
-                    input.cwd,
-                    currentBranch,
-                    input.threadId,
-                    progress.emit,
-                    "pushRemote" in push && push.pushRemote && push.upstreamBranch
-                      ? { remoteName: push.pushRemote, upstreamRef: push.upstreamBranch }
-                      : undefined,
-                  ),
+                Effect.flatMap(
+                  (): Effect.Effect<GitRunStackedActionResult["pr"], GitManagerServiceError> =>
+                    isGitButler
+                      ? gitButler
+                          .createPullRequest({
+                            cwd: input.cwd,
+                            branch: currentBranch!,
+                            ...(input.gitbutlerForcePushApproval
+                              ? { forcePushApproval: input.gitbutlerForcePushApproval }
+                              : {}),
+                            ...(input.gitbutlerHoldApproval
+                              ? { holdApproval: input.gitbutlerHoldApproval }
+                              : {}),
+                          })
+                          .pipe(Effect.ensuring(invalidateStatus(input.cwd)))
+                      : runPrStep(
+                          textGenerationSettings,
+                          input.cwd,
+                          currentBranch,
+                          input.threadId,
+                          progress.emit,
+                          { base: preflightBase, pushed: push.status === "pushed" },
+                          "pushRemote" in push &&
+                            typeof push.pushRemote === "string" &&
+                            push.upstreamBranch
+                            ? { remoteName: push.pushRemote, upstreamRef: push.upstreamBranch }
+                            : undefined,
+                        ),
                 ),
               )
           : { status: "skipped_not_requested" as const };
 
-        const toast = yield* buildCompletionToast(input.cwd, {
+        const steps = {
           action: input.action,
           branch: branchStep,
           commit,
-          push,
+          push:
+            isGitButler && wantsPr ? { status: "pushed" as const, branch: currentBranch! } : push,
           pr,
-        });
+        };
+        const toast = yield* buildCompletionToast(
+          input.cwd,
+          steps,
+          isGitButler ? currentBranch : undefined,
+        );
 
         const result = {
           action: input.action,
-          branch: branchStep,
+          branch: { ...branchStep, ...(isGitButler ? { gitbutler: true } : {}) },
           commit,
-          push,
+          push: steps.push,
           pr,
           toast,
         };

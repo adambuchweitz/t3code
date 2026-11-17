@@ -1,6 +1,13 @@
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { contextMenuSourceOf } from "../contextMenuSource";
 import { ComposerContextLabel } from "./ComposerContextLabel";
+import {
+  filterBranchPickerRefs,
+  gitButlerAppliedBranches,
+  gitButlerPickerSections,
+  isGitButlerWorkspaceRef,
+  resolveVcsRefDisplayName,
+} from "@t3tools/shared/git";
 import { useRightPanelStore } from "../rightPanelStore";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -16,7 +23,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { GitBranchIcon } from "lucide-react";
+import { GitBranchIcon, MinusIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   useEffect,
   useEffectEvent,
@@ -77,10 +85,15 @@ import { ComposerControl } from "./chat/ComposerControl";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { Button } from "./ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export interface BranchToolbarBranchSelectorHandle {
   open: () => void;
 }
+
+const GITBUTLER_BRANCH_PREFIX = "__gitbutler_branch__:";
+const GITBUTLER_WORKSPACE_ITEM = "__gitbutler_workspace__";
 
 interface BranchToolbarBranchSelectorProps {
   forceNewWorktree?: boolean;
@@ -150,6 +163,24 @@ export function BranchToolbarBranchSelector({
   const createRefMutation = useAtomCommand(vcsEnvironment.createRef, {
     reportFailure: false,
   });
+  const applyGitButlerBranch = useAtomCommand(vcsEnvironment.gitButlerApply, {
+    reportFailure: false,
+  });
+  const unapplyGitButlerBranch = useAtomCommand(vcsEnvironment.gitButlerUnapply, {
+    reportFailure: false,
+  });
+  const createGitButlerBranch = useAtomCommand(vcsEnvironment.gitButlerCreateBranch, {
+    reportFailure: false,
+  });
+  const canApplyGitButlerBranch = useAtomValue(
+    vcsEnvironment.gitButlerApply.permissionAtom(environmentId),
+  );
+  const canUnapplyGitButlerBranch = useAtomValue(
+    vcsEnvironment.gitButlerUnapply.permissionAtom(environmentId),
+  );
+  const canCreateGitButlerBranch = useAtomValue(
+    vcsEnvironment.gitButlerCreateBranch.permissionAtom(environmentId),
+  );
   const threadRef = scopeThreadRef(environmentId, threadId);
   const serverThread = useQuietThreadShell(threadRef);
   const serverSession = serverThread?.runtime ?? null;
@@ -178,6 +209,9 @@ export function BranchToolbarBranchSelector({
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const branchCwd = activeWorktreePath ?? activeProjectCwd;
   const hasServerThread = serverThread !== null;
+  const activeGitButlerBranch = hasServerThread
+    ? (serverThread.gitbutlerBranch ?? null)
+    : (draftThread?.gitbutlerBranch ?? null);
   const canUpdateThreadBranch = !hasServerThread || canOperateThread;
   const canChangeThreadBranch = canWriteSourceControl && canUpdateThreadBranch;
   const effectiveEnvMode =
@@ -274,6 +308,28 @@ export function BranchToolbarBranchSelector({
   );
   const activeProjectCheckoutRoot = projectStatusQuery.data?.workingTree.rootPath;
   const trimmedBranchQuery = branchQuery.trim();
+  const gitButlerBranches =
+    effectiveEnvMode === "local" && !forceNewWorktree
+      ? gitButlerAppliedBranches(branchStatusQuery.data?.workspace)
+      : [];
+  const gitButlerItems =
+    effectiveEnvMode === "local" &&
+    !forceNewWorktree &&
+    branchStatusQuery.data?.refName === "gitbutler/workspace" &&
+    branchStatusQuery.data?.workspace?._tag === "gitbutler"
+      ? [
+          GITBUTLER_WORKSPACE_ITEM,
+          ...gitButlerBranches.map((branch) => `${GITBUTLER_BRANCH_PREFIX}${branch}`),
+        ]
+      : [];
+  const filteredGitButlerItems = gitButlerItems.filter((item) =>
+    (item === GITBUTLER_WORKSPACE_ITEM
+      ? "Whole GitButler workspace"
+      : item.slice(GITBUTLER_BRANCH_PREFIX.length)
+    )
+      .toLowerCase()
+      .includes(trimmedBranchQuery.toLowerCase()),
+  );
   const branchRefState = usePaginatedBranches(
     {
       environmentId,
@@ -304,21 +360,41 @@ export function BranchToolbarBranchSelector({
             refName,
           }).nextWorktreePath,
     });
+  const currentGitBranch =
+    branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
+  const isGitButlerWorkspace =
+    currentGitBranch !== null && isGitButlerWorkspaceRef(currentGitBranch);
+  const isGitButlerPicker =
+    isGitButlerWorkspace && effectiveEnvMode === "local" && !isSelectingWorktreeBase;
+  const gitButlerSections = gitButlerPickerSections(refs, branchStatusQuery.data?.workspace);
+  const pickerRefs = isGitButlerPicker
+    ? gitButlerSections.unappliedRefs
+    : filterBranchPickerRefs(refs, {
+        currentRefName: currentGitBranch,
+        workspace: branchStatusQuery.data?.workspace,
+        isSelectingWorktreeBase,
+      });
   const checkoutPullRequestItemValue =
-    canChangeThreadBranch && prReference && onCheckoutPullRequestRequest
+    canChangeThreadBranch && !isGitButlerPicker && prReference && onCheckoutPullRequestRequest
       ? `__checkout_pull_request__:${prReference}`
       : null;
   const canCreateBranch =
-    canChangeThreadBranch && !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
+    (isGitButlerPicker
+      ? canCreateGitButlerBranch && canUpdateThreadBranch
+      : canChangeThreadBranch) &&
+    !isSelectingWorktreeBase &&
+    (!isGitButlerWorkspace || isGitButlerPicker) &&
+    trimmedBranchQuery.length > 0;
   const newRefName = sanitizeNewRefName(trimmedBranchQuery);
-  const hasExactBranchMatch = branchByName.has(newRefName);
+  const hasExactBranchMatch =
+    branchByName.has(newRefName) || gitButlerBranches.includes(newRefName);
   const createBranchItemValue = canCreateBranch
     ? `__create_new_branch__:${trimmedBranchQuery}`
     : null;
   const pickerCreateBranchItemValue = hasExactBranchMatch ? null : createBranchItemValue;
   const branchPickerItems = [
     ...(checkoutPullRequestItemValue ? [checkoutPullRequestItemValue] : []),
-    ...refs.map((refName) => refName.name),
+    ...pickerRefs.map((refName) => refName.name),
     ...(pickerCreateBranchItemValue ? [pickerCreateBranchItemValue] : []),
   ];
   const filteredBranchPickerItems =
@@ -336,8 +412,6 @@ export function BranchToolbarBranchSelector({
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
   const isFetchingNextPage = branchRefState.isFetchingNextPage;
   const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
-  const currentGitBranch =
-    branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
   const sourceControlPresentation = getSourceControlPresentation(
     branchStatusQuery.data?.sourceControlProvider,
   );
@@ -388,14 +462,16 @@ export function BranchToolbarBranchSelector({
   const totalBranchCount = branchRefState.data?.totalCount ?? 0;
   const branchStatusText = isInitialBranchesLoadPending
     ? gt("Loading refs...")
-    : isFetchingNextPage
-      ? gt("Loading more refs...")
-      : hasNextPage
-        ? gt(
-            "{total, plural, one {Showing {shown} of {total} refs} other {Showing {shown} of {total} refs}}",
-            { shown: refs.length, total: totalBranchCount },
-          )
-        : null;
+    : isGitButlerWorkspace && !isSelectingWorktreeBase
+      ? gt("Apply adds branches; unapply removes their stack for everyone.")
+      : isFetchingNextPage
+        ? gt("Loading more refs...")
+        : hasNextPage
+          ? gt(
+              "{total, plural, one {Showing {shown} of {total} refs} other {Showing {shown} of {total} refs}}",
+              { shown: refs.length, total: totalBranchCount },
+            )
+          : null;
 
   const copyBranchName = (branchName: string) => {
     void writeTextToClipboard(branchName, {
@@ -429,10 +505,12 @@ export function BranchToolbarBranchSelector({
       });
   };
 
-  const runBranchAction = (action: () => Promise<void>) => {
+  const runBranchAction = (action: () => Promise<void>, changesThread = true) => {
     if (
       !readEnvironmentScope(environmentId, AuthSourceControlWriteScope) ||
-      (hasServerThread && !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
+      (changesThread &&
+        hasServerThread &&
+        !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
     ) {
       toastManager.add(
         stackedThreadToast({
@@ -447,6 +525,82 @@ export function BranchToolbarBranchSelector({
       await action();
       branchRefState.refresh();
     });
+  };
+
+  const linkGitButlerBranch = async (gitbutlerBranch: string | null) => {
+    if (!canUpdateThreadBranch) return;
+    if (hasServerThread) {
+      await updateThreadMetadata({ environmentId, input: { threadId, gitbutlerBranch } });
+    } else {
+      setDraftThreadContext(draftId ?? threadRef, { gitbutlerBranch });
+    }
+  };
+
+  const editGitButlerBranch = (action: "apply" | "create", branch: string) => {
+    if (
+      !branchCwd ||
+      isBranchActionPending ||
+      !canUpdateThreadBranch ||
+      !(action === "apply" ? canApplyGitButlerBranch : canCreateGitButlerBranch)
+    )
+      return;
+    handleOpenChange(false);
+    runBranchAction(async () => {
+      const result = await (action === "apply" ? applyGitButlerBranch : createGitButlerBranch)({
+        environmentId,
+        input: { cwd: branchCwd, branch },
+      });
+      if (result._tag === "Success") {
+        await linkGitButlerBranch(result.value.branch);
+        onComposerFocusRequest?.();
+      } else if (!isAtomCommandInterrupted(result)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Failed to ${action} GitButler branch`,
+            description: toBranchActionErrorMessage(squashAtomCommandFailure(result)),
+          }),
+        );
+      }
+    });
+  };
+
+  const requestUnapply = (branch: string) => {
+    const stack = gitButlerSections.appliedStacks.find((branches) => branches.includes(branch));
+    if (!stack || !branchCwd || !canUnapplyGitButlerBranch || isBranchActionPending) return;
+    if (gitButlerSections.appliedStacks.length <= 1) {
+      toastManager.add({
+        type: "info",
+        title: "Keep at least one stack applied",
+        description:
+          "Unapplying the last stack checks out the target branch. Use GitButler directly to leave the workspace.",
+      });
+      return;
+    }
+    handleOpenChange(false);
+    void readLocalApi()
+      ?.dialogs.confirm(
+        `Unapply this stack?\n\nBranches: ${stack.join(", ")}\n\nThis removes the whole stack from the working tree for every thread and agent sharing this checkout. You can apply it again later.`,
+        { variant: "destructive" },
+      )
+      .then((confirmed) => {
+        if (!confirmed) return;
+        runBranchAction(async () => {
+          const result = await unapplyGitButlerBranch({
+            environmentId,
+            input: { cwd: branchCwd, branch },
+          });
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to unapply GitButler stack",
+                description: toBranchActionErrorMessage(squashAtomCommandFailure(result)),
+              }),
+            );
+          }
+        }, false);
+      });
   };
 
   // The picker's list, and the server's coalesced ref listing, can predate a checkout an agent
@@ -471,6 +625,11 @@ export function BranchToolbarBranchSelector({
       setThreadBranch(listedRef.name, null);
       setIsBranchMenuOpen(false);
       onComposerFocusRequest?.();
+      return;
+    }
+
+    if (isGitButlerPicker) {
+      editGitButlerBranch("apply", listedRef.name);
       return;
     }
 
@@ -506,6 +665,8 @@ export function BranchToolbarBranchSelector({
       setThreadBranch(refName.name, selectionTarget.nextWorktreePath);
       return;
     }
+
+    if (isGitButlerWorkspace) return;
 
     const selectedBranchName = refName.isRemote
       ? deriveLocalBranchNameFromRemoteRef(refName.name, refName.remoteName)
@@ -576,8 +737,12 @@ export function BranchToolbarBranchSelector({
   };
 
   const createRef = (rawName: string) => {
-    if (!canChangeThreadBranch) return;
     const name = sanitizeNewRefName(rawName);
+    if (isGitButlerPicker) {
+      if (name) editGitButlerBranch("create", name);
+      return;
+    }
+    if (!canChangeThreadBranch || isGitButlerWorkspace) return;
     if (!branchCwd || !name || isBranchActionPending) return;
     latestSelectionIdRef.current++;
 
@@ -627,7 +792,7 @@ export function BranchToolbarBranchSelector({
 
   const worktreeBaseBranchCandidate = isInitialBranchesLoadPending
     ? null
-    : resolveDefaultWorktreeBaseBranch(refs);
+    : resolveDefaultWorktreeBaseBranch(pickerRefs);
 
   const projectCloneDone = useProjectClone(activeProjectRef)?.phase === "done";
   const refreshStaleRefs = useEffectEvent(() => {
@@ -668,7 +833,7 @@ export function BranchToolbarBranchSelector({
       threadStarted ||
       effectiveEnvMode !== "worktree" ||
       activeWorktreePath ||
-      activeThreadBranch ||
+      (activeThreadBranch && !isGitButlerWorkspaceRef(activeThreadBranch)) ||
       !worktreeBaseBranchCandidate
     ) {
       return;
@@ -711,7 +876,17 @@ export function BranchToolbarBranchSelector({
     {
       activeWorktreePath,
       effectiveEnvMode,
-      resolvedActiveBranch,
+      // Picking a base for a new worktree names a real ref, never GitButler's workspace.
+      resolvedActiveBranch:
+        effectiveEnvMode === "worktree" && !activeWorktreePath
+          ? resolvedActiveBranch
+          : resolveVcsRefDisplayName(
+              resolvedActiveBranch,
+              branchStatusQuery.data?.refName === resolvedActiveBranch
+                ? branchStatusQuery.data.workspace
+                : null,
+              activeGitButlerBranch,
+            ),
       resolvedActiveBranchIsRemote,
       startFromOrigin,
     },
@@ -741,7 +916,24 @@ export function BranchToolbarBranchSelector({
   const linkedIssues = serverThread?.issues ?? [];
 
   function selectPickerItem(itemValue: string) {
-    if (itemValue === checkoutPullRequestItemValue && prReference && onCheckoutPullRequestRequest) {
+    if (gitButlerItems.includes(itemValue)) {
+      if (
+        !canUpdateThreadBranch ||
+        (hasServerThread && !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
+      )
+        return;
+      const gitbutlerBranch =
+        itemValue === GITBUTLER_WORKSPACE_ITEM
+          ? null
+          : itemValue.slice(GITBUTLER_BRANCH_PREFIX.length);
+      void linkGitButlerBranch(gitbutlerBranch);
+      handleOpenChange(false);
+      onComposerFocusRequest?.();
+    } else if (
+      itemValue === checkoutPullRequestItemValue &&
+      prReference &&
+      onCheckoutPullRequestRequest
+    ) {
       latestSelectionIdRef.current++;
       handleOpenChange(false);
       onComposerFocusRequest?.();
@@ -755,6 +947,85 @@ export function BranchToolbarBranchSelector({
   }
 
   function renderPickerItem(itemValue: string, index: number) {
+    if (gitButlerItems.includes(itemValue)) {
+      const branch =
+        itemValue === GITBUTLER_WORKSPACE_ITEM
+          ? null
+          : itemValue.slice(GITBUTLER_BRANCH_PREFIX.length);
+      const stack = gitButlerSections.appliedStacks.find(
+        (branches) => branch !== null && branches.includes(branch),
+      );
+      const firstVisibleInStack = stack?.find((name) =>
+        filteredGitButlerItems.includes(`${GITBUTLER_BRANCH_PREFIX}${name}`),
+      );
+      return (
+        <div key={itemValue}>
+          {itemValue === filteredGitButlerItems[0] ? (
+            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">GitButler branches</div>
+          ) : null}
+          {branch !== null &&
+          itemValue === filteredGitButlerItems.find((item) => item !== GITBUTLER_WORKSPACE_ITEM) ? (
+            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">Applied</div>
+          ) : null}
+          {stack && stack.length > 1 && branch === firstVisibleInStack ? (
+            <div className="truncate px-2 pt-1 pb-1 text-xs text-muted-foreground">
+              Stack: {stack.at(-1)}
+            </div>
+          ) : null}
+          <div className="flex items-center gap-1">
+            <div className="min-w-0 flex-1">
+              <ComboboxItem
+                index={index}
+                value={itemValue}
+                disabled={!canUpdateThreadBranch || isBranchActionPending}
+                aria-description={
+                  branch === null ? undefined : "Applied branch. Alt+Enter to unapply its stack."
+                }
+                onClick={() => selectPickerItem(itemValue)}
+              >
+                <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <MiddleTruncate
+                  value={
+                    itemValue === GITBUTLER_WORKSPACE_ITEM
+                      ? "Whole GitButler workspace"
+                      : itemValue.slice(GITBUTLER_BRANCH_PREFIX.length)
+                  }
+                />
+                {branch !== null ? (
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">applied</span>
+                ) : null}
+              </ComboboxItem>
+            </div>
+            {branch !== null ? (
+              <Tooltip>
+                <TooltipTrigger render={<span />}>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Unapply stack containing ${branch}`}
+                    aria-keyshortcuts="Alt+Enter"
+                    disabled={
+                      !canUnapplyGitButlerBranch ||
+                      isBranchActionPending ||
+                      gitButlerSections.appliedStacks.length <= 1
+                    }
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => requestUnapply(branch)}
+                  >
+                    <MinusIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipPopup>
+                  {gitButlerSections.appliedStacks.length <= 1
+                    ? "Keep at least one stack applied; use GitButler directly to leave the workspace."
+                    : "Unapply stack (Alt+Enter)"}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
     if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {
       return (
         <ComboboxItem
@@ -789,9 +1060,15 @@ export function BranchToolbarBranchSelector({
           onClick={() => selectPickerItem(itemValue)}
         >
           <span className="truncate">
-            <T>
-              Create new ref &quot;<Var>{newRefName}</Var>&quot;
-            </T>
+            {isGitButlerPicker ? (
+              <T>
+                Create &amp; apply &quot;<Var>{newRefName}</Var>&quot;
+              </T>
+            ) : (
+              <T>
+                Create new ref &quot;<Var>{newRefName}</Var>&quot;
+              </T>
+            )}
           </span>
         </ComboboxItem>
       );
@@ -801,38 +1078,62 @@ export function BranchToolbarBranchSelector({
     if (!refName) return null;
 
     return (
-      <BranchPickerRefItem
-        branch={refName}
-        projectCwd={activeProjectCwd}
-        index={index}
-        value={itemValue}
-        disabled={
-          !canUpdateThreadBranch ||
-          (!canWriteSourceControl &&
-            !isSelectingWorktreeBase &&
-            (!activeProjectCwd ||
-              !resolveBranchSelectionTarget({
-                activeProjectCwd,
-                activeProjectCheckoutRoot,
-                activeWorktreePath,
-                refName,
-              }).reuseExistingWorktree)) ||
-          isWorktreeChangeBlockedForRef(refName)
-        }
-        onClick={() => selectPickerItem(itemValue)}
-        onContextMenu={(event) => handleBranchContextMenu(event, itemValue)}
-      />
+      <div key={itemValue}>
+        {isGitButlerPicker &&
+        itemValue === filteredBranchPickerItems.find((item) => branchByName.has(item)) ? (
+          <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">Not applied</div>
+        ) : null}
+        <BranchPickerRefItem
+          branch={refName}
+          projectCwd={activeProjectCwd}
+          index={index}
+          value={itemValue}
+          disabled={
+            !canUpdateThreadBranch ||
+            isBranchActionPending ||
+            (isGitButlerPicker
+              ? !canApplyGitButlerBranch ||
+                Boolean(refName.worktreePath && refName.worktreePath !== branchCwd)
+              : (!canWriteSourceControl || isGitButlerWorkspace) &&
+                !isSelectingWorktreeBase &&
+                (!activeProjectCwd ||
+                  !resolveBranchSelectionTarget({
+                    activeProjectCwd,
+                    activeProjectCheckoutRoot,
+                    activeWorktreePath,
+                    refName,
+                  }).reuseExistingWorktree)) ||
+            isWorktreeChangeBlockedForRef(refName)
+          }
+          onClick={() => selectPickerItem(itemValue)}
+          onContextMenu={(event) => handleBranchContextMenu(event, itemValue)}
+        />
+      </div>
     );
   }
 
   return (
     <BranchPicker
-      items={branchPickerItems}
-      filteredItems={filteredBranchPickerItems}
+      items={[...gitButlerItems, ...branchPickerItems]}
+      filteredItems={[...filteredGitButlerItems, ...filteredBranchPickerItems]}
       open={isBranchMenuOpen}
       onOpenChange={handleOpenChange}
       onSelectItem={selectPickerItem}
-      value={resolvedActiveBranch}
+      onItemSecondaryAction={
+        isGitButlerPicker
+          ? (item) => {
+              if (item.startsWith(GITBUTLER_BRANCH_PREFIX))
+                requestUnapply(item.slice(GITBUTLER_BRANCH_PREFIX.length));
+            }
+          : undefined
+      }
+      value={
+        gitButlerItems.length > 0
+          ? activeGitButlerBranch
+            ? `${GITBUTLER_BRANCH_PREFIX}${activeGitButlerBranch}`
+            : GITBUTLER_WORKSPACE_ITEM
+          : resolvedActiveBranch
+      }
       query={branchQuery}
       onQueryChange={setBranchQuery}
       hasNextPage={hasNextPage}

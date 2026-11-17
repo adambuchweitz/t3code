@@ -424,7 +424,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               (error) =>
                 new OrchestratorMcpFailure({
                   code: "invalid_request",
-                  message: `${error.message} No thread was created. ${worktreeCheckHint(error, strategy)}`,
+                  message:
+                    error._tag === "ThreadLaunchGitButlerBaseError"
+                      ? `${error.message} No thread was created.`
+                      : `${error.message} No thread was created. ${worktreeCheckHint(error, strategy)}`,
                 }),
             ),
           );

@@ -1,0 +1,32 @@
+{
+  "baseBranch": {
+    "name": "origin/main",
+    "remoteName": "origin",
+    "baseSha": "8173bb3e4e79219019613394cfb7d6a138891d2d",
+    "currentSha": "1e145c7718fab9bd2c6887327bac0f3cc8408c34"
+  },
+  "upstreamCommits": {
+    "count": 1,
+    "commits": [
+      {
+        "id": "1e145c7718fab9bd2c6887327bac0f3cc8408c34",
+        "description": "remote",
+        "authorName": "Fixture"
+      }
+    ]
+  },
+  "branchStatuses": [
+    {
+      "name": "feature/two",
+      "status": "updatable",
+      "rebasable": null
+    },
+    {
+      "name": "feature/one",
+      "status": "updatable",
+      "rebasable": null
+    }
+  ],
+  "upToDate": false,
+  "hasWorktreeConflicts": false
+}

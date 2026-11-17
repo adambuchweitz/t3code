@@ -870,6 +870,33 @@ describe("composerDraftStore project draft thread mapping", () => {
     resetComposerDraftStore();
   });
 
+  it("preserves a draft GitButler association across context updates and clears it explicitly or on a project move", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, {
+      threadId,
+      branch: "gitbutler/workspace",
+      gitbutlerBranch: "feature/api",
+    });
+    expect(store.getDraftSession(draftId)?.gitbutlerBranch).toBe("feature/api");
+    store.setDraftThreadContext(draftId, { runtimeMode: "approval-required" });
+    expect(store.getDraftSession(draftId)?.gitbutlerBranch).toBe("feature/api");
+    for (const gitbutlerBranch of [null, "feature/ui"]) {
+      store.setDraftThreadContext(draftId, { gitbutlerBranch });
+      expect(store.getDraftSession(draftId)).toMatchObject({
+        gitbutlerBranch,
+        branch: "gitbutler/workspace",
+      });
+    }
+    store.setDraftThreadContext(draftId, { branch: "main" });
+    expect(store.getDraftSession(draftId)?.gitbutlerBranch).toBeNull();
+    store.setDraftThreadContext(draftId, {
+      branch: "gitbutler/workspace",
+      gitbutlerBranch: "feature/api",
+    });
+    store.setDraftThreadContext(draftId, { projectRef: otherProjectRef });
+    expect(store.getDraftSession(draftId)?.gitbutlerBranch).toBeNull();
+  });
+
   it("clears composer data for one environment without touching another", () => {
     const store = useComposerDraftStore.getState();
     const localThreadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);

@@ -134,6 +134,7 @@ const handoffFrom = <A, E>(
                 }),
               listLocalBranchNames: driver.listLocalBranchNames,
               createWorktree: driver.createWorktree,
+              pinAppliedStackWorktreeBase: driver.pinAppliedStackWorktreeBase,
             });
           }),
         ),

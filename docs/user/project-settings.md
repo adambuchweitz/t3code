@@ -10,6 +10,7 @@ Use the **"Applying settings for …"** selector at the top of Settings (web/des
 - **Project scope**: Creates a project override for that setting without changing environment defaults. Settings that cannot be overridden appear read-only.
 - **Inheritance order**: `Project override` → `Environment setting` → `t3.json` in the repo → `Built-in default`. Leave a setting on **Inherit** to defer to the next tier.
 - Click the **layers icon** beside a server setting to inspect its inheritance chain, jump to overriding projects, or **Reset all** back to the environment default.
+- **Project sidebar visibility** is saved on this device, but applies to the selected checkouts.
 - **Per-project providers**: With a project selected in **Settings → Providers**, toggling a provider enables or disables it for that project only (in either direction). Running turns finish; no new turns start on a disabled provider.
 
 ## Pin and archive projects

@@ -48,6 +48,7 @@ import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
 import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
 import { useEnvironmentQuery } from "../../state/query";
+import { useGitButlerActionStatus } from "../../state/use-gitbutler-action-status";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -567,6 +568,12 @@ function ThreadRouteContent(
         })
       : null,
   );
+  const gitActionStatus = useGitButlerActionStatus({
+    environmentId: selectedThread?.environmentId,
+    cwd: selectedThreadCwd,
+    status: gitStatus.data,
+    linkedBranch: selectedThread?.gitbutlerBranch,
+  });
   const { sessions: knownTerminalSessions } = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,
@@ -832,7 +839,8 @@ function ThreadRouteContent(
         : undefined,
     currentBranch: selectedThread?.branch ?? null,
     tracksRepositories: (selectedThreadProject?.trackedFolders?.length ?? 0) > 0,
-    gitStatus: gitStatus.data,
+    gitbutlerBranch: selectedThread?.gitbutlerBranch ?? null,
+    gitStatus: gitActionStatus,
     gitOperationLabel: gitState.gitOperationLabel,
     canOpenTerminal:
       Boolean(selectedThreadProject?.workspaceRoot) && (canReadTerminal || canOperateTerminal),

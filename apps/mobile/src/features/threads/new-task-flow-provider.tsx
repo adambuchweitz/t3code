@@ -161,6 +161,7 @@ type NewTaskFlowContextValue = {
   readonly setWorktreeRepositories: (repositoryPaths: ReadonlyArray<string>) => void;
   readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
+  readonly gitbutlerBranch: string | null;
   readonly selectedWorktreePath: string | null;
   /** Where the draft's agent will run: the selected worktree, else the project root. */
   readonly workspaceCwd: string | null;
@@ -837,6 +838,7 @@ export function NewTaskFlowProvider(
         projectTitle: selectedProject.title,
         projectCwd: selectedProject.workspaceRoot,
         workspaceMode: mode,
+        gitbutlerBranch: mode === "local" ? (workspaceSelection.gitbutlerBranch ?? null) : null,
         ...(mode === "worktree" && workspaceSelection?.pullRequestReference
           ? { pullRequestReference: workspaceSelection.pullRequestReference }
           : {}),
@@ -934,6 +936,7 @@ export function NewTaskFlowProvider(
     setWorktreeRepositories,
     canChooseWorkspace,
     selectedBranchName,
+    gitbutlerBranch: workspaceSelection.gitbutlerBranch ?? null,
     selectedWorktreePath,
     workspaceCwd,
     resolveWorkspaceSelection,

@@ -49,7 +49,8 @@ describe("project thread title", () => {
       runtimeMode: "full-access",
       interactionMode: "default",
       workspaceMode: "local",
-      branch: null,
+      branch: "gitbutler/workspace",
+      gitbutlerBranch: "feature/api",
       worktreePath: null,
       startFromOrigin: false,
       worktreeBranchName: "unused",
@@ -58,6 +59,12 @@ describe("project thread title", () => {
 
     expect(input.titleSeed).toBe(title);
     expect(input.bootstrap.createThread.title).toBe(input.titleSeed);
+    expect(input.bootstrap.createThread).toMatchObject({
+      branch: "gitbutler/workspace",
+      gitbutlerBranch: "feature/api",
+    });
+    const worktree = buildProjectThreadStartTurnInput({ ...spec, workspaceMode: "worktree" });
+    expect(worktree.bootstrap.createThread.gitbutlerBranch).toBeNull();
     expect(input.message.attachments).toEqual(uploadedAttachments);
     expect(input.message.text).toBe(wire.text);
     const relaunched = buildProjectThreadStartTurnInput({

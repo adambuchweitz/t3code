@@ -1975,6 +1975,7 @@ export function threadShellFromProjection(
     runtimeMode: projection.thread.runtimeMode,
     interactionMode: projection.thread.interactionMode,
     branch: projection.thread.branch,
+    gitbutlerBranch: projection.thread.gitbutlerBranch ?? null,
     worktreePath: projection.thread.worktreePath,
     pullRequests: threadPullRequestsOf(projection.thread),
     ...(projection.thread.linkedPullRequest === undefined
@@ -2296,6 +2297,7 @@ function shellFromState(input: {
     runtimeMode: input.state.thread.runtimeMode,
     interactionMode: input.state.thread.interactionMode,
     branch: input.state.thread.branch,
+    gitbutlerBranch: input.state.thread.gitbutlerBranch ?? null,
     worktreePath: input.state.thread.worktreePath,
     pullRequests: threadPullRequestsOf(input.state.thread),
     ...(input.state.thread.linkedPullRequest === undefined

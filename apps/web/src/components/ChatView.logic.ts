@@ -10,6 +10,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { turnChanges } from "@t3tools/client-runtime/state/thread-repositories";
 import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
+import { isGitButlerWorkspaceRef } from "@t3tools/shared/git";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
@@ -471,6 +472,7 @@ export function buildLocalDraftThread(
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
     branch: draftThread.branch,
+    gitbutlerBranch: draftThread.gitbutlerBranch ?? null,
     worktreePath: draftThread.worktreePath,
     activeProviderThreadId: null,
     lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
@@ -1471,6 +1473,10 @@ export function planComposerTurn(input: {
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
   const shouldCreateWorktree =
     isFirstMessage && input.sendEnvMode === "worktree" && !input.worktreePath;
+  const worktreeBaseBranch =
+    input.activeThreadBranch !== null && !isGitButlerWorkspaceRef(input.activeThreadBranch)
+      ? input.activeThreadBranch
+      : null;
   // A stale Claude session compacts before this message so the turn does not re-read the
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
@@ -1489,13 +1495,13 @@ export function planComposerTurn(input: {
     missingWorktreeBaseBranch:
       shouldCreateWorktree &&
       input.projectIsGitRepo &&
-      !input.activeThreadBranch &&
+      !worktreeBaseBranch &&
       !input.isScratchProject,
     // The launch schema requires a base ref; `HEAD` leaves each repository on its default branch.
     baseBranchForWorktree: !shouldCreateWorktree
       ? null
       : input.projectIsGitRepo
-        ? input.activeThreadBranch
+        ? worktreeBaseBranch
         : input.plainProjectBaseBranch || "HEAD",
     compactBeforeSend,
     turnDispatchMode:

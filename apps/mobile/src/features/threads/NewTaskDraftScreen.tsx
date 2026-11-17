@@ -162,6 +162,7 @@ export function NewTaskDraftScreen(props: {
     readonly environmentId?: string;
     readonly projectId?: string;
     readonly branch?: string | null;
+    readonly gitbutlerBranch?: string | null;
     readonly worktreePath?: string | null;
     readonly cloning?: boolean;
   };
@@ -483,6 +484,7 @@ export function NewTaskDraftScreen(props: {
             workspaceSelection: {
               mode: "local",
               branch: props.initialProjectRef.branch,
+              gitbutlerBranch: props.initialProjectRef.gitbutlerBranch ?? null,
               worktreePath: props.initialProjectRef.worktreePath ?? null,
               startFromOrigin: false,
             },
@@ -1079,6 +1081,7 @@ export function NewTaskDraftScreen(props: {
       runtimeMode: flow.runtimeMode,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: flow.selectedBranchName,
+      gitbutlerBranch: flow.gitbutlerBranch,
       worktreePath: flow.selectedWorktreePath,
       createdAt: creationMetadata.createdAt,
     },

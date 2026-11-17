@@ -1,11 +1,14 @@
 import * as Context from "effect/Context";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import {
+  GitCommandError,
   VcsRepositoryDetectionError,
   VcsUnsupportedOperationError,
   type ReviewBranchCommitsInput,
@@ -15,9 +18,11 @@ import {
   type ReviewDiffPreviewError,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
+  type ReviewDiffPreviewSource,
 } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import * as GitButlerWorkspace from "../vcs/GitButlerWorkspace.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
@@ -51,6 +56,8 @@ export const make = Effect.gen(function* () {
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const knownWorkspaces = yield* KnownWorkspaces.KnownWorkspaces;
+  const gitButler = yield* GitButlerWorkspace.GitButlerWorkspace;
+  const crypto = yield* Digest.Digest;
 
   const canonicalizePath = (value: string) => {
     const resolvedPath = path.resolve(value);
@@ -110,11 +117,56 @@ export const make = Effect.gen(function* () {
     return yield* git.getReviewBranchCommits(input);
   });
 
-  const getDiffPreview: ReviewService["Service"]["getDiffPreview"] = Effect.fn(
-    "ReviewService.getDiffPreview",
-  )(function* (input) {
-    yield* assertWorkspaceBoundCwd("ReviewService.getDiffPreview", input.cwd);
+  const readGitButlerBranchSource = Effect.fn("ReviewService.readGitButlerBranchSource")(
+    function* (input: {
+      readonly cwd: string;
+      readonly branch: string;
+      readonly metadataOnly: boolean;
+      readonly file?: { readonly path: string; readonly previousPath: string | null };
+    }) {
+      const diff = yield* gitButler.readBranchDiff(input);
+      const hashInput = [
+        input.branch,
+        ...diff.files.map(
+          (file) =>
+            `${file.previousPath ?? ""}\u0000${file.path}\u0000${file.additions}\u0000${file.deletions}`,
+        ),
+        diff.patch,
+      ].join("\n");
+      const diffHash = yield* crypto
+        .digest(Digest.sha256, new TextEncoder().encode(hashInput))
+        .pipe(
+          Effect.map(Hex.encode),
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                operation: "ReviewService.readGitButlerBranchSource",
+                command: "crypto.digest SHA-256",
+                cwd: input.cwd,
+                detail: "Failed to hash the GitButler branch diff.",
+                cause,
+              }),
+          ),
+        );
+      return {
+        id: `gitbutler-branch:${input.branch}`,
+        kind: "gitbutler-branch",
+        title: input.branch,
+        // GitButler's own target ref goes stale, so the source names no base.
+        baseRef: null,
+        headRef: input.branch,
+        diff: input.metadataOnly ? "" : diff.patch,
+        files: diff.files,
+        diffHash,
+        truncated: input.metadataOnly ? false : diff.truncated,
+        ...(input.metadataOnly ? { patchesDeferred: true } : {}),
+      } satisfies ReviewDiffPreviewSource;
+    },
+  );
 
+  const getVcsDiffPreview = Effect.fn("ReviewService.getVcsDiffPreview")(function* (
+    input: ReviewDiffPreviewInput,
+  ) {
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
     if (!handle) {
       return {
@@ -127,10 +179,40 @@ export const make = Effect.gen(function* () {
     return yield* git.getReviewDiffPreview(input);
   });
 
+  const getDiffPreview: ReviewService["Service"]["getDiffPreview"] = Effect.fn(
+    "ReviewService.getDiffPreview",
+  )(function* (input) {
+    yield* assertWorkspaceBoundCwd("ReviewService.getDiffPreview", input.cwd);
+
+    if (input.gitbutlerBranch !== undefined) {
+      const source = yield* readGitButlerBranchSource({
+        cwd: input.cwd,
+        branch: input.gitbutlerBranch,
+        metadataOnly: input.metadataOnly === true && !input.file,
+        ...(input.file
+          ? { file: { path: input.file.path, previousPath: input.file.previousPath } }
+          : {}),
+      });
+      return { cwd: input.cwd, generatedAt: yield* DateTime.now, sources: [source] };
+    }
+
+    return yield* getVcsDiffPreview(input);
+  });
+
   const getDiffFileContents: ReviewService["Service"]["getDiffFileContents"] = Effect.fn(
     "ReviewService.getDiffFileContents",
   )(function* (input) {
     yield* assertWorkspaceBoundCwd("ReviewService.getDiffFileContents", input.cwd);
+
+    // GitButler's target ref goes stale and the working tree mixes every applied
+    // branch, so neither side of an expansion would match the branch's hunks.
+    if (input.sourceKind === "gitbutler-branch") {
+      return yield* new VcsUnsupportedOperationError({
+        operation: "ReviewService.getDiffFileContents",
+        kind: "git",
+        detail: "Unchanged lines cannot be expanded in a GitButler branch diff.",
+      });
+    }
 
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
     if (handle?.kind !== "git") {

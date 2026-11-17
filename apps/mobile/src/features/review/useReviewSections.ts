@@ -6,6 +6,7 @@ import { msg, useMessages } from "gt-react-native";
 
 import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/thread-checkpoints";
 import type { EnvironmentId, ReviewDiffPreviewSource, ThreadId } from "@t3tools/contracts";
+import { gitButlerAppliedBranches } from "@t3tools/shared/git";
 
 import { useCheckpointDiff } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
@@ -13,11 +14,13 @@ import { useEnvironmentPresentation } from "../../state/presentation";
 import { lastReviewGitSectionsAtom, reviewEnvironment } from "../../state/review";
 import { lastReviewTurnDiffsAtom, reviewTurnDiffText } from "../../state/reviewTurnDiffs";
 import { environmentSession } from "../../state/session";
+import { vcsEnvironment } from "../../state/vcs";
 import { useSelectedThreadProjection } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import {
   buildReviewSectionItems,
+  getGitButlerBranchSectionId,
   getReadyReviewCheckpoints,
   getReviewSectionIdForCheckpoint,
   resolveReviewSelectedSectionId,
@@ -71,6 +74,45 @@ export function useReviewSections(input: {
       : null;
   const workingTreePreview = useEnvironmentQuery(diffPreviewQuery("working-tree"));
   const branchPreview = useEnvironmentQuery(diffPreviewQuery("branch-range"));
+  const gitStatus = useEnvironmentQuery(
+    canReadFiles && enabled && environmentId !== undefined && selectedThreadCwd !== null
+      ? vcsEnvironment.status({ environmentId, input: { cwd: selectedThreadCwd } })
+      : null,
+  );
+  const gitButlerBranches = gitButlerAppliedBranches(gitStatus.data?.workspace);
+  const associatedBranch = selectedThread?.projection.thread.gitbutlerBranch ?? null;
+  const requestedSectionId =
+    reviewCache.selectedSectionId ??
+    (associatedBranch ? getGitButlerBranchSectionId(associatedBranch) : null);
+  // Only the selected branch is diffed, so the review never runs `but diff` per branch.
+  const selectedGitButlerBranch =
+    gitButlerBranches.find(
+      (branch) => getGitButlerBranchSectionId(branch) === requestedSectionId,
+    ) ?? null;
+  const gitButlerPreview = useEnvironmentQuery(
+    selectedGitButlerBranch !== null &&
+      canReadFiles &&
+      enabled &&
+      environmentId !== undefined &&
+      selectedThreadCwd !== null
+      ? reviewEnvironment.diffPreview({
+          environmentId,
+          input: { cwd: selectedThreadCwd, gitbutlerBranch: selectedGitButlerBranch },
+        })
+      : null,
+  );
+  // A chosen branch only ends on loaded status or a loaded session without read access.
+  // Reconnects, grant reloads, a missing cwd, and failed status reads say nothing about
+  // whether it is still applied, so it stays selected as a loading section until then.
+  const gitButlerSectionPrefix = getGitButlerBranchSectionId("");
+  const isFileAccessDenied =
+    fileAccessSession.data !== null && fileAccessSession.error === null && !canReadFiles;
+  const awaitedGitButlerBranch =
+    gitStatus.data === null &&
+    !isFileAccessDenied &&
+    reviewCache.selectedSectionId?.startsWith(gitButlerSectionPrefix) === true
+      ? reviewCache.selectedSectionId.slice(gitButlerSectionPrefix.length)
+      : null;
   const lastGitSections = useAtomValue(
     environmentId !== undefined && selectedThreadCwd !== null
       ? lastReviewGitSectionsAtom(environmentId, selectedThreadCwd)
@@ -105,7 +147,24 @@ export function useReviewSections(input: {
   // Section ids and the selection do not depend on the live query, so they are resolved first.
   const cachedSections = buildReviewSectionItems({
     checkpoints: readyCheckpoints,
-    gitSections: canReadFiles || fileAccess.isPending ? gitSections : [],
+    gitSections:
+      canReadFiles || fileAccess.isPending
+        ? [...gitSections, ...(gitButlerPreview.data?.sources ?? [])]
+        : [],
+    gitButlerBranches:
+      awaitedGitButlerBranch !== null
+        ? [awaitedGitButlerBranch]
+        : canReadFiles
+          ? gitButlerBranches
+          : [],
+    loadingGitButlerBranch:
+      awaitedGitButlerBranch !== null
+        ? gitStatus.error === null && fileAccessSession.error === null
+          ? awaitedGitButlerBranch
+          : null
+        : gitButlerPreview.isPending
+          ? selectedGitButlerBranch
+          : null,
     turnDiffById: reviewTurnDiffsBySectionId(readyCheckpoints, lastTurnDiffs),
     gitSectionStates: {
       "working-tree": gitSectionState(fileAccess.isPending, workingTreePreview),
@@ -117,6 +176,7 @@ export function useReviewSections(input: {
   const selectedSectionId = resolveReviewSelectedSectionId(
     cachedSections,
     reviewCache.selectedSectionId,
+    associatedBranch,
   );
 
   const selectedCheckpoint =
@@ -170,6 +230,10 @@ export function useReviewSections(input: {
       activeTurnDiff.refresh();
       return;
     }
+    if (selectedSection?.kind === "gitbutler-branch") {
+      gitButlerPreview.refresh();
+      return;
+    }
     if (selectedGitPreview) {
       selectedGitPreview.refresh();
     } else {
@@ -186,6 +250,8 @@ export function useReviewSections(input: {
 
   return {
     error:
+      (awaitedGitButlerBranch === null ? null : (gitStatus.error ?? fileAccessSession.error)) ??
+      (selectedGitButlerBranch === null ? null : gitButlerPreview.error) ??
       (selectedSection?.kind === "turn"
         ? activeTurnDiff.error
         : (selectedGitPreview?.error ?? null)) ??
@@ -195,7 +261,9 @@ export function useReviewSections(input: {
     isSelectedSectionPending:
       selectedSection?.kind === "turn"
         ? activeTurnDiff.isPending
-        : (selectedGitPreview?.isPending ?? false),
+        : selectedSection?.kind === "gitbutler-branch"
+          ? gitButlerPreview.isPending
+          : (selectedGitPreview?.isPending ?? false),
     reviewSections,
     selectedSection,
     refreshSelectedSection,

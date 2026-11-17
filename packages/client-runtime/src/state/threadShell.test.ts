@@ -90,6 +90,23 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("carries GitButler associations and removals through shell presentation", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const ref = { environmentId, threadId: v2ThreadShell.id };
+    const dispose = registry.mount(threads.quietThreadShellAtom(ref));
+    for (const gitbutlerBranch of ["feature/api", "feature/ui", null]) {
+      registry.set(snapshotAtom(environmentId), {
+        ...v2ShellSnapshot,
+        threads: [{ ...v2ThreadShell, gitbutlerBranch }],
+      });
+      expect(registry.get(threads.quietThreadShellAtom(ref))?.gitbutlerBranch).toBe(
+        gitbutlerBranch,
+      );
+    }
+    dispose();
+    registry.dispose();
+  });
+
   it("preserves ordered reference arrays when a middle thread changes", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const snapshot = {
