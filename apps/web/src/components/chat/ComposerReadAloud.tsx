@@ -1,10 +1,12 @@
 import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
+import { msg, useGT } from "gt-react";
 import { SquareIcon, Volume2Icon, WavesIcon } from "lucide-react";
 import { memo, useEffect, useEffectEvent, useRef } from "react";
 
 import { useClientSettings } from "~/hooks/useSettings";
 import { useReadAloudMessages } from "~/hooks/useReadAloudMessages";
 import { useSpeechPlayback } from "~/hooks/useSpeechPlayback";
+import { m } from "~/i18n/messages";
 import { clampResponse, requestSpeechAudio } from "~/lib/readAloud";
 import {
   advanceResponseMark,
@@ -24,7 +26,7 @@ function reportReadAloudError(message: string) {
   toastManager.add(
     stackedThreadToast({
       type: "error",
-      title: "Couldn't read the response",
+      title: m(msg("Couldn't read the response")),
       description: message,
     }),
   );
@@ -53,6 +55,7 @@ export const ComposerReadAloud = memo(function ComposerReadAloud({
 });
 
 function ReadAloudControls({ threadRef }: { threadRef: ScopedThreadRef }) {
+  const gt = useGT();
   const messages = useReadAloudMessages(threadRef);
   const voice = useClientSettings((settings) => settings.readAloudVoice);
   const options = useClientSettings((settings) => settings.readAloudOptions);
@@ -91,8 +94,8 @@ function ReadAloudControls({ threadRef }: { threadRef: ScopedThreadRef }) {
         toastManager.add(
           stackedThreadToast({
             type: "info",
-            title: "Reading the first part",
-            description: "This response is longer than read aloud speaks in one go.",
+            title: m(msg("Reading the first part")),
+            description: m(msg("This response is longer than read aloud speaks in one go.")),
           }),
         );
       }
@@ -127,15 +130,15 @@ function ReadAloudControls({ threadRef }: { threadRef: ScopedThreadRef }) {
 
   const speakerLabel =
     latest === null
-      ? "No response to read yet"
+      ? gt("No response to read yet")
       : state === "idle"
-        ? "Read response aloud"
+        ? gt("Read response aloud")
         : state === "loading"
-          ? "Preparing speech. Select to cancel"
-          : "Stop reading";
+          ? gt("Preparing speech. Select to cancel")
+          : gt("Stop reading");
   const autoLabel = autoRead
-    ? "Stop reading new responses aloud"
-    : "Read new responses aloud automatically";
+    ? gt("Stop reading new responses aloud")
+    : gt("Read new responses aloud automatically");
 
   return (
     <>

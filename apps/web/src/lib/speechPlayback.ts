@@ -1,3 +1,6 @@
+import { msg } from "gt-react";
+
+import { m } from "../i18n/messages";
 import { type AudioPlayback, playAudioStream } from "./audioStreamPlayer";
 
 export type SpeechPlaybackState = "idle" | "loading" | "playing";
@@ -56,7 +59,7 @@ export function createSpeechPlayback(options: {
       await playback.finished;
     } catch (error) {
       if (!signal.aborted) {
-        options.onError(error instanceof Error ? error.message : "Read aloud failed.");
+        options.onError(error instanceof Error ? error.message : m(msg("Read aloud failed.")));
       }
     } finally {
       // Ending any way, a failed player included, closes the request and its
