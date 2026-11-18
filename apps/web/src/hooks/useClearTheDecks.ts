@@ -1,15 +1,31 @@
 import * as Schema from "effect/Schema";
 import { resolveSnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
+import { msg } from "gt-react";
 
 import { useLocalStorage } from "./useLocalStorage";
 
 export const CLEAR_THE_DECKS_DURATIONS = {
-  hour: { label: "1 hour", shortLabel: "1h", sendLabel: "Snooze for 1 hour" },
-  "three-hours": { label: "3 hours", shortLabel: "3h", sendLabel: "Snooze for 3 hours" },
+  hour: {
+    label: msg("1 hour"),
+    shortLabel: msg("1h", { $context: "abbreviated snooze duration of one hour" }),
+    sendTooltip: msg("Clear the decks: Snooze for 1 hour, then open the next attention thread."),
+    sendDescription: msg("Send, snooze for 1 hour, and open the next attention thread."),
+  },
+  "three-hours": {
+    label: msg("3 hours"),
+    shortLabel: msg("3h", { $context: "abbreviated snooze duration of three hours" }),
+    sendTooltip: msg("Clear the decks: Snooze for 3 hours, then open the next attention thread."),
+    sendDescription: msg("Send, snooze for 3 hours, and open the next attention thread."),
+  },
   tomorrow: {
-    label: "Tomorrow morning",
-    shortLabel: "Tomorrow",
-    sendLabel: "Snooze until tomorrow morning",
+    label: msg("Tomorrow morning"),
+    shortLabel: msg("Tomorrow", { $context: "snooze until tomorrow morning" }),
+    sendTooltip: msg(
+      "Clear the decks: Snooze until tomorrow morning, then open the next attention thread.",
+    ),
+    sendDescription: msg(
+      "Send, snooze until tomorrow morning, and open the next attention thread.",
+    ),
   },
 };
 

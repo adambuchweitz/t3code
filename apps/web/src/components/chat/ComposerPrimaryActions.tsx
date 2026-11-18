@@ -40,7 +40,7 @@ interface PendingActionState {
 interface ComposerPrimaryActionsProps {
   /** Footer controls (dictation) that always sit right before the primary button. */
   children?: ReactNode;
-  sendSnoozeLabel?: string | null;
+  sendSnoozeTooltip?: string | null;
   compact: boolean;
   canOperateThread: boolean;
   pendingAction: PendingActionState | null;
@@ -234,7 +234,7 @@ export function CollapsedComposerStopAction({
 
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   children,
-  sendSnoozeLabel = null,
+  sendSnoozeTooltip = null,
   compact,
   canOperateThread,
   pendingAction,
@@ -399,7 +399,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           : isRunning
             ? gt("Steer message")
             : gt("Submit message");
-  const snoozesOnSend = sendSnoozeLabel !== null && !showResume && !isEditingQueuedMessage;
+  const snoozesOnSend = sendSnoozeTooltip !== null && !showResume && !isEditingQueuedMessage;
   const submitLabel = snoozesOnSend
     ? gt("{label} and snooze", { label: baseSubmitLabel })
     : baseSubmitLabel;
@@ -496,9 +496,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <TooltipTrigger render={<span className="inline-flex" />}>{sendButton}</TooltipTrigger>
       <TooltipPopup>
         {submitTooltip}
-        {snoozesOnSend ? (
-          <div>Clear the decks: {sendSnoozeLabel}, then open the next attention thread.</div>
-        ) : null}
+        {snoozesOnSend ? <div>{m(sendSnoozeTooltip)}</div> : null}
       </TooltipPopup>
     </Tooltip>
   );
