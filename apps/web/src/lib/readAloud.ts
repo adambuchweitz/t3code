@@ -6,7 +6,9 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { clampSpeechText } from "@t3tools/shared/speechText";
+import { msg } from "gt-react";
 
+import { m } from "../i18n/messages";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readPreparedConnection } from "../state/session";
 import { environmentSpeech } from "../state/speech";
@@ -20,7 +22,7 @@ import { environmentSpeech } from "../state/speech";
 
 function preparedConnection(environmentId: EnvironmentId) {
   const prepared = readPreparedConnection(environmentId);
-  if (prepared === null) throw new Error("This environment is not connected.");
+  if (prepared === null) throw new Error(m(msg("This environment is not connected.")));
   return prepared;
 }
 
@@ -33,7 +35,7 @@ function settle<A>(result: AtomCommandResult<A, unknown>): A {
     if (isAtomCommandInterrupted(result))
       throw new DOMException("Read aloud was cancelled.", "AbortError");
     const error = squashAtomCommandFailure(result);
-    throw error instanceof Error ? error : new Error("Read aloud failed.");
+    throw error instanceof Error ? error : new Error(m(msg("Read aloud failed.")));
   }
   return result.value;
 }
@@ -41,7 +43,7 @@ function settle<A>(result: AtomCommandResult<A, unknown>): A {
 /** Long responses are read up to the cap; `truncated` says the listener is missing the rest. */
 export function clampResponse(text: string): ReturnType<typeof clampSpeechText> {
   const clamped = clampSpeechText(text);
-  if (clamped.text.trim() === "") throw new Error("There is no response text to read yet.");
+  if (clamped.text.trim() === "") throw new Error(m(msg("There is no response text to read yet.")));
   return clamped;
 }
 

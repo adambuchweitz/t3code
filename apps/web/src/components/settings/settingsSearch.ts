@@ -1148,10 +1148,12 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "read-aloud-enabled",
-    title: "Read aloud",
+    title: msg("Read aloud"),
     to: "/settings/devices",
     searchTerms: [
-      "voice text to speech tts speak listen audio voicestudio omnivoice tailscale lan-party profile speed language gender age pitch accent whisper seed steps guidance preview",
+      msg(
+        "voice text to speech tts speak listen audio voicestudio omnivoice tailscale lan-party profile speed language gender age pitch accent whisper seed steps guidance preview",
+      ),
     ],
   },
   {

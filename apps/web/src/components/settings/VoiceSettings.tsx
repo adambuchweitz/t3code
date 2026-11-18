@@ -11,11 +11,13 @@ import {
   type SpeechVoiceProfiles,
   isDefaultSpeechVoice,
 } from "@t3tools/contracts";
+import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { ChevronRightIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { updateClientSettings, useClientSettings } from "~/hooks/useSettings";
 import { useSpeechPlayback } from "~/hooks/useSpeechPlayback";
+import { m } from "~/i18n/messages";
 import { requestSpeechAudio, requestVoiceProfiles } from "~/lib/readAloud";
 import { cn } from "~/lib/utils";
 import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
@@ -29,7 +31,6 @@ import { SettingsRow } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 
-const DEFAULT_VOICE_LABEL = "Default OmniVoice";
 const DEFAULT_PREVIEW_TEXT = "Here is a preview of your read-aloud voice.";
 
 /** Commits on blur or Enter; an invalid draft snaps back instead of saving. */
@@ -99,13 +100,58 @@ const numberIn =
   };
 
 const ATTRIBUTES = [
-  { key: "gender", title: "Gender", values: SPEECH_GENDERS },
-  { key: "age", title: "Age", values: SPEECH_AGES },
-  { key: "pitch", title: "Pitch", values: SPEECH_PITCHES },
-  { key: "accent", title: "Accent", values: SPEECH_ACCENTS },
+  {
+    key: "gender",
+    title: msg("Gender", { $context: "read-aloud voice attribute" }),
+    label: msg("Voice gender"),
+    values: SPEECH_GENDERS,
+  },
+  {
+    key: "age",
+    title: msg("Age", { $context: "read-aloud voice attribute" }),
+    label: msg("Voice age"),
+    values: SPEECH_AGES,
+  },
+  {
+    key: "pitch",
+    title: msg("Pitch", { $context: "read-aloud voice attribute" }),
+    label: msg("Voice pitch"),
+    values: SPEECH_PITCHES,
+  },
+  {
+    key: "accent",
+    title: msg("Accent", { $context: "read-aloud voice attribute" }),
+    label: msg("Voice accent"),
+    values: SPEECH_ACCENTS,
+  },
 ] as const;
 
-const sentenceCase = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+type SpeechAttributeValue = Exclude<SpeechOptions[(typeof ATTRIBUTES)[number]["key"]], "">;
+
+const ATTRIBUTE_VALUE_LABELS = {
+  male: msg("Male", { $context: "read-aloud voice gender" }),
+  female: msg("Female", { $context: "read-aloud voice gender" }),
+  child: msg("Child", { $context: "read-aloud voice age" }),
+  teenager: msg("Teenager", { $context: "read-aloud voice age" }),
+  "young adult": msg("Young adult", { $context: "read-aloud voice age" }),
+  "middle-aged": msg("Middle-aged", { $context: "read-aloud voice age" }),
+  elderly: msg("Elderly", { $context: "read-aloud voice age" }),
+  "very low pitch": msg("Very low pitch"),
+  "low pitch": msg("Low pitch"),
+  "moderate pitch": msg("Moderate pitch"),
+  "high pitch": msg("High pitch"),
+  "very high pitch": msg("Very high pitch"),
+  "american accent": msg("American accent"),
+  "british accent": msg("British accent"),
+  "australian accent": msg("Australian accent"),
+  "chinese accent": msg("Chinese accent"),
+  "canadian accent": msg("Canadian accent"),
+  "indian accent": msg("Indian accent"),
+  "korean accent": msg("Korean accent"),
+  "portuguese accent": msg("Portuguese accent"),
+  "russian accent": msg("Russian accent"),
+  "japanese accent": msg("Japanese accent"),
+} satisfies Record<SpeechAttributeValue, string>;
 
 export function VoiceSettings() {
   const { environment } = useSettingsScope();
@@ -115,6 +161,8 @@ export function VoiceSettings() {
 }
 
 function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId | null }) {
+  const gt = useGT();
+  const messages = useMessages();
   const enabled = useClientSettings((settings) => settings.readAloudEnabled);
   const savedVoice = useClientSettings((settings) => settings.readAloudVoice);
   const options = useClientSettings((settings) => settings.readAloudOptions);
@@ -150,7 +198,7 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
         setProfileResult((previous) => ({
           request,
           profiles: previous?.profiles ?? [],
-          error: error instanceof Error ? error.message : "Could not load profiles.",
+          error: error instanceof Error ? error.message : m(msg("Could not load profiles.")),
         }));
       },
     );
@@ -166,15 +214,17 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
   const savedProfile = profiles.find((profile) => profile.id === voice);
   const voiceLabel =
     voice === DEFAULT_SPEECH_VOICE
-      ? DEFAULT_VOICE_LABEL
+      ? gt("Default OmniVoice")
       : (savedProfile?.name ??
-        (loadingProfiles ? "Loading profiles…" : `Missing profile (${voice})`));
+        (loadingProfiles ? gt("Loading profiles…") : gt("Missing profile ({voice})", { voice })));
 
   const unavailableReason =
     environmentId === null || !connected
-      ? "Connect to an environment to load profiles and preview voices."
+      ? gt("Connect to an environment to load profiles and preview voices.")
       : !canSpeak
-        ? "This connection can't use read aloud. It needs permission to operate this environment."
+        ? gt(
+            "This connection can't use read aloud. It needs permission to operate this environment.",
+          )
         : null;
 
   const { id, title } = useSearchableSetting()("read-aloud-enabled");
@@ -182,18 +232,20 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
     <FoldedSettingsSection
       id={id}
       title={title}
-      summary={enabled ? `${voiceLabel} · ${options.speed}×` : "Read aloud off"}
+      summary={enabled ? `${voiceLabel} · ${options.speed}×` : gt("Read aloud off")}
       control={
         <Switch
           checked={enabled}
           onCheckedChange={(checked) => void updateClientSettings({ readAloudEnabled: checked })}
-          aria-label="Read responses aloud"
+          aria-label={gt("Read responses aloud")}
         />
       }
     >
       <SettingsRow
-        title="Voice profile"
-        description="Profiles come from VoiceStudio on lan-party. The environment that hosts a thread must reach it over Tailscale."
+        title={gt("Voice profile")}
+        description={gt(
+          "Profiles come from VoiceStudio on lan-party. The environment that hosts a thread must reach it over Tailscale.",
+        )}
         status={unavailableReason ?? profileError}
         control={
           <div className="flex items-center gap-2">
@@ -204,11 +256,11 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
               }}
               disabled={!reachable || loadingProfiles}
             >
-              <SelectTrigger size="sm" className="w-full sm:w-48" aria-label="Voice profile">
+              <SelectTrigger size="sm" className="w-full sm:w-48" aria-label={gt("Voice profile")}>
                 <SelectValue>{voiceLabel}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value={DEFAULT_SPEECH_VOICE}>{DEFAULT_VOICE_LABEL}</SelectItem>
+                <SelectItem value={DEFAULT_SPEECH_VOICE}>{gt("Default OmniVoice")}</SelectItem>
                 {profiles.map((profile) => (
                   <SelectItem key={profile.id} value={profile.id}>
                     {profile.name}
@@ -216,7 +268,9 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
                 ))}
                 {voice !== DEFAULT_SPEECH_VOICE && savedProfile === undefined ? (
                   <SelectItem value={voice} disabled>
-                    Missing profile ({voice})
+                    <T>
+                      Missing profile (<Var>{voice}</Var>)
+                    </T>
                   </SelectItem>
                 ) : null}
               </SelectPopup>
@@ -227,17 +281,17 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
               disabled={!reachable || loadingProfiles}
               onClick={() => setProfileRequest((count) => count + 1)}
             >
-              Refresh
+              <T>Refresh</T>
             </Button>
           </div>
         }
       />
       <SettingsRow
-        title="Speaking speed"
-        description="1× is normal speed, from 0.25× to 4×."
+        title={gt("Speaking speed")}
+        description={gt("1× is normal speed, from 0.25× to 4×.")}
         control={
           <DraftInput
-            label="Speaking speed"
+            label={gt("Speaking speed")}
             type="number"
             inputMode="decimal"
             value={String(options.speed)}
@@ -246,13 +300,15 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
         }
       />
       <SettingsRow
-        title="Language"
-        description="A code such as en, es, or ja guides pronunciation. It does not translate the response."
+        title={gt("Language")}
+        description={gt(
+          "A code such as en, es, or ja guides pronunciation. It does not translate the response.",
+        )}
         control={
           <DraftInput
-            label="Speech language"
+            label={gt("Speech language")}
             value={options.language}
-            placeholder="Automatic"
+            placeholder={gt("Automatic", { $context: "detect the speech language automatically" })}
             className="w-36"
             parse={(draft) =>
               draft.length <= 20
@@ -262,13 +318,13 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
           />
         }
       />
-      {ATTRIBUTES.map(({ key, title, values }) => (
+      {ATTRIBUTES.map(({ key, title, label, values }) => (
         <SettingsRow
           key={key}
-          title={title}
+          title={messages(title)}
           description={
             key === "gender"
-              ? "Optional. A cloned profile can override attributes that conflict with it."
+              ? gt("Optional. A cloned profile can override attributes that conflict with it.")
               : undefined
           }
           control={
@@ -278,18 +334,20 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
                 if (value !== null) updateOptions({ [key]: value === "default" ? "" : value });
               }}
             >
-              <SelectTrigger
-                size="sm"
-                className="w-full sm:w-48"
-                aria-label={`Voice ${title.toLowerCase()}`}
-              >
-                <SelectValue>{options[key] ? sentenceCase(options[key]) : "Default"}</SelectValue>
+              <SelectTrigger size="sm" className="w-full sm:w-48" aria-label={messages(label)}>
+                <SelectValue>
+                  {options[key]
+                    ? messages(ATTRIBUTE_VALUE_LABELS[options[key]])
+                    : gt("Default", { $context: "marks the default option" })}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="default">Default</SelectItem>
+                <SelectItem value="default">
+                  <T context="marks the default option">Default</T>
+                </SelectItem>
                 {values.map((value) => (
                   <SelectItem key={value} value={value}>
-                    {sentenceCase(value)}
+                    {messages(ATTRIBUTE_VALUE_LABELS[value])}
                   </SelectItem>
                 ))}
               </SelectPopup>
@@ -298,25 +356,27 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
         />
       ))}
       <SettingsRow
-        title="Whisper"
+        title={gt("Whisper", { $context: "read-aloud setting, speak in a whisper" })}
         control={
           <Switch
             checked={options.whisper}
             onCheckedChange={(whisper) => updateOptions({ whisper })}
-            aria-label="Whisper"
+            aria-label={gt("Whisper", { $context: "read-aloud setting, speak in a whisper" })}
           />
         }
       />
       <AdvancedVoiceSettings options={options} updateOptions={updateOptions} />
       <SettingsRow
-        title="Preview voice"
-        description="Speaks this text as written. VoiceStudio can take about 25 seconds to load on its first request."
+        title={gt("Preview voice", { $context: "verb, hear the read-aloud voice" })}
+        description={gt(
+          "Speaks this text as written. VoiceStudio can take about 25 seconds to load on its first request.",
+        )}
         status={previewError}
         control={
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-96">
             <div className="min-w-0 flex-1">
               <Input
-                aria-label="Voice preview text"
+                aria-label={gt("Voice preview text")}
                 value={previewText}
                 maxLength={4000}
                 onChange={(event) => setPreviewText(event.target.value)}
@@ -342,17 +402,19 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
               }}
             >
               {preview.state === "loading"
-                ? "Cancel"
+                ? gt("Cancel")
                 : preview.state === "playing"
-                  ? "Stop"
-                  : "Preview"}
+                  ? gt("Stop", { $context: "stop playing the voice preview" })
+                  : gt("Preview", { $context: "verb, play the voice preview" })}
             </Button>
           </div>
         }
       />
       <SettingsRow
-        title="Reset voice"
-        description="Returns the profile and every voice setting to its default. Read aloud stays on or off."
+        title={gt("Reset voice")}
+        description={gt(
+          "Returns the profile and every voice setting to its default. Read aloud stays on or off.",
+        )}
         control={
           <Button
             variant="ghost"
@@ -364,7 +426,7 @@ function VoiceSettingsContent({ environmentId }: { environmentId: EnvironmentId 
               })
             }
           >
-            Reset
+            <T context="verb, reset the voice settings">Reset</T>
           </Button>
         }
       />
@@ -379,6 +441,7 @@ function AdvancedVoiceSettings({
   options: SpeechOptions;
   updateOptions: (patch: Partial<SpeechOptions>) => void;
 }) {
+  const gt = useGT();
   const [open, setOpen] = useState(false);
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -390,19 +453,21 @@ function AdvancedVoiceSettings({
             open && "rotate-90",
           )}
         />
-        Advanced voice settings
+        <T>Advanced voice settings</T>
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <SettingsRow
-          title="Seed"
-          description="Blank uses VoiceStudio's sampling. A fixed seed makes settings easier to compare."
+          title={gt("Seed", { $context: "random seed for voice generation" })}
+          description={gt(
+            "Blank uses VoiceStudio's sampling. A fixed seed makes settings easier to compare.",
+          )}
           control={
             <DraftInput
-              label="Voice seed"
+              label={gt("Voice seed")}
               type="number"
               inputMode="numeric"
               value={options.seed === null ? "" : String(options.seed)}
-              placeholder="Automatic"
+              placeholder={gt("Automatic", { $context: "no fixed voice seed" })}
               parse={numberIn(
                 0,
                 2_147_483_647,
@@ -413,11 +478,11 @@ function AdvancedVoiceSettings({
           }
         />
         <SettingsRow
-          title="Generation steps"
-          description="16 is the default and 32 the quality preset. More steps take longer."
+          title={gt("Generation steps")}
+          description={gt("16 is the default and 32 the quality preset. More steps take longer.")}
           control={
             <DraftInput
-              label="Generation steps"
+              label={gt("Generation steps")}
               type="number"
               inputMode="numeric"
               value={String(options.steps)}
@@ -426,11 +491,11 @@ function AdvancedVoiceSettings({
           }
         />
         <SettingsRow
-          title="Guidance"
-          description="How strongly the model follows the voice. The default is 2."
+          title={gt("Guidance", { $context: "how closely voice generation follows the voice" })}
+          description={gt("How strongly the model follows the voice. The default is 2.")}
           control={
             <DraftInput
-              label="Voice guidance"
+              label={gt("Voice guidance")}
               type="number"
               inputMode="decimal"
               value={String(options.guidance)}

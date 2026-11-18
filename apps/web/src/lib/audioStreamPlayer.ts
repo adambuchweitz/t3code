@@ -1,3 +1,7 @@
+import { msg } from "gt-react";
+
+import { m } from "../i18n/messages";
+
 /**
  * Plays streamed mp3 as it arrives. MediaSource streams it where the browser
  * supports mp3 there (Chromium, Firefox); elsewhere the whole body is buffered
@@ -50,7 +54,7 @@ function makePlaybackState(audio: HTMLAudioElement, cleanup: () => void) {
   };
 }
 
-const playbackError = () => new Error("Could not play the response audio.");
+const playbackError = () => new Error(m(msg("Could not play the response audio.")));
 
 async function playBuffered(
   stream: ReadableStream<Uint8Array>,
@@ -152,7 +156,7 @@ async function playStreamed(
       streamDone = true;
       flush();
     } catch (error) {
-      state.fail(error instanceof Error ? error : new Error("The response audio stopped."));
+      state.fail(error instanceof Error ? error : new Error(m(msg("The response audio stopped."))));
     }
   })();
 
