@@ -137,7 +137,7 @@ export function buildMenuItems(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler") {
-    const items = gitButlerMenuItems(gitStatus, isBusy, hasPrimaryRemote);
+    const items = gitButlerMenuItems(gitStatus, isBusy, hasPrimaryRemote, resolve);
     // A hold can stop a repository being published, so it's reviewable with no remote yet.
     return hasPrimaryRemote
       ? items
@@ -234,7 +234,7 @@ export function getMenuActionDisabledReason(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler" && item.id !== "commit") {
-    return gitButlerDisabledReason(item.id, gitStatus, hasPrimaryRemote);
+    return gitButlerDisabledReason(item.id, gitStatus, hasPrimaryRemote, resolve);
   }
 
   if (item.id === "commit") {
@@ -348,7 +348,7 @@ export function resolveQuickAction(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler") {
-    return gitButlerQuickAction(gitStatus, hasPrimaryRemote);
+    return gitButlerQuickAction(gitStatus, hasPrimaryRemote, resolve);
   }
 
   if (!hasBranch) {
@@ -750,53 +750,68 @@ export interface ChangesSummary {
   readonly title: string | undefined;
 }
 
-export function resolveChangesSummary(input: {
-  readonly status: VcsStatusResult | null;
-  readonly linkedBranch: string | null | undefined;
-  readonly branchPreview: {
-    readonly data: ReviewDiffPreviewResult | null;
-    readonly error: string | null;
-  };
-  /** The Diff panel's branch-range comparison, so the row matches the panel outside GitButler. */
-  readonly combinedPreview?: ReviewDiffPreviewSource | null | undefined;
-}): ChangesSummary {
+export function resolveChangesSummary(
+  input: {
+    readonly status: VcsStatusResult | null;
+    readonly linkedBranch: string | null | undefined;
+    readonly branchPreview: {
+      readonly data: ReviewDiffPreviewResult | null;
+      readonly error: string | null;
+    };
+    /** The Diff panel's branch-range comparison, so the row matches the panel outside GitButler. */
+    readonly combinedPreview?: ReviewDiffPreviewSource | null | undefined;
+  },
+  resolve: MessageResolver = m,
+): ChangesSummary {
   const { status, linkedBranch, branchPreview } = input;
   const combined = resolveChangesTotals(status, input.combinedPreview);
+  const changes = resolve(msg("Changes", { $context: "noun, version control changes" }));
   if (!status?.refName || !isGitButlerWorkspaceRef(status.refName)) {
-    return { label: "Changes", totals: combined, placeholder: null, title: undefined };
+    return { label: changes, totals: combined, placeholder: null, title: undefined };
   }
   const branch = gitButlerLinkedBranch(status, linkedBranch);
   if (branch === null) {
     return {
-      label: "Workspace changes",
+      label: resolve(
+        msg("Workspace changes", { $context: "noun, changes on every applied branch" }),
+      ),
       totals: combined,
       placeholder: null,
       title: linkedBranch
-        ? `${linkedBranch} is not applied. These totals combine every applied branch.`
-        : "These totals combine every applied branch.",
+        ? resolve(
+            msg("{branch} is not applied. These totals combine every applied branch.", {
+              branch: linkedBranch,
+            }),
+          )
+        : resolve(msg("These totals combine every applied branch.")),
     };
   }
   if (branchPreview.error !== null) {
     return {
-      label: "Changes",
+      label: changes,
       totals: null,
-      placeholder: "Unavailable",
-      title: `Could not read the changes on ${branch}: ${branchPreview.error}`,
+      placeholder: resolve(msg("Unavailable", { $context: "change totals could not be read" })),
+      title: resolve(
+        msg("Could not read the changes on {branch}: {error}", {
+          branch,
+          error: branchPreview.error,
+        }),
+      ),
     };
   }
   const files = branchPreview.data?.sources[0]?.files;
   if (files === undefined) {
     return {
-      label: "Changes",
+      label: changes,
       totals: null,
       placeholder: "…",
-      title: `Reading the changes on ${branch}…`,
+      title: resolve(msg("Reading the changes on {branch}…", { branch })),
     };
   }
   const unassigned =
     status.workspace?._tag === "gitbutler" ? status.workspace.unassignedChangeCount : 0;
   return {
-    label: "Changes",
+    label: changes,
     totals: {
       insertions: files.reduce((sum, file) => sum + file.additions, 0),
       deletions: files.reduce((sum, file) => sum + file.deletions, 0),
@@ -804,9 +819,13 @@ export function resolveChangesSummary(input: {
     },
     placeholder: null,
     title:
-      `Commits and assigned changes on ${branch}.` +
-      (unassigned > 0
-        ? ` ${unassigned} unassigned ${unassigned === 1 ? "change is" : "changes are"} not included.`
-        : ""),
+      unassigned > 0
+        ? resolve(
+            msg(
+              "{count, plural, one {Commits and assigned changes on {branch}. {count} unassigned change is not included.} other {Commits and assigned changes on {branch}. {count} unassigned changes are not included.}}",
+              { branch, count: unassigned },
+            ),
+          )
+        : resolve(msg("Commits and assigned changes on {branch}.", { branch })),
   };
 }

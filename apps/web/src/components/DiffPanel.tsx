@@ -1153,7 +1153,9 @@ export default function DiffPanel({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuGroup>
-                  <DropdownMenuLabel>GitButler branches</DropdownMenuLabel>
+                  <DropdownMenuLabel>
+                    <T>GitButler branches</T>
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup
                     value={selectedScopeValue}
                     onValueChange={selectScopeValue}

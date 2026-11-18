@@ -13,6 +13,7 @@ import type {
 import { useEnvironmentQuery } from "../../state/query";
 import { useGitButlerActionStatus } from "../../state/use-gitbutler-action-status";
 import { confirmGitButlerPublish } from "../../state/confirm-gitbutler-force-push";
+import { m } from "../../i18n/messages";
 import {
   gitButlerForcePushRetryAction,
   gitButlerPublishConfirmation,
@@ -106,7 +107,7 @@ export function DraftThreadHeader(props: {
           });
           while (AsyncResult.isFailure(result)) {
             const error = Cause.squash(result.cause);
-            const confirmation = gitButlerPublishConfirmation(error);
+            const confirmation = gitButlerPublishConfirmation(error, m);
             if (confirmation === null) {
               Dialog.alert(gt("Git action failed"), String(error));
               return null;

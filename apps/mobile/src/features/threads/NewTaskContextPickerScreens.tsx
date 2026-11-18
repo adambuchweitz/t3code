@@ -546,8 +546,10 @@ export function BranchPickerScreen(props: {
     </View>
   ) : isGitButlerWorkspace ? (
     <Text className="mb-3 text-sm text-foreground-muted">
-      Start in the GitButler workspace, then apply branches from the thread's branch picker, or
-      create a new worktree.
+      <T>
+        Start in the GitButler workspace, then apply branches from the thread's branch picker, or
+        create a new worktree.
+      </T>
     </Text>
   ) : null;
 

@@ -2,8 +2,10 @@ import {
   GIT_BUTLER_END_HOLD_LABEL,
   type GitButlerPublishConfirmation,
 } from "@t3tools/client-runtime/state/vcs";
+import { msg } from "gt-react-native";
 
 import * as Dialog from "../components/ui/Dialog";
+import { m } from "../i18n/messages";
 
 export function confirmGitButlerPublish(
   confirmation: GitButlerPublishConfirmation,
@@ -13,9 +15,9 @@ export function confirmGitButlerPublish(
       confirmation.title,
       confirmation.description,
       [
-        { text: "Cancel", style: "cancel", onPress: () => resolve("cancel") },
+        { text: m(msg("Cancel")), style: "cancel", onPress: () => resolve("cancel") },
         ...(confirmation.resolutions.length > 0
-          ? [{ text: GIT_BUTLER_END_HOLD_LABEL, onPress: () => resolve("end_holds") }]
+          ? [{ text: m(GIT_BUTLER_END_HOLD_LABEL), onPress: () => resolve("end_holds") }]
           : []),
         {
           text: confirmation.confirmLabel,
@@ -38,7 +40,7 @@ export function confirmGitButlerHoldReview(review: {
       Dialog.alert(
         review.title,
         review.description,
-        [{ text: "OK", onPress: () => resolve(false) }],
+        [{ text: m(msg("OK")), onPress: () => resolve(false) }],
         {
           onDismiss: () => resolve(false),
         },
@@ -48,7 +50,7 @@ export function confirmGitButlerHoldReview(review: {
     Dialog.confirm({
       title: review.title,
       message: review.description,
-      confirmText: GIT_BUTLER_END_HOLD_LABEL,
+      confirmText: m(GIT_BUTLER_END_HOLD_LABEL),
       destructive: true,
       onConfirm: () => resolve(true),
       onCancel: () => resolve(false),
