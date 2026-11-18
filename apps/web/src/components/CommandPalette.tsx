@@ -1389,7 +1389,7 @@ function OpenCommandPaletteDialog(props: {
       kind: "action",
       value: "action:clear-the-decks",
       searchTerms: ["clear the decks", "snooze", "focus", "toggle"],
-      title: clearTheDecksEnabled ? "Turn off Clear the decks" : "Turn on Clear the decks",
+      title: clearTheDecksEnabled ? gt("Turn off Clear the decks") : gt("Turn on Clear the decks"),
       icon: <BrushCleaningIcon className={ITEM_ICON_CLASS} />,
       run: async () => setClearTheDecksEnabled((value) => !value),
     },

@@ -1674,8 +1674,8 @@ export function useComposerSend(input: ComposerSendInput) {
           toastManager.add(
             stackedThreadToast({
               type: "warning",
-              title: "Message sent, thread wasn't snoozed",
-              description: "Update this environment's server to use Clear the decks.",
+              title: m(msg("Message sent, thread wasn't snoozed")),
+              description: m(msg("Update this environment's server to use Clear the decks.")),
             }),
           );
         }
@@ -1836,8 +1836,8 @@ export function useComposerSend(input: ComposerSendInput) {
         toastManager.add(
           stackedThreadToast({
             type: "success",
-            title: "Decks cleared",
-            description: "No more threads need attention in this sidebar.",
+            title: m(msg("Decks cleared")),
+            description: m(msg("No more threads need attention in this sidebar.")),
           }),
         );
         void navigate({ to: "/" });

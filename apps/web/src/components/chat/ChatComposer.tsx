@@ -661,11 +661,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const { enabled: clearTheDecksEnabled, preset: clearTheDecksPreset } = useClearTheDecks();
   const composerEnvironment = useEnvironment(environmentId);
-  const sendSnoozeLabel =
+  const sendSnoozeTooltip =
     clearTheDecksEnabled &&
     routeKind !== "draft" &&
     composerEnvironment?.serverConfig?.environment.capabilities.sendAndSnooze === true
-      ? CLEAR_THE_DECKS_DURATIONS[clearTheDecksPreset].sendLabel
+      ? CLEAR_THE_DECKS_DURATIONS[clearTheDecksPreset].sendTooltip
       : null;
   const activePendingApproval =
     incomingPendingApproval && !heldRequestIds.has(incomingPendingApproval.requestId)
@@ -4134,7 +4134,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <ComposerFooterPrimaryActions
                     // Stop state belongs to one thread; the composer stays mounted across threads.
                     key={`${environmentId}:${activeThreadId ?? "new"}`}
-                    sendSnoozeLabel={sendSnoozeLabel}
+                    sendSnoozeTooltip={sendSnoozeTooltip}
                     compact={isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}
                     pendingAction={pendingPrimaryAction}
