@@ -10,7 +10,6 @@ const message = (
   id: string,
   role: "user" | "assistant",
   extra: Record<string, unknown> = {},
-  rowExtra: Record<string, unknown> = {},
 ): Row =>
   ({
     kind: "message",
@@ -30,7 +29,6 @@ const message = (
       createdBy: role === "user" ? "user" : "agent",
       ...extra,
     },
-    ...rowExtra,
   }) as Row;
 
 const heartbeat = (id: string) =>
@@ -38,12 +36,21 @@ const heartbeat = (id: string) =>
 const report = (id: string) => message(id, "user", { createdBy: "agent" });
 const reply = (id: string) => message(id, "assistant");
 
-const fold = (rows: ReadonlyArray<Row>, expanded: ReadonlyArray<string> = [], expandAll = false) =>
+const fold = (
+  rows: ReadonlyArray<Row>,
+  expanded: ReadonlyArray<string> = [],
+  expandAll = false,
+  changedFilesIn: ReadonlyArray<string> = [],
+) =>
   foldTotWakes(rows, {
     voice: "grown_up",
     becameTotAt: "2026-11-06T00:00:00.000Z",
     expandedFoldIds: new Set(expanded),
     expandAll,
+    turnDiffSummaries: changedFilesIn.map((id) => ({
+      assistantMessageId: MessageId.make(id),
+      files: [{ path: "a.ts", kind: "modified", additions: 1, deletions: 0 }],
+    })),
   });
 
 const shape = (rows: ReadonlyArray<Row>) =>
@@ -78,15 +85,12 @@ describe("foldTotWakes", () => {
   });
 
   it.each<[string, Row]>([
-    [
-      "changed files",
-      message("r1", "assistant", {}, { assistantTurnDiffSummary: { files: [{}] } }),
-    ],
+    ["changed files", reply("changed")],
     ["started a thread", { kind: "event", id: "e1", createdAt: "x" } as unknown as Row],
     ["is still running", { kind: "working", id: "live", createdAt: "x" } as unknown as Row],
   ])("keeps a wake that %s in the conversation", (_name, row) => {
     const rows = [heartbeat("h1"), row, heartbeat("h2"), reply("r2"), message("you", "user")];
-    expect(shape(fold(rows))[0]).toBe("h1");
+    expect(shape(fold(rows, [], false, ["changed"]))[0]).toBe("h1");
   });
 
   it("never folds the user's own turns", () => {

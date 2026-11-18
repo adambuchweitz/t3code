@@ -227,6 +227,7 @@ function SidebarUtilityItem({
 }
 
 const SidebarTotsItem = memo(function SidebarTotsItem(props: { onClick: () => void }) {
+  const gt = useGT();
   const entries = useTotEntries();
   const needsYou = entries.some((entry) => entry.state === "needs");
   const waiting = entries.reduce(
@@ -251,7 +252,14 @@ const SidebarTotsItem = memo(function SidebarTotsItem(props: { onClick: () => vo
         </div>
       }
       label={
-        waiting > 0 ? `Tots: ${waiting} waiting on you` : needsYou ? "Tots: one needs you" : "Tots"
+        waiting > 0
+          ? gt(
+              "{count, plural, one {Tots: {count} waiting on you} other {Tots: {count} waiting on you}}",
+              { count: waiting },
+            )
+          : needsYou
+            ? gt("Tots: one needs you")
+            : gt("Tots")
       }
       onClick={props.onClick}
     />

@@ -566,7 +566,7 @@ function ThreadRouteContent(
   const totSubtitle =
     totIdentity === null
       ? null
-      : `${TOT_JOB_LABEL[totIdentity.job]} · ${totStateLabel(totIdentity.state, totIdentity.voice)}`;
+      : `${m(TOT_JOB_LABEL[totIdentity.job])} · ${totStateLabel(totIdentity.state, totIdentity.voice, m)}`;
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null
       ? vcsEnvironment.status({

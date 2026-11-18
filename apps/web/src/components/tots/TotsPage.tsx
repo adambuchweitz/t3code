@@ -1,4 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
+import { T, useGT, useMessages } from "gt-react";
 import { PencilIcon, PlusIcon } from "lucide-react";
 
 import { isElectron } from "~/env";
@@ -12,6 +13,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { TOT_CHARACTERS } from "@t3tools/client-runtime/tots/character";
+import { totLocationLabel } from "@t3tools/client-runtime/tots/entries";
 import { TotCharacter } from "./TotCharacter";
 import { TotNeedsYouQueue } from "./TotNeedsYouQueue";
 import { openTotDialog } from "./totDialogState";
@@ -32,15 +34,17 @@ const STATE_TEXT_CLASS: Record<TotState, string> = {
 
 function TotTile({ entry }: { readonly entry: TotEntry }) {
   const navigate = useNavigate();
+  const gt = useGT();
+  const m = useMessages();
   const { tot, thread, state } = entry;
   const showsProject = tot.nameEnabled && entry.projectName !== null;
-  const stateLabel = totStateLabel(state, tot.voice);
+  const stateLabel = totStateLabel(state, tot.voice, m);
   return (
     <li className="group relative">
       <button
         type="button"
         data-testid="tot-tile"
-        aria-label={`Open ${entry.displayName}, ${stateLabel}`}
+        aria-label={gt("Open {name}, {state}", { name: entry.displayName, state: stateLabel })}
         className="flex w-full min-w-0 items-center gap-3 rounded-lg border bg-card p-3 pr-10 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
         onClick={() =>
           void navigate({
@@ -63,18 +67,18 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
             {stateLabel}
           </span>
           <span className="truncate text-xs text-muted-foreground">
-            {[showsProject ? entry.projectName : null, entry.machineLabel]
-              .filter(Boolean)
-              .join(" on ")}
+            {totLocationLabel(showsProject ? entry.projectName : null, entry.machineLabel, m)}
           </span>
           {thread ? (
             <span className="truncate text-xs text-muted-foreground">
-              {thread.archivedAt ? `Archived: ${thread.title}` : thread.title}
+              {thread.archivedAt ? gt("Archived: {title}", { title: thread.title }) : thread.title}
             </span>
           ) : null}
           {tot.wakesHeld > 0 ? (
             <span className="truncate text-xs text-warning-foreground">
-              {tot.wakesHeld === 1 ? "1 wake waiting" : `${tot.wakesHeld} wakes waiting`}
+              {gt("{count, plural, one {{count} wake waiting} other {{count} wakes waiting}}", {
+                count: tot.wakesHeld,
+              })}
             </span>
           ) : null}
         </span>
@@ -85,7 +89,7 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
             <Button
               variant="ghost-muted"
               size="icon-xs"
-              aria-label={`Edit ${entry.displayName}`}
+              aria-label={gt("Edit {name}", { name: entry.displayName })}
               className="absolute top-2 right-2"
               onClick={() => openTotDialog({ kind: "thread", threadRef: entry.threadRef })}
             />
@@ -93,7 +97,9 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
         >
           <PencilIcon />
         </TooltipTrigger>
-        <TooltipPopup side="top">Edit</TooltipPopup>
+        <TooltipPopup side="top">
+          <T context="verb, edit the Tot">Edit</T>
+        </TooltipPopup>
       </Tooltip>
     </li>
   );
@@ -101,10 +107,13 @@ function TotTile({ entry }: { readonly entry: TotEntry }) {
 
 export function TotsPage() {
   const entries = useTotEntries();
+  const m = useMessages();
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <WorkspacePageHeader electron={isElectron} className="relative bg-background">
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">Tots</h1>
+        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
+          <T>Tots</T>
+        </h1>
         <Button
           size="xs"
           variant="outline"
@@ -112,7 +121,7 @@ export function TotsPage() {
           onClick={() => openTotDialog({ kind: "pick-thread" })}
         >
           <PlusIcon />
-          Add a Tot
+          <T>Add a Tot</T>
         </Button>
       </WorkspacePageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
@@ -129,15 +138,19 @@ export function TotsPage() {
                   />
                 ))}
               </div>
-              <EmptyTitle>No Tots yet</EmptyTitle>
+              <EmptyTitle>
+                <T>No Tots yet</T>
+              </EmptyTitle>
               <EmptyDescription>
-                Give a long-running thread a name, a face and a charter. Its history and automations
-                carry on, and you can turn it back at any time.
+                <T>
+                  Give a long-running thread a name, a face and a charter. Its history and
+                  automations carry on, and you can turn it back at any time.
+                </T>
               </EmptyDescription>
               <div className="mt-5 flex justify-center">
                 <Button size="sm" onClick={() => openTotDialog({ kind: "pick-thread" })}>
                   <PlusIcon />
-                  Add your first Tot
+                  <T>Add your first Tot</T>
                 </Button>
               </div>
             </EmptyHeader>
@@ -149,9 +162,9 @@ export function TotsPage() {
               const group = entries.filter((entry) => entry.state === state);
               if (group.length === 0) return null;
               return (
-                <section key={state} aria-label={TOT_STATE_LABEL[state]}>
+                <section key={state} aria-label={m(TOT_STATE_LABEL[state])}>
                   <h2 className="mb-2 text-xs font-medium text-muted-foreground">
-                    {TOT_STATE_LABEL[state]}
+                    {m(TOT_STATE_LABEL[state])}
                   </h2>
                   <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-2">
                     {group.map((entry) => (

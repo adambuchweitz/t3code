@@ -1,5 +1,7 @@
 import type { TotVoice } from "@t3tools/contracts";
 
+import { m, type MessageResolver } from "../../i18n/messages";
+import type { TurnDiffSummary } from "../../types";
 import type { MessagesTimelineRow } from "../chat/MessagesTimeline.logic";
 import { totWakeFoldLabel } from "@t3tools/client-runtime/tots/logic";
 
@@ -13,7 +15,10 @@ const isWake = (row: MessageRow) =>
   row.message.createdBy !== undefined && row.message.createdBy !== "user";
 
 /** A wake that left something to look at keeps its place in the conversation. */
-function isNoteworthy(row: MessagesTimelineRow): boolean {
+function isNoteworthy(
+  row: MessagesTimelineRow,
+  changedFilesMessageIds: ReadonlySet<string | null>,
+): boolean {
   switch (row.kind) {
     case "event":
     case "proposed-plan":
@@ -25,7 +30,7 @@ function isNoteworthy(row: MessagesTimelineRow): boolean {
     case "worktree-setup":
       return true;
     case "message":
-      return row.message.streaming || (row.assistantTurnDiffSummary?.files.length ?? 0) > 0;
+      return row.message.streaming || changedFilesMessageIds.has(row.message.id);
     default:
       return false;
   }
@@ -43,8 +48,17 @@ export function foldTotWakes(
     readonly becameTotAt: string;
     readonly expandedFoldIds: ReadonlySet<string>;
     readonly expandAll: boolean;
+    readonly turnDiffSummaries: ReadonlyArray<
+      Pick<TurnDiffSummary, "assistantMessageId" | "files">
+    >;
   },
+  resolve: MessageResolver = m,
 ): MessagesTimelineRow[] {
+  const changedFilesMessageIds = new Set(
+    options.turnDiffSummaries.flatMap((summary) =>
+      summary.files.length > 0 ? [summary.assistantMessageId] : [],
+    ),
+  );
   const turns: Array<Array<MessagesTimelineRow>> = [[]];
   for (const row of rows) {
     if (isUserMessage(row)) turns.push([]);
@@ -65,11 +79,10 @@ export function foldTotWakes(
       kind: "tot-wake-fold",
       id,
       createdAt: opener(pending.at(-1)!).createdAt,
-      label: totWakeFoldLabel({
-        voice: options.voice,
-        checkIns,
-        updates: pending.length - checkIns,
-      }),
+      label: totWakeFoldLabel(
+        { voice: options.voice, checkIns, updates: pending.length - checkIns },
+        resolve,
+      ),
       expanded,
     });
     if (expanded) result.push(...pending.flat());
@@ -84,7 +97,7 @@ export function foldTotWakes(
       isUserMessage(first) &&
       isWake(first) &&
       index < turns.length - 1 &&
-      !turn.some(isNoteworthy);
+      !turn.some((row) => isNoteworthy(row, changedFilesMessageIds));
     if (quietWake) {
       pending.push(marked);
       return;

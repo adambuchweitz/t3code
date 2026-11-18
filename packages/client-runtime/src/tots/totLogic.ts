@@ -10,6 +10,8 @@ import type {
   TotRequest,
   TotVoice,
 } from "@t3tools/contracts";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 import type { TotPose } from "./totCharacter.ts";
 
@@ -30,26 +32,35 @@ export type TotState = "needs" | "working" | "idle" | "offline";
 export const TOT_STATE_ORDER: ReadonlyArray<TotState> = ["needs", "working", "idle", "offline"];
 
 export const TOT_STATE_LABEL: Record<TotState, string> = {
-  needs: "Needs you",
-  working: "Busy",
-  idle: "Idle",
-  offline: "Offline",
+  needs: msg("Needs you", { $context: "Tot state" }),
+  working: msg("Busy", { $context: "Tot state" }),
+  idle: msg("Idle", { $context: "Tot state" }),
+  offline: msg("Offline", { $context: "Tot state" }),
 };
 
 const TOT_VOICE_STATE_LABEL: Record<TotVoice, Record<TotState, string>> = {
   toddler: {
-    needs: "Tugging your sleeve",
-    working: "Playing",
-    idle: "Just looking",
-    offline: "Napping",
+    needs: msg("Tugging your sleeve", { $context: "Tot state, toddler voice" }),
+    working: msg("Playing", { $context: "Tot state, toddler voice" }),
+    idle: msg("Just looking", { $context: "Tot state, toddler voice" }),
+    offline: msg("Napping", { $context: "Tot state, toddler voice" }),
   },
-  polite: { needs: "Needs you", working: "Working", idle: "Watching", offline: "Offline" },
+  polite: {
+    needs: msg("Needs you", { $context: "Tot state" }),
+    working: msg("Working", { $context: "Tot state" }),
+    idle: msg("Watching", { $context: "Tot state" }),
+    offline: msg("Offline", { $context: "Tot state" }),
+  },
   grown_up: TOT_STATE_LABEL,
 };
 
 /** One Tot's own words for its state. Group headings stay in `TOT_STATE_LABEL`, as they mix voices. */
-export function totStateLabel(state: TotState, voice: TotVoice): string {
-  return TOT_VOICE_STATE_LABEL[voice][state];
+export function totStateLabel(
+  state: TotState,
+  voice: TotVoice,
+  resolve: MFunctionType = mFallback,
+): string {
+  return resolve(TOT_VOICE_STATE_LABEL[voice][state]);
 }
 
 export const TOT_VOICE_OPTIONS: ReadonlyArray<{
@@ -59,20 +70,24 @@ export const TOT_VOICE_OPTIONS: ReadonlyArray<{
 }> = [
   {
     value: "toddler",
-    label: "Full toddler",
-    sample: "I did it! The checks are all green! Can I merge it? Pleeease?",
+    label: msg("Full toddler", { $context: "Tot voice" }),
+    sample: msg("I did it! The checks are all green! Can I merge it? Pleeease?"),
   },
   {
     value: "polite",
-    label: "Polite",
-    sample: "The checks passed. I'll merge it when you're happy.",
+    label: msg("Polite", { $context: "Tot voice" }),
+    sample: msg("The checks passed. I'll merge it when you're happy."),
   },
-  { value: "grown_up", label: "Grown-up", sample: "Checks passed. Ready to merge." },
+  {
+    value: "grown_up",
+    label: msg("Grown-up", { $context: "Tot voice" }),
+    sample: msg("Checks passed. Ready to merge."),
+  },
 ];
 
 export const TOT_JOB_LABEL: Record<TotJob, string> = {
-  manager: "Project manager",
-  hands_on: "Hands-on",
+  manager: msg("Project manager"),
+  hands_on: msg("Hands-on", { $context: "Tot job, does the work itself" }),
 };
 
 export type TotCrewTone = "attention" | "failed" | "active" | "quiet";
@@ -85,15 +100,31 @@ export interface TotCrewStatus {
 }
 
 const TOT_CREW_STATUS: Record<TotThreadStatus, TotCrewStatus> = {
-  approval: { label: "Approval", rank: 0, tone: "attention" },
-  input: { label: "Question", rank: 0, tone: "attention" },
-  request: { label: "Request", rank: 0, tone: "attention" },
-  failed: { label: "Failed", rank: 0, tone: "failed" },
-  limited: { label: "Limited", rank: 0, tone: "attention" },
-  preparing: { label: "Preparing", rank: 1, tone: "active" },
-  working: { label: "Working", rank: 1, tone: "active" },
-  waiting: { label: "Waiting", rank: 1, tone: "active" },
-  ready: { label: "Ready", rank: 2, tone: "quiet" },
+  approval: {
+    label: msg("Approval", { $context: "crew thread status" }),
+    rank: 0,
+    tone: "attention",
+  },
+  input: { label: msg("Question", { $context: "crew thread status" }), rank: 0, tone: "attention" },
+  request: {
+    label: msg("Request", { $context: "crew thread status" }),
+    rank: 0,
+    tone: "attention",
+  },
+  failed: { label: msg("Failed", { $context: "crew thread status" }), rank: 0, tone: "failed" },
+  limited: {
+    label: msg("Limited", { $context: "crew thread status" }),
+    rank: 0,
+    tone: "attention",
+  },
+  preparing: {
+    label: msg("Preparing", { $context: "crew thread status" }),
+    rank: 1,
+    tone: "active",
+  },
+  working: { label: msg("Working", { $context: "crew thread status" }), rank: 1, tone: "active" },
+  waiting: { label: msg("Waiting", { $context: "crew thread status" }), rank: 1, tone: "active" },
+  ready: { label: msg("Ready", { $context: "crew thread status" }), rank: 2, tone: "quiet" },
 };
 
 export const TOT_STATE_POSE: Record<TotState, TotPose> = {
@@ -244,31 +275,70 @@ export function diffCharterLines(before: string, after: string): ReadonlyArray<C
   return lines;
 }
 
-export function totRequestsHeading(displayName: string, voice: TotVoice): string {
-  return voice === "toddler" ? `${displayName} needs you!` : `${displayName} needs you`;
+export function totRequestsHeading(
+  displayName: string,
+  voice: TotVoice,
+  resolve: MFunctionType = mFallback,
+): string {
+  return voice === "toddler"
+    ? resolve(msg("{name} needs you!", { name: displayName }))
+    : resolve(msg("{name} needs you", { name: displayName }));
 }
 
-export function totWakeFoldLabel(input: {
-  readonly voice: TotVoice;
-  readonly checkIns: number;
-  readonly updates: number;
-}): string {
-  const total = input.checkIns + input.updates;
-  const parts = [
-    input.checkIns === 0 ? null : `${input.checkIns} check-in${input.checkIns === 1 ? "" : "s"}`,
-    input.updates === 0 ? null : `${input.updates} thread update${input.updates === 1 ? "" : "s"}`,
-  ].filter(Boolean);
+export function totWakeFoldLabel(
+  input: {
+    readonly voice: TotVoice;
+    readonly checkIns: number;
+    readonly updates: number;
+  },
+  resolve: MFunctionType = mFallback,
+): string {
+  const { checkIns, updates } = input;
+  const total = checkIns + updates;
   const headline =
     input.voice === "toddler"
-      ? `I woke up ${total === 1 ? "once" : `${total} times`}. Nothing for you!`
-      : `${total} wake${total === 1 ? "" : "s"} with nothing for you`;
-  return `${headline} · ${parts.join(", ")}`;
+      ? resolve(
+          msg(
+            "{count, plural, =1 {I woke up once. Nothing for you!} other {I woke up {count} times. Nothing for you!}}",
+            { count: total },
+          ),
+        )
+      : resolve(
+          msg(
+            "{count, plural, one {{count} wake with nothing for you} other {{count} wakes with nothing for you}}",
+            { count: total },
+          ),
+        );
+  const parts =
+    checkIns === 0
+      ? resolve(
+          msg("{count, plural, one {{count} thread update} other {{count} thread updates}}", {
+            count: updates,
+          }),
+        )
+      : updates === 0
+        ? resolve(
+            msg("{count, plural, one {{count} check-in} other {{count} check-ins}}", {
+              count: checkIns,
+            }),
+          )
+        : resolve(
+            msg(
+              "{checkIns, plural, one {{checkIns} check-in} other {{checkIns} check-ins}}, {updates, plural, one {{updates} thread update} other {{updates} thread updates}}",
+              { checkIns, updates },
+            ),
+          );
+  return `${headline} · ${parts}`;
 }
 
-function totCharterProposalTitle(displayName: string, voice: TotVoice): string {
+function totCharterProposalTitle(
+  displayName: string,
+  voice: TotVoice,
+  resolve: MFunctionType,
+): string {
   return voice === "toddler"
-    ? `${displayName} wants new house rules!`
-    : `${displayName} proposes a charter change`;
+    ? resolve(msg("{name} wants new house rules!", { name: displayName }))
+    : resolve(msg("{name} proposes a charter change", { name: displayName }));
 }
 
 export type TotWaitingItem =
@@ -300,10 +370,11 @@ export function totWaitingItemTitle(
   item: TotWaitingItem,
   displayName: string,
   voice: TotVoice,
+  resolve: MFunctionType = mFallback,
 ): string {
   return item.kind === "request"
     ? item.request.question
-    : totCharterProposalTitle(displayName, voice);
+    : totCharterProposalTitle(displayName, voice, resolve);
 }
 
 /** The recommendation leads, so the quickest answer is also the one the Tot thinks is right. */

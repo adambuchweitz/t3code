@@ -6,6 +6,7 @@ import {
 import type { TotEntry } from "@t3tools/client-runtime/tots/entries";
 import { diffCharterLines } from "@t3tools/client-runtime/tots/logic";
 import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal } from "@t3tools/contracts";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
@@ -27,6 +28,7 @@ export function TotCharterAnswer(props: {
   readonly proposal: TotCharterProposal;
 }) {
   const { entry, proposal } = props;
+  const gt = useGT();
   const [draft, setDraft] = useState(proposal.charter);
   const [comparing, setComparing] = useState(false);
   const [answering, setAnswering] = useState(false);
@@ -56,7 +58,9 @@ export function TotCharterAnswer(props: {
     setAnswering(false);
     if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
     const failure = squashAtomCommandFailure(result);
-    setError(failure instanceof Error ? failure.message : "Couldn't save your answer. Try again.");
+    setError(
+      failure instanceof Error ? failure.message : gt("Couldn't save your answer. Try again."),
+    );
   };
   const disabled = answering || !canOperate;
   return (
@@ -84,7 +88,7 @@ export function TotCharterAnswer(props: {
           multiline
           scrollEnabled
           textAlignVertical="top"
-          accessibilityLabel={`Proposed charter for ${entry.displayName}`}
+          accessibilityLabel={gt("Proposed charter for {name}", { name: entry.displayName })}
           editable={!disabled}
           value={draft}
           onChangeText={setDraft}
@@ -93,11 +97,14 @@ export function TotCharterAnswer(props: {
       )}
       {tooLong ? (
         <Text accessibilityRole="alert" className="font-sans text-xs text-danger-foreground">
-          {draft.length - TOT_CHARTER_MAX_LENGTH} characters over the limit.
+          {gt(
+            "{count, plural, one {{count} characters over the limit.} other {{count} characters over the limit.}}",
+            { count: draft.length - TOT_CHARTER_MAX_LENGTH },
+          )}
         </Text>
       ) : null}
       <Button
-        label={edited ? "Approve with my edits" : "Approve"}
+        label={edited ? gt("Approve with my edits") : gt("Approve")}
         tone="primary"
         fullWidth
         disabled={disabled || tooLong}
@@ -107,7 +114,11 @@ export function TotCharterAnswer(props: {
       <View className="flex-row flex-wrap justify-between">
         {canCompare ? (
           <Button
-            label={comparing ? "Back to editing" : "Compare"}
+            label={
+              comparing
+                ? gt("Back to editing")
+                : gt("Compare", { $context: "compare with the current charter" })
+            }
             tone="text"
             size="compact"
             onPress={() => setComparing((current) => !current)}
@@ -116,7 +127,7 @@ export function TotCharterAnswer(props: {
           <View />
         )}
         <Button
-          label="Dismiss"
+          label={gt("Dismiss")}
           tone="text"
           size="compact"
           disabled={disabled}

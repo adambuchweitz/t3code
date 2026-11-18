@@ -4,6 +4,7 @@ import {
   totWaitingItems,
   totWaitingItemTitle,
 } from "@t3tools/client-runtime/tots/logic";
+import { useGT, useMessages } from "gt-react";
 import { ChevronDownIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 
 import { useTotForThread } from "~/state/tots";
@@ -19,12 +20,14 @@ import { openTotDockItem, setTotDockMinimized, useTotDock } from "./totDockState
 export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
   const entry = useTotForThread(props.threadRef);
   const dock = useTotDock(props.threadRef);
+  const gt = useGT();
+  const m = useMessages();
   if (entry === null) return null;
   const items = totWaitingItems(entry.tot);
   const first = items[0];
   if (first === undefined) return null;
   const open = items.find((item) => item.id === dock.openItemId) ?? first;
-  const heading = totRequestsHeading(entry.displayName, entry.tot.voice);
+  const heading = totRequestsHeading(entry.displayName, entry.tot.voice, m);
   return (
     <section
       aria-label={heading}
@@ -35,18 +38,20 @@ export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
         <TotCharacter character={entry.tot.character} pose="needs" size={24} />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
           {dock.minimized
-            ? totWaitingItemTitle(first, entry.displayName, entry.tot.voice)
+            ? totWaitingItemTitle(first, entry.displayName, entry.tot.voice, m)
             : heading}
         </h2>
         {items.length > 1 ? (
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-            {items.length} waiting
+            {gt("{count, plural, one {{count} waiting} other {{count} waiting}}", {
+              count: items.length,
+            })}
           </span>
         ) : null}
         <Button
           size="icon-xs"
           variant="ghost-muted"
-          aria-label={dock.minimized ? "Show what's waiting" : "Minimize"}
+          aria-label={dock.minimized ? gt("Show what's waiting") : gt("Minimize")}
           aria-expanded={!dock.minimized}
           onClick={() => setTotDockMinimized(props.threadRef, !dock.minimized)}
         >
@@ -77,7 +82,7 @@ export function TotDock(props: { readonly threadRef: ScopedThreadRef }) {
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-balance text-foreground">
-                      {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
+                      {totWaitingItemTitle(item, entry.displayName, entry.tot.voice, m)}
                     </span>
                     <span className="block text-xs text-muted-foreground">
                       {item.kind === "request" ? (

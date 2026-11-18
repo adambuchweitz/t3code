@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { msg, useGT, useMessages } from "gt-react";
 
 import { readThreadShell, useQuietThreadProjection, useQuietThreadShell } from "~/state/entities";
 import { useTotEntries } from "~/state/tots";
@@ -18,13 +19,15 @@ import {
 } from "@t3tools/client-runtime/tots/logic";
 
 const CONNECTION_TEXT: Record<TotConnection, (name: string) => string> = {
-  self: (name) => `This thread is ${name}. Open Tots`,
-  launched: (name) => `${name} started this work. Open ${name}`,
-  project: (name) => `${name} looks after this project. Open ${name}`,
+  self: (name) => msg("This thread is {name}. Open Tots", { name }),
+  launched: (name) => msg("{name} started this work. Open {name}", { name }),
+  project: (name) => msg("{name} looks after this project. Open {name}", { name }),
 };
 
 export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   const navigate = useNavigate();
+  const gt = useGT();
+  const m = useMessages();
   const entries = useTotEntries();
   const shell = useQuietThreadShell(threadRef);
   // Finished subagents and old settled threads have no shell, but the open thread has a projection.
@@ -45,8 +48,8 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
   });
   if (connected === null) return null;
   const { tot: entry, connection } = connected;
-  const text = CONNECTION_TEXT[connection](entry.displayName);
-  const stateLabel = totStateLabel(entry.state, entry.tot.voice);
+  const text = m(CONNECTION_TEXT[connection](entry.displayName));
+  const stateLabel = totStateLabel(entry.state, entry.tot.voice, m);
   // In its own thread, the header already shows the Tot's face and name.
   const isSelf = connection === "self";
   return (
@@ -57,7 +60,7 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
             variant="ghost"
             size="xs"
             data-testid="tot-thread-chip"
-            aria-label={`${text}. ${stateLabel}`}
+            aria-label={gt("{text}. {state}", { text, state: stateLabel })}
             className="shrink-0"
             onClick={() => {
               if (connection === "self") {
@@ -80,7 +83,7 @@ export function TotThreadChip({ threadRef }: { readonly threadRef: ScopedThreadR
           />
         )}
         <span className="hidden max-w-64 truncate sm:inline">
-          {isSelf ? `${TOT_JOB_LABEL[entry.tot.job]} · ${stateLabel}` : entry.displayName}
+          {isSelf ? `${m(TOT_JOB_LABEL[entry.tot.job])} · ${stateLabel}` : entry.displayName}
         </span>
       </TooltipTrigger>
       <TooltipPopup side="bottom">

@@ -15,6 +15,7 @@ import {
   type TotVoice,
   type TotWakeSettings,
 } from "@t3tools/contracts";
+import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
 import { useThreadShells } from "~/state/entities";
@@ -71,6 +72,7 @@ export function TotDialogHost() {
 function PickThreadTotDialog() {
   const entries = useTotEntries();
   const shells = useThreadShells();
+  const gt = useGT();
   const [threadKey, setThreadKey] = useState<string | null>(null);
   const totKeys = new Set(entries.map((entry) => `${entry.environmentId}:${entry.threadId}`));
   const candidates = shells
@@ -94,15 +96,17 @@ function PickThreadTotDialog() {
     <Dialog open onOpenChange={(open) => !open && closeTotDialog()}>
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Which thread should become a Tot?</DialogTitle>
+          <DialogTitle>
+            <T>Which thread should become a Tot?</T>
+          </DialogTitle>
           <DialogDescription>
-            Its history and automations carry on. You can turn it back at any time.
+            <T>Its history and automations carry on. You can turn it back at any time.</T>
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <Select value={threadKey} onValueChange={(value) => setThreadKey(value)}>
-            <SelectTrigger aria-label="Thread">
-              <SelectValue>{() => "Choose a recent thread"}</SelectValue>
+            <SelectTrigger aria-label={gt("Thread")}>
+              <SelectValue>{() => gt("Choose a recent thread")}</SelectValue>
             </SelectTrigger>
             <SelectPopup>
               {candidates.map((thread) => (
@@ -126,6 +130,8 @@ function TotFormDialog(props: {
   readonly existing: TotEntry | null;
 }) {
   const { threadRef, existing } = props;
+  const gt = useGT();
+  const m = useMessages();
   const tot = existing?.tot ?? null;
   const [character, setCharacter] = useState(() => {
     if (tot) return tot.character;
@@ -172,7 +178,7 @@ function TotFormDialog(props: {
     toastManager.add({
       type: "error",
       title,
-      description: error instanceof Error ? error.message : "Try again.",
+      description: error instanceof Error ? error.message : gt("Try again."),
     });
   };
 
@@ -222,7 +228,7 @@ function TotFormDialog(props: {
       closeTotDialog();
       return;
     }
-    fail(tot ? "Couldn't save the Tot" : "Couldn't make the Tot", result);
+    fail(tot ? gt("Couldn't save the Tot") : gt("Couldn't make the Tot"), result);
   };
 
   const release = async () => {
@@ -234,7 +240,7 @@ function TotFormDialog(props: {
       closeTotDialog();
       return;
     }
-    fail("Couldn't turn it back into a thread", result);
+    fail(gt("Couldn't turn it back into a thread"), result);
   };
 
   return (
@@ -246,18 +252,22 @@ function TotFormDialog(props: {
     >
       <DialogPopup className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{tot ? `Edit ${existing?.displayName}` : "Make this a Tot"}</DialogTitle>
+          <DialogTitle>
+            {tot ? gt("Edit {name}", { name: existing?.displayName ?? "" }) : gt("Make this a Tot")}
+          </DialogTitle>
           <DialogDescription>
             {tot
-              ? "Changes to its job, voice and charter apply from its next turn."
-              : "Its history and automations carry on. From its next turn it knows its job, voice and charter."}
+              ? gt("Changes to its job, voice and charter apply from its next turn.")
+              : gt(
+                  "Its history and automations carry on. From its next turn it knows its job, voice and charter.",
+                )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           {existing ? (
             <div className="mb-5">
               <ToggleGroup
-                aria-label="Section"
+                aria-label={gt("Section", { $context: "Tot settings section" })}
                 variant="segmented"
                 value={[section]}
                 onValueChange={(next) => {
@@ -266,9 +276,15 @@ function TotFormDialog(props: {
                   }
                 }}
               >
-                <Toggle value="profile">Tot</Toggle>
-                <Toggle value="wakes">Wakes</Toggle>
-                <Toggle value="crew">Crew models</Toggle>
+                <Toggle value="profile">
+                  <T context="Tot settings section, its profile">Tot</T>
+                </Toggle>
+                <Toggle value="wakes">
+                  <T context="Tot settings section, when it wakes up">Wakes</T>
+                </Toggle>
+                <Toggle value="crew">
+                  <T>Crew models</T>
+                </Toggle>
               </ToggleGroup>
             </div>
           ) : null}
@@ -280,13 +296,15 @@ function TotFormDialog(props: {
           ) : null}
           <div className={cn("grid gap-5", existing && section !== "profile" && "hidden")}>
             <div className="grid gap-2">
-              <Label>Character</Label>
+              <Label>
+                <T context="the Tot's face and figure">Character</T>
+              </Label>
               <div className="grid grid-cols-3 gap-1 sm:grid-cols-6">
                 {TOT_CHARACTERS.map((option) => (
                   <button
                     key={option.id}
                     type="button"
-                    aria-label={option.label}
+                    aria-label={m(option.label)}
                     aria-pressed={character === option.id}
                     onClick={() => {
                       setCharacter(option.id);
@@ -304,11 +322,13 @@ function TotFormDialog(props: {
             </div>
             <div className="grid gap-2">
               <div className="flex items-center justify-between gap-3">
-                <Label htmlFor="tot-name">Name</Label>
+                <Label htmlFor="tot-name">
+                  <T context="noun, the Tot's name">Name</T>
+                </Label>
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  Use its own name
+                  <T>Use its own name</T>
                   <Switch
-                    aria-label="Use its own name"
+                    aria-label={gt("Use its own name")}
                     checked={nameEnabled}
                     onCheckedChange={setNameEnabled}
                   />
@@ -325,30 +345,40 @@ function TotFormDialog(props: {
                 }}
               />
               {nameEnabled ? null : (
-                <p className="text-xs text-muted-foreground">It'll go by its project's name.</p>
+                <p className="text-xs text-muted-foreground">
+                  <T>It'll go by its project's name.</T>
+                </p>
               )}
             </div>
             <div className="grid gap-2">
-              <Label>Job</Label>
+              <Label>
+                <T context="the Tot's role">Job</T>
+              </Label>
               <ToggleGroup
-                aria-label="Job"
+                aria-label={gt("Job", { $context: "the Tot's role" })}
                 variant="segmented"
                 value={[job]}
                 onValueChange={(next) => {
                   if (next[0] === "manager" || next[0] === "hands_on") setJob(next[0]);
                 }}
               >
-                <Toggle value="manager">Project manager</Toggle>
-                <Toggle value="hands_on">Hands-on</Toggle>
+                <Toggle value="manager">
+                  <T>Project manager</T>
+                </Toggle>
+                <Toggle value="hands_on">
+                  <T context="Tot job, does the work itself">Hands-on</T>
+                </Toggle>
               </ToggleGroup>
               <p className="text-xs text-muted-foreground">
-                A steer for the Tot, not a lock. It can still run the odd command either way.
+                <T>A steer for the Tot, not a lock. It can still run the odd command either way.</T>
               </p>
             </div>
             <div className="grid gap-2">
-              <Label>Voice</Label>
+              <Label>
+                <T context="how the Tot talks">Voice</T>
+              </Label>
               <ToggleGroup
-                aria-label="Voice"
+                aria-label={gt("Voice", { $context: "how the Tot talks" })}
                 variant="segmented"
                 value={[voice]}
                 onValueChange={(next) => {
@@ -358,32 +388,42 @@ function TotFormDialog(props: {
               >
                 {TOT_VOICE_OPTIONS.map((option) => (
                   <Toggle key={option.value} value={option.value}>
-                    {option.label}
+                    {m(option.label)}
                   </Toggle>
                 ))}
               </ToggleGroup>
               <p className="text-xs text-muted-foreground">
-                "{TOT_VOICE_OPTIONS.find((option) => option.value === voice)?.sample}" Commits and
-                PRs always stay plain.
+                <T>
+                  "
+                  <Var>{m(TOT_VOICE_OPTIONS.find((option) => option.value === voice)?.sample)}</Var>
+                  " Commits and PRs always stay plain.
+                </T>
               </p>
             </div>
             <div className="grid gap-2">
-              <Label>Charter</Label>
+              <Label>
+                <T context="the Tot's standing instructions">Charter</T>
+              </Label>
               <TotCharterEditor
                 value={charter}
-                ariaLabel="Charter"
-                placeholder="What it looks after, the rules it must follow, and what matters right now."
+                ariaLabel={gt("Charter", { $context: "the Tot's standing instructions" })}
+                placeholder={gt(
+                  "What it looks after, the rules it must follow, and what matters right now.",
+                )}
                 onChange={setCharter}
               />
               {charter.length > TOT_CHARTER_MAX_LENGTH ? (
                 <p className="text-xs text-destructive-foreground" role="alert">
-                  {charter.length - TOT_CHARTER_MAX_LENGTH} characters over the limit.
+                  {gt(
+                    "{count, plural, one {{count} characters over the limit.} other {{count} characters over the limit.}}",
+                    { count: charter.length - TOT_CHARTER_MAX_LENGTH },
+                  )}
                 </p>
               ) : null}
               <p className="text-xs text-muted-foreground">
                 {tot?.charterProposal && charter !== opened.charter
-                  ? "Saving this dismisses the change the Tot proposed."
-                  : "Sent to the Tot on every turn, so shorter is better."}
+                  ? gt("Saving this dismisses the change the Tot proposed.")
+                  : gt("Sent to the Tot on every turn, so shorter is better.")}
               </p>
             </div>
           </div>
@@ -396,11 +436,11 @@ function TotFormDialog(props: {
               disabled={saving || !canOperate}
               onClick={() => void release()}
             >
-              Turn back into a thread
+              <T>Turn back into a thread</T>
             </Button>
           ) : null}
           <Button variant="ghost" disabled={saving} onClick={closeTotDialog}>
-            Cancel
+            <T>Cancel</T>
           </Button>
           <Button
             disabled={
@@ -412,7 +452,7 @@ function TotFormDialog(props: {
             }
             onClick={() => void save()}
           >
-            {tot ? "Save" : "Make it a Tot"}
+            {tot ? gt("Save") : gt("Make it a Tot")}
           </Button>
         </DialogFooter>
       </DialogPopup>

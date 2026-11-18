@@ -6,6 +6,7 @@ import {
 import type { TotEntry } from "@t3tools/client-runtime/tots/entries";
 import { orderTotRequestOptions } from "@t3tools/client-runtime/tots/logic";
 import type { TotRequest } from "@t3tools/contracts";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -27,8 +28,12 @@ function TotResearchSheet(props: {
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const insets = useSafeAreaInsets();
+  const gt = useGT();
   return (
-    <Sheet title="Research" onClose={props.onClose}>
+    <Sheet
+      title={gt("Research", { $context: "noun, the Tot's research notes" })}
+      onClose={props.onClose}
+    >
       <View className="flex-1">
         <ScrollView
           contentInsetAdjustmentBehavior="automatic"
@@ -61,6 +66,7 @@ export function TotRequestAnswers(props: {
   readonly request: TotRequest;
 }) {
   const { entry, request } = props;
+  const gt = useGT();
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -80,7 +86,9 @@ export function TotRequestAnswers(props: {
     setSending(false);
     if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
     const failure = squashAtomCommandFailure(result);
-    setError(failure instanceof Error ? failure.message : "Couldn't send your answer. Try again.");
+    setError(
+      failure instanceof Error ? failure.message : gt("Couldn't send your answer. Try again."),
+    );
   };
   const disabled = sending || !canOperate;
   const options = orderTotRequestOptions(request);
@@ -90,8 +98,8 @@ export function TotRequestAnswers(props: {
       <TextInput
         multiline
         autoFocus
-        placeholder="Write your answer"
-        accessibilityLabel={`Your answer to ${entry.displayName}`}
+        placeholder={gt("Write your answer")}
+        accessibilityLabel={gt("Your answer to {name}", { name: entry.displayName })}
         editable={!disabled}
         value={draft}
         onChangeText={setDraft}
@@ -99,14 +107,19 @@ export function TotRequestAnswers(props: {
         className="max-h-40 min-h-20"
       />
       <Button
-        label="Send answer"
+        label={gt("Send answer")}
         tone="primary"
         fullWidth
         disabled={disabled || draft.trim() === ""}
         loading={sending}
         onPress={() => void respond(draft.trim())}
       />
-      <Button label="Back to the options" tone="text" fullWidth onPress={() => setWriting(false)} />
+      <Button
+        label={gt("Back to the options")}
+        tone="text"
+        fullWidth
+        onPress={() => setWriting(false)}
+      />
     </View>
   ) : (
     <View className="gap-2">
@@ -122,14 +135,14 @@ export function TotRequestAnswers(props: {
       ))}
       <View className="flex-row flex-wrap justify-between">
         <Button
-          label="Write my own"
+          label={gt("Write my own")}
           tone="text"
           size="compact"
           disabled={disabled}
           onPress={() => setWriting(true)}
         />
         <Button
-          label="Not needed"
+          label={gt("Not needed")}
           tone="text"
           size="compact"
           disabled={disabled}
@@ -148,7 +161,7 @@ export function TotRequestAnswers(props: {
       )}
       {request.details === "" ? null : (
         <Button
-          label="Read the research"
+          label={gt("Read the research")}
           icon="doc.text"
           tone="secondary"
           size="compact"

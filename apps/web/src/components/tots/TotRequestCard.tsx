@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { orderTotRequestOptions } from "@t3tools/client-runtime/tots/logic";
 import type { TotRequest } from "@t3tools/contracts";
+import { T, useGT, Var } from "gt-react";
 import { useState } from "react";
 
 import { serverEnvironment } from "~/state/server";
@@ -19,10 +20,13 @@ import { TotCharterEditor } from "./TotCharterEditor";
 
 export function TotRequestMeta(props: { readonly request: TotRequest }) {
   const { request } = props;
+  const gt = useGT();
   return (
     <>
-      Asked {formatRelativeTimeLabel(request.askedAt)}
-      {request.blocks === null ? "" : ` · Blocks ${request.blocks}`}
+      <T>
+        Asked <Var>{formatRelativeTimeLabel(request.askedAt)}</Var>
+      </T>
+      {request.blocks === null ? "" : ` · ${gt("Blocks {blocks}", { blocks: request.blocks })}`}
     </>
   );
 }
@@ -30,6 +34,7 @@ export function TotRequestMeta(props: { readonly request: TotRequest }) {
 /** The question stays with the caller, because a dock row and the queue title it differently. */
 export function TotRequestCard(props: { readonly entry: TotEntry; readonly request: TotRequest }) {
   const { entry, request } = props;
+  const gt = useGT();
   const [showDetails, setShowDetails] = useState(false);
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState("");
@@ -49,8 +54,8 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
     const error = squashAtomCommandFailure(result);
     toastManager.add({
       type: "error",
-      title: "Couldn't send your answer",
-      description: error instanceof Error ? error.message : "Try again.",
+      title: gt("Couldn't send your answer"),
+      description: error instanceof Error ? error.message : gt("Try again."),
     });
   };
   const disabled = sending || !canOperate;
@@ -68,8 +73,8 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
       {writing ? (
         <TotCharterEditor
           value={draft}
-          ariaLabel={`Your answer to ${entry.displayName}`}
-          placeholder="Write your answer"
+          ariaLabel={gt("Your answer to {name}", { name: entry.displayName })}
+          placeholder={gt("Write your answer")}
           disabled={disabled}
           onChange={setDraft}
         />
@@ -81,7 +86,7 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
             disabled={disabled || draft.trim() === ""}
             onClick={() => void respond(draft.trim())}
           >
-            Send answer
+            <T>Send answer</T>
           </Button>
         </div>
       ) : options.length === 0 ? null : (
@@ -106,7 +111,7 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
           aria-pressed={writing}
           onClick={() => setWriting((current) => !current)}
         >
-          {writing ? "Back to the options" : "Write my own answer"}
+          {writing ? gt("Back to the options") : gt("Write my own answer")}
         </Button>
         {request.details === "" ? null : (
           <Button
@@ -115,7 +120,7 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
             aria-expanded={showDetails}
             onClick={() => setShowDetails((current) => !current)}
           >
-            {showDetails ? "Hide the research" : "Read the research"}
+            {showDetails ? gt("Hide the research") : gt("Read the research")}
           </Button>
         )}
         <Button
@@ -125,7 +130,7 @@ export function TotRequestCard(props: { readonly entry: TotEntry; readonly reque
           disabled={disabled}
           onClick={() => void respond(null)}
         >
-          Not needed
+          <T>Not needed</T>
         </Button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { totPlaceLabel, totWaitingQueue } from "@t3tools/client-runtime/tots/entries";
 import { totWaitingItemTitle } from "@t3tools/client-runtime/tots/logic";
 import { useNavigate } from "@tanstack/react-router";
+import { T, useGT, useMessages } from "gt-react";
 import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -19,18 +20,23 @@ import { TotRequestCard } from "./TotRequestCard";
 
 export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEntry> }) {
   const navigate = useNavigate();
+  const gt = useGT();
+  const m = useMessages();
   const shells = useQuietThreadShells();
   const [openId, setOpenId] = useState<string | null>(null);
-  const { items, crewNeeds, total } = totWaitingQueue({
-    entries: props.entries,
-    threads: shells,
-    threadStatus: resolveSidebarThreadStatus,
-  });
+  const { items, crewNeeds, total } = totWaitingQueue(
+    {
+      entries: props.entries,
+      threads: shells,
+      threadStatus: resolveSidebarThreadStatus,
+    },
+    m,
+  );
   if (total === 0) return null;
   return (
-    <section aria-label="Waiting on you" data-testid="tot-needs-you">
+    <section aria-label={gt("Waiting on you")} data-testid="tot-needs-you">
       <h2 className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-        Waiting on you
+        <T>Waiting on you</T>
         <span className="tabular-nums">{total}</span>
       </h2>
       <ul className="list-none divide-y overflow-hidden rounded-lg border bg-card">
@@ -47,12 +53,12 @@ export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEnt
                 <TotCharacter character={entry.tot.character} pose="needs" size={36} />
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium text-balance text-foreground">
-                    {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
+                    {totWaitingItemTitle(item, entry.displayName, entry.tot.voice, m)}
                   </span>
                   <span className="block text-xs text-muted-foreground">
                     {totPlaceLabel(entry)} · {formatRelativeTimeLabel(at)}
                     {item.kind === "request" && item.request.blocks !== null
-                      ? ` · blocks ${item.request.blocks}`
+                      ? ` · ${gt("blocks {blocks}", { blocks: item.request.blocks })}`
                       : ""}
                   </span>
                 </span>
@@ -95,7 +101,7 @@ export function TotNeedsYouQueue(props: { readonly entries: ReadonlyArray<TotEnt
                 })
               }
             >
-              Review
+              <T context="verb, open the crew thread to review it">Review</T>
             </Button>
           </li>
         ))}

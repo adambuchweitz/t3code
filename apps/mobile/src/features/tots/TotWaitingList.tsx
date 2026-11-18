@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { totPlaceLabel, totWaitingQueue } from "@t3tools/client-runtime/tots/entries";
 import { totWaitingItemTitle } from "@t3tools/client-runtime/tots/logic";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { T, useGT, useMessages, Var } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -44,6 +45,8 @@ function WaitingRow(props: {
 /** Everything the Tots on every connected machine are waiting on. Gone when nothing is. */
 export function TotWaitingList() {
   const selectDetail = useSelectWorkspaceDetail();
+  const gt = useGT();
+  const messages = useMessages();
   const openThread = (environmentId: EnvironmentId, threadId: ThreadId) =>
     selectDetail({
       name: "Thread",
@@ -51,16 +54,17 @@ export function TotWaitingList() {
     });
   const entries = useTotEntries();
   const shells = useAtomValue(environmentThreadShells.quietThreadShellsAtom);
-  const { items, crewNeeds, total } = totWaitingQueue({
-    entries,
-    threads: shells,
-    threadStatus: resolveThreadListV2Status,
-  });
+  const { items, crewNeeds, total } = totWaitingQueue(
+    { entries, threads: shells, threadStatus: resolveThreadListV2Status },
+    messages,
+  );
   if (total === 0) return null;
   return (
     <View className="mx-4 mb-3 mt-1" testID="tot-waiting-list">
       <Text className="mb-1.5 px-1 font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
-        Waiting on you · {total}
+        <T>
+          Waiting on you · <Var>{total}</Var>
+        </T>
       </Text>
       <View className="overflow-hidden rounded-[20px] border border-border bg-card">
         {items.map(({ entry, item, at }, index) => (
@@ -68,8 +72,11 @@ export function TotWaitingList() {
             <WaitingRow
               character={entry.tot.character}
               pose="needs"
-              title={totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
-              detail={`${totPlaceLabel(entry)} · ${relativeTime(at)} ago`}
+              title={totWaitingItemTitle(item, entry.displayName, entry.tot.voice, messages)}
+              detail={gt("{place} · {time} ago", {
+                place: totPlaceLabel(entry),
+                time: relativeTime(at, undefined, messages),
+              })}
               onPress={() => {
                 updateTotDock(entry.threadRef, { openItemId: item.id, minimized: false });
                 openThread(entry.environmentId, entry.threadId);

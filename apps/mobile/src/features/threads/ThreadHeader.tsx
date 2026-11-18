@@ -34,7 +34,7 @@ export function ThreadHeader(props: {
   const terminalMenu = threadTerminalMenu(props.gitControls, m);
   const filesVisible = props.inspectorMode === "files" && panes.auxiliaryPaneVisible;
   const deskActions: AppBarAction[] = props.onOpenTotDesk
-    ? [{ accessibilityLabel: "Open desk", icon: "face.smiling", onPress: props.onOpenTotDesk }]
+    ? [{ accessibilityLabel: gt("Open desk"), icon: "face.smiling", onPress: props.onOpenTotDesk }]
     : [];
   const fileActions: AppBarAction[] = props.hasThreadCwd
     ? [
