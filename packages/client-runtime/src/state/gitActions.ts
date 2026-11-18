@@ -85,28 +85,49 @@ function gitButlerPublication(status: VcsStatusResult): GitButlerBranchPublicati
     : undefined;
 }
 
-function gitButlerPushState(status: VcsStatusResult): {
+function gitButlerPushState(
+  status: VcsStatusResult,
+  resolve: MFunctionType,
+): {
   readonly label: string;
   readonly disabledReason: string | null;
 } {
   switch (gitButlerPublication(status)) {
     case "empty":
-      return { label: "Publish branch", disabledReason: "No commits to publish." };
+      return {
+        label: resolve(msg("Publish branch")),
+        disabledReason: resolve(msg("No commits to publish.")),
+      };
     case "unpublished": {
       const remote = status.workspace?.pushRemote;
       return {
-        label: remote === undefined ? "Publish branch" : `Publish to ${remote}`,
+        label:
+          remote === undefined
+            ? resolve(msg("Publish branch"))
+            : resolve(msg("Publish to {remote}", { remote })),
         disabledReason: null,
       };
     }
     case "force_required":
-      return { label: "Force push", disabledReason: null };
+      return {
+        label: resolve(msg("Force push", { $context: "verb, git action" })),
+        disabledReason: null,
+      };
     case "up_to_date":
-      return { label: "Push", disabledReason: "Branch is up to date. No commits to push." };
+      return {
+        label: resolve(msg("Push", { $context: "verb, git action" })),
+        disabledReason: resolve(msg("Branch is up to date. No commits to push.")),
+      };
     case "integrated":
-      return { label: "Push", disabledReason: "Branch is already integrated into the target." };
+      return {
+        label: resolve(msg("Push", { $context: "verb, git action" })),
+        disabledReason: resolve(msg("Branch is already integrated into the target.")),
+      };
     default:
-      return { label: "Push", disabledReason: null };
+      return {
+        label: resolve(msg("Push", { $context: "verb, git action" })),
+        disabledReason: null,
+      };
   }
 }
 
@@ -115,18 +136,26 @@ function hasNothingToReview(status: VcsStatusResult): boolean {
   return publication === "empty" || publication === "integrated";
 }
 
-function gitButlerViewLabel(status: VcsStatusResult): string {
+function gitButlerViewLabel(status: VcsStatusResult, resolve: MFunctionType): string {
   const { shortLabel } = changeRequestTerminologyFor(status);
-  return `View ${status.pr?.isDraft ? "draft " : ""}${shortLabel} #${status.pr?.number}`;
+  const number = status.pr?.number;
+  return status.pr?.isDraft
+    ? resolve(msg("View draft {shortLabel} #{number}", { shortLabel, number }))
+    : resolve(msg("View {shortLabel} #{number}", { shortLabel, number }));
 }
 
 function gitButlerCandidateLabel(
   status: GitActionStatus,
   candidate: NonNullable<VcsStatusResult["pr"]>,
+  resolve: MFunctionType,
 ): string {
   const { shortLabel } = changeRequestTerminologyFor(status);
-  const state = candidate.state === "open" ? "" : `${candidate.state} `;
-  return `Possible ${state}${shortLabel} #${candidate.number} (unconfirmed)`;
+  return resolve(
+    msg(
+      "{state, select, closed {Possible closed {shortLabel} #{number} (unconfirmed)} merged {Possible merged {shortLabel} #{number} (unconfirmed)} other {Possible {shortLabel} #{number} (unconfirmed)}}",
+      { state: candidate.state, shortLabel, number: candidate.number },
+    ),
+  );
 }
 
 /** The change request an `open_pr` item opens; a candidate is only offered by its own item. */
@@ -149,11 +178,14 @@ export interface GitButlerPublishConfirmation {
 }
 
 /** Whether `error` is the server asking a person to confirm something before it publishes. */
-export function gitButlerPublishConfirmation(error: unknown): GitButlerPublishConfirmation | null {
+export function gitButlerPublishConfirmation(
+  error: unknown,
+  resolve: MFunctionType = mFallback,
+): GitButlerPublishConfirmation | null {
   if (isGitButlerForcePushConfirmationError(error)) {
     return {
       branch: error.branch,
-      ...gitButlerForcePushCopy(error),
+      ...gitButlerForcePushCopy(error, resolve),
       approval: { gitbutlerForcePushApproval: error.approval },
       resolutions: [],
     };
@@ -166,7 +198,7 @@ export function gitButlerPublishConfirmation(error: unknown): GitButlerPublishCo
   ) {
     return {
       branch: error.branch,
-      ...gitButlerHoldCopy(error),
+      ...gitButlerHoldCopy(error, resolve),
       approval: { gitbutlerHoldApproval: error.approval },
       resolutions: error.holds.flatMap((hold) => hold.resolution ?? []),
     };
@@ -180,7 +212,10 @@ export function gitButlerForcePushRetryAction(action: GitStackedAction): GitStac
   return action === "commit_push_pr" ? "create_pr" : action;
 }
 
-export function gitButlerForcePushCopy(error: GitButlerForcePushConfirmationError): {
+export function gitButlerForcePushCopy(
+  error: GitButlerForcePushConfirmationError,
+  resolve: MFunctionType = mFallback,
+): {
   readonly title: string;
   readonly description: string;
   readonly confirmLabel: string;
@@ -188,92 +223,160 @@ export function gitButlerForcePushCopy(error: GitButlerForcePushConfirmationErro
   const lines = error.targets.map((target) => {
     const ref = `${target.remote}/${target.branch}`;
     const count = target.overwrittenCommits.length;
-    if (count === 0) return `${ref}: replaces its pushed history with your rewritten commits.`;
+    if (count === 0) {
+      return resolve(
+        msg("{ref}: replaces its pushed history with your rewritten commits.", { ref }),
+      );
+    }
     const commits = target.overwrittenCommits
       .slice(0, 3)
       .map((commit) => `${commit.sha.slice(0, 7)} ${commit.message.split("\n", 1)[0]}`);
-    const more = count > commits.length ? [`and ${count - commits.length} more`] : [];
-    return `${ref}: permanently removes ${count} commit${count === 1 ? "" : "s"} that this branch does not have:\n${[...commits, ...more].join("\n")}`;
+    const more =
+      count > commits.length
+        ? [
+            resolve(
+              msg("{count, plural, one {and {count} more} other {and {count} more}}", {
+                count: count - commits.length,
+              }),
+            ),
+          ]
+        : [];
+    return resolve(
+      msg(
+        "{count, plural, one {{ref}: permanently removes {count} commit that this branch does not have:\n{commits}} other {{ref}: permanently removes {count} commits that this branch does not have:\n{commits}}}",
+        { ref, count, commits: [...commits, ...more].join("\n") },
+      ),
+    );
   });
   const [only] = error.targets;
   return {
     title:
       error.targets.length === 1 && only
-        ? `Overwrite ${only.remote}/${only.branch}?`
-        : `Overwrite ${error.targets.length} remote branches?`,
+        ? resolve(msg("Overwrite {ref}?", { ref: `${only.remote}/${only.branch}` }))
+        : resolve(
+            msg(
+              "{count, plural, one {Overwrite {count} remote branches?} other {Overwrite {count} remote branches?}}",
+              { count: error.targets.length },
+            ),
+          ),
     description: [
-      ...(error.staleApproval ? ["The remote changed after you confirmed."] : []),
+      ...(error.staleApproval ? [resolve(msg("The remote changed after you confirmed."))] : []),
       ...lines,
-      "T3 Code just checked the remote, but a push made after this check can still be overwritten.",
+      resolve(
+        msg(
+          "T3 Code just checked the remote, but a push made after this check can still be overwritten.",
+        ),
+      ),
     ].join("\n\n"),
-    confirmLabel: "Force push",
+    confirmLabel: resolve(msg("Force push", { $context: "verb, git action" })),
   };
 }
 
-function gitButlerHoldLine(hold: GitButlerPublicationHold): string {
+function gitButlerHoldLine(hold: GitButlerPublicationHold, resolve: MFunctionType): string {
   if (hold.commitSha === null) {
-    return `${hold.branch}: T3 Code stopped before checking a commit here, or could not tell whether one landed. It can't tell where that commit is now, so its changes could be on any branch. Review with \`git log ${hold.branch}\`.`;
+    return resolve(
+      msg(
+        "{branch}: T3 Code stopped before checking a commit here, or could not tell whether one landed. It can't tell where that commit is now, so its changes could be on any branch. Review with `git log {branch}`.",
+        { branch: hold.branch },
+      ),
+    );
   }
   const short = hold.commitSha.slice(0, 12);
   return hold.found
-    ? `${short} on ${hold.branch}: it may hold changes you didn't choose, possibly someone else's. Review it with \`git show ${short}\`.`
-    : `${short}, committed to ${hold.branch}: it may hold changes you didn't choose, and T3 Code can't find it on an applied branch. An uncommit, squash, or deleted branch does this, so its changes could be anywhere. Review it with \`git show ${short}\`.`;
+    ? resolve(
+        msg(
+          "{sha} on {branch}: it may hold changes you didn't choose, possibly someone else's. Review it with `git show {sha}`.",
+          { sha: short, branch: hold.branch },
+        ),
+      )
+    : resolve(
+        msg(
+          "{sha}, committed to {branch}: it may hold changes you didn't choose, and T3 Code can't find it on an applied branch. An uncommit, squash, or deleted branch does this, so its changes could be anywhere. Review it with `git show {sha}`.",
+          { sha: short, branch: hold.branch },
+        ),
+      );
 }
 
-const END_HOLD_EFFECT =
-  "Ending a hold publishes nothing and leaves the commit where it is, but T3 Code won't ask about it again.";
+const END_HOLD_EFFECT = msg(
+  "Ending a hold publishes nothing and leaves the commit where it is, but T3 Code won't ask about it again.",
+);
 
-export function gitButlerHoldCopy(error: GitButlerPublicationHoldError): {
+export function gitButlerHoldCopy(
+  error: GitButlerPublicationHoldError,
+  resolve: MFunctionType = mFallback,
+): {
   readonly title: string;
   readonly description: string;
   readonly confirmLabel: string;
 } {
   return {
-    title:
-      error.holds.length === 1
-        ? "Publish a commit T3 Code couldn't confirm?"
-        : `Publish ${error.holds.length} commits T3 Code couldn't confirm?`,
+    title: resolve(
+      msg(
+        "{count, plural, =1 {Publish a commit T3 Code couldn't confirm?} other {Publish {count} commits T3 Code couldn't confirm?}}",
+        { count: error.holds.length },
+      ),
+    ),
     description: [
-      ...(error.staleApproval ? ["What you reviewed has changed."] : []),
-      ...error.holds.map(gitButlerHoldLine),
-      `Nothing has been pushed. ${END_HOLD_EFFECT}`,
+      ...(error.staleApproval ? [resolve(msg("What you reviewed has changed."))] : []),
+      ...error.holds.map((hold) => gitButlerHoldLine(hold, resolve)),
+      resolve(
+        msg("Nothing has been pushed. {endHoldEffect}", {
+          endHoldEffect: resolve(END_HOLD_EFFECT),
+        }),
+      ),
     ].join("\n\n"),
-    confirmLabel: "Reviewed, publish",
+    confirmLabel: resolve(msg("Reviewed, publish")),
   };
 }
 
-export const GIT_BUTLER_END_HOLD_LABEL = "End hold, don't publish";
+export const GIT_BUTLER_END_HOLD_LABEL = msg("End hold, don't publish");
 
 /** What to show someone reviewing every hold, apart from any push. */
-export function gitButlerHoldReview(holds: readonly GitButlerHeldCommit[]): {
+export function gitButlerHoldReview(
+  holds: readonly GitButlerHeldCommit[],
+  resolve: MFunctionType = mFallback,
+): {
   readonly title: string;
   readonly description: string;
   readonly resolutions: readonly string[];
 } {
   if (holds.length === 0) {
     return {
-      title: "Nothing is held",
-      description: "No commits are held from publishing.",
+      title: resolve(msg("Nothing is held")),
+      description: resolve(msg("No commits are held from publishing.")),
       resolutions: [],
     };
   }
   const resolutions = holds.flatMap((hold) => hold.resolution ?? []);
   return {
-    title: holds.length === 1 ? "A commit is held from publishing" : `${holds.length} holds`,
+    title: resolve(
+      msg("{count, plural, =1 {A commit is held from publishing} other {{count} holds}}", {
+        count: holds.length,
+      }),
+    ),
     description: [
       ...holds.map((hold) =>
         hold.possiblyRunningRef === undefined
-          ? gitButlerHoldLine(hold)
-          : `${hold.branch}: T3 Code can't tell whether a commit here is still being made. If a T3 Code server is making it, this clears when it finishes. If that server stopped, this won't clear by itself: make sure no \`but commit\` is still running in this checkout, review the branch, since a commit may have landed unchecked, then end the hold in a terminal (Git Bash on Windows) with \`${gitButlerEndHoldCommand(hold.possiblyRunningRef)}\`.`,
+          ? gitButlerHoldLine(hold, resolve)
+          : resolve(
+              msg(
+                "{branch}: T3 Code can't tell whether a commit here is still being made. If a T3 Code server is making it, this clears when it finishes. If that server stopped, this won't clear by itself: make sure no `but commit` is still running in this checkout, review the branch, since a commit may have landed unchecked, then end the hold in a terminal (Git Bash on Windows) with `{command}`.",
+                { branch: hold.branch, command: gitButlerEndHoldCommand(hold.possiblyRunningRef) },
+              ),
+            ),
       ),
-      ...(resolutions.length > 0 ? [END_HOLD_EFFECT] : []),
+      ...(resolutions.length > 0 ? [resolve(END_HOLD_EFFECT)] : []),
     ].join("\n\n"),
     resolutions,
   };
 }
 
-function gitButlerCheckingHint(status: VcsStatusResult): string {
-  return `Checking for an existing ${changeRequestTerminologyFor(status).shortLabel}...`;
+function gitButlerCheckingHint(status: VcsStatusResult, resolve: MFunctionType): string {
+  return resolve(
+    msg("Checking for an existing {shortLabel}...", {
+      shortLabel: changeRequestTerminologyFor(status).shortLabel,
+    }),
+  );
 }
 
 /** Menu shared by clients; a change request kept in another remote still offers its own push. */
@@ -281,14 +384,15 @@ export function gitButlerMenuItems(
   status: GitActionStatus,
   isBusy: boolean,
   hasRemote: boolean,
+  resolve: MFunctionType = mFallback,
 ): GitActionMenuItem[] {
   const { shortLabel } = changeRequestTerminologyFor(status);
   const canAct = !isBusy && status.refName !== null && hasRemote;
-  const push = gitButlerPushState(status);
+  const push = gitButlerPushState(status, resolve);
   return [
     {
       id: "commit",
-      label: "Commit",
+      label: resolve(msg("Commit", { $context: "verb, git action" })),
       disabled: isBusy || !status.hasWorkingTreeChanges,
       icon: "commit",
       kind: "open_dialog",
@@ -305,14 +409,14 @@ export function gitButlerMenuItems(
     status.pr?.state === "open"
       ? {
           id: "pr",
-          label: gitButlerViewLabel(status),
+          label: gitButlerViewLabel(status, resolve),
           disabled: isBusy,
           icon: "pr",
           kind: "open_pr",
         }
       : {
           id: "pr",
-          label: `Create ${shortLabel}`,
+          label: resolve(msg("Create {shortLabel}", { shortLabel })),
           disabled: !canAct || status.changeRequestPending === true || hasNothingToReview(status),
           icon: "pr",
           kind: "open_dialog",
@@ -322,7 +426,7 @@ export function gitButlerMenuItems(
       ? [
           {
             id: "pr_candidate" as const,
-            label: gitButlerCandidateLabel(status, status.changeRequestCandidate),
+            label: gitButlerCandidateLabel(status, status.changeRequestCandidate, resolve),
             disabled: isBusy,
             icon: "pr" as const,
             kind: "open_pr" as const,
@@ -333,7 +437,7 @@ export function gitButlerMenuItems(
       ? [
           {
             id: "pr_candidate" as const,
-            label: `Could not check for a ${shortLabel}`,
+            label: resolve(msg("Could not check for a {shortLabel}", { shortLabel })),
             disabled: true,
             icon: "pr" as const,
             kind: "open_pr" as const,
@@ -344,7 +448,12 @@ export function gitButlerMenuItems(
       ? [
           {
             id: "held" as const,
-            label: `Review ${status.workspace.heldCommitCount} commit${status.workspace.heldCommitCount === 1 ? "" : "s"} held from publishing`,
+            label: resolve(
+              msg(
+                "{count, plural, one {Review {count} commit held from publishing} other {Review {count} commits held from publishing}}",
+                { count: status.workspace.heldCommitCount },
+              ),
+            ),
             disabled: false,
             icon: "push" as const,
             kind: "review_holds" as const,
@@ -357,68 +466,102 @@ export function gitButlerMenuItems(
 export function gitButlerQuickAction(
   status: GitActionStatus,
   hasRemote: boolean,
+  resolve: MFunctionType = mFallback,
 ): GitButlerQuickAction {
   // Uncommitted changes in a shared checkout may be anyone's, so a commit always starts by choosing.
   if (status.hasWorkingTreeChanges) {
-    return { label: "Commit", disabled: false, kind: "open_commit" };
+    return {
+      label: resolve(msg("Commit", { $context: "verb, git action" })),
+      disabled: false,
+      kind: "open_commit",
+    };
   }
   const hint = (message: string): GitButlerQuickAction => ({
-    label: "Commit",
+    label: resolve(msg("Commit", { $context: "verb, git action" })),
     disabled: true,
     kind: "show_hint",
     hint: message,
   });
   if (status.refName === null) {
     return hint(
-      `Select an applied GitButler branch to push or create a ${changeRequestTerminologyFor(status).shortLabel}.`,
+      resolve(
+        msg("Select an applied GitButler branch to push or create a {shortLabel}.", {
+          shortLabel: changeRequestTerminologyFor(status).shortLabel,
+        }),
+      ),
     );
   }
-  if (!hasRemote) return hint("Add a remote before pushing.");
+  if (!hasRemote) return hint(resolve(msg("Add a remote before pushing.")));
 
-  const push = gitButlerPushState(status);
+  const push = gitButlerPushState(status, resolve);
   const publication = gitButlerPublication(status);
   // These have commits only this push can deliver, whatever their change request says.
   if (publication === "ahead" || publication === "force_required") {
     return { label: push.label, disabled: false, kind: "run_action", action: "push" };
   }
   if (status.pr?.state === "open") {
-    return { label: gitButlerViewLabel(status), disabled: false, kind: "open_pr" };
+    return { label: gitButlerViewLabel(status, resolve), disabled: false, kind: "open_pr" };
   }
   if (status.changeRequestPending && !hasNothingToReview(status)) {
-    return hint(gitButlerCheckingHint(status));
+    return hint(gitButlerCheckingHint(status, resolve));
   }
   if (push.disabledReason === null) {
     return { label: push.label, disabled: false, kind: "run_action", action: "push" };
   }
   const { shortLabel } = changeRequestTerminologyFor(status);
-  const prefix = status.pr
-    ? `${shortLabel} #${status.pr.number} was ${status.pr.state}. `
-    : status.changeRequestCandidate
-      ? `${shortLabel} #${status.changeRequestCandidate.number} may belong to this branch, but that is unconfirmed. `
-      : status.changeRequestLookupFailed
-        ? `Could not check for a ${shortLabel}. `
-        : "";
-  return hint(`${prefix}${push.disabledReason}`);
+  const reason = push.disabledReason;
+  return hint(
+    status.pr
+      ? resolve(
+          msg(
+            "{state, select, closed {{shortLabel} #{number} was closed. {reason}} merged {{shortLabel} #{number} was merged. {reason}} other {{shortLabel} #{number} was open. {reason}}}",
+            { state: status.pr.state, shortLabel, number: status.pr.number, reason },
+          ),
+        )
+      : status.changeRequestCandidate
+        ? resolve(
+            msg(
+              "{shortLabel} #{number} may belong to this branch, but that is unconfirmed. {reason}",
+              { shortLabel, number: status.changeRequestCandidate.number, reason },
+            ),
+          )
+        : status.changeRequestLookupFailed
+          ? resolve(msg("Could not check for a {shortLabel}. {reason}", { shortLabel, reason }))
+          : reason,
+  );
 }
 
 export function gitButlerDisabledReason(
   id: "push" | "pr" | "pr_candidate" | "held",
   status: GitActionStatus,
   hasRemote: boolean,
+  resolve: MFunctionType = mFallback,
 ): string {
-  if (id === "held") return "Push or create a PR to review them, which also lets you continue.";
-  if (id === "pr_candidate") {
-    return `The ${changeRequestTerminologyFor(status).shortLabel} lookup failed. It retries on the next refresh.`;
+  if (id === "held") {
+    return resolve(msg("Push or create a PR to review them, which also lets you continue."));
   }
-  if (status.refName === null) return "Select an applied GitButler branch for this thread.";
-  if (!hasRemote) return "Add a remote before publishing.";
-  const push = gitButlerPushState(status);
+  if (id === "pr_candidate") {
+    return resolve(
+      msg("The {shortLabel} lookup failed. It retries on the next refresh.", {
+        shortLabel: changeRequestTerminologyFor(status).shortLabel,
+      }),
+    );
+  }
+  if (status.refName === null) {
+    return resolve(msg("Select an applied GitButler branch for this thread."));
+  }
+  if (!hasRemote) return resolve(msg("Add a remote before publishing."));
+  const push = gitButlerPushState(status, resolve);
   if (id === "push" || hasNothingToReview(status)) {
-    return push.disabledReason ?? "Pushing is unavailable.";
+    return push.disabledReason ?? resolve(msg("Pushing is unavailable."));
   }
   return status.changeRequestPending
-    ? gitButlerCheckingHint(status)
-    : `${changeRequestTerminologyFor(status).shortLabel} is unavailable.`;
+    ? gitButlerCheckingHint(status, resolve)
+    : resolve(
+        msg("{shortLabel} is unavailable.", {
+          shortLabel: changeRequestTerminologyFor(status).shortLabel,
+        }),
+      );
 }
 
 export type GitActionIconName = "commit" | "push" | "pr";
@@ -553,7 +696,7 @@ export function buildMenuItems(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler") {
-    return gitButlerMenuItems(gitStatus, isBusy, hasOriginRemote);
+    return gitButlerMenuItems(gitStatus, isBusy, hasOriginRemote, resolve);
   }
 
   const hasBranch = gitStatus.refName !== null;
@@ -649,7 +792,7 @@ export function resolveQuickAction(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler") {
-    return gitButlerQuickAction(gitStatus, hasOriginRemote);
+    return gitButlerQuickAction(gitStatus, hasOriginRemote, resolve);
   }
 
   if (!hasBranch) {
@@ -830,7 +973,7 @@ export function getGitActionDisabledReason(
   const terminology = changeRequestTerminologyFor(gitStatus);
 
   if (gitStatus.workspace?._tag === "gitbutler" && item.id !== "commit") {
-    return gitButlerDisabledReason(item.id, gitStatus, hasOriginRemote);
+    return gitButlerDisabledReason(item.id, gitStatus, hasOriginRemote, resolve);
   }
 
   if (item.id === "commit") {

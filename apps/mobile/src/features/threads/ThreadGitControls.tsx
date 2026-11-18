@@ -172,7 +172,11 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     }
     const action = resolveQuickAction(gitStatus, busy, isDefaultRef, hasPrimaryRemote, messages);
     if (action.kind === "open_commit" && props.hasThread === false) {
-      return { ...action, disabled: true, hint: "Start the thread to choose changes to commit." };
+      return {
+        ...action,
+        disabled: true,
+        hint: gt("Start the thread to choose changes to commit."),
+      };
     }
     return !canWriteSourceControl &&
       (action.kind === "run_pull" || action.kind === "run_action" || action.kind === "open_commit")

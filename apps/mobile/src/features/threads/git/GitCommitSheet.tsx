@@ -2,7 +2,7 @@ import { FitSheet } from "../../../components/ui/FitSheet";
 import { SheetHeader } from "../../../components/ui/SheetHeader";
 import { Button } from "../../../components/ui/Button";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { T, useGT, Var } from "gt-react-native";
+import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
@@ -29,6 +29,7 @@ import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
 import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-worktree";
 import { vcsEnvironment } from "../../../state/vcs";
+import { m, type MessageResolver } from "../../../i18n/messages";
 
 type GitCommitSheetProps = StaticScreenProps<
   {
@@ -97,14 +98,29 @@ function CommitFileRow(props: {
   );
 }
 
-function gitButlerFileNote(file: GitButlerCommitFile) {
-  const hunks = file.changeIds.length > 1 ? `${file.changeIds.length} hunks` : null;
+function gitButlerFileNote(file: GitButlerCommitFile, resolve: MessageResolver = m) {
+  const count = file.changeIds.length;
   if (file.scope === "locked") {
-    if (file.assignedBranch) return `Assigned to ${file.assignedBranch}`;
-    return file.changedElsewhere ? "Also changed on another branch" : "Can't be committed here";
+    if (file.assignedBranch) {
+      return resolve(msg("Assigned to {branch}", { branch: file.assignedBranch }));
+    }
+    return file.changedElsewhere
+      ? resolve(msg("Also changed on another branch"))
+      : resolve(msg("Can't be committed here"));
   }
-  if (file.scope === "mixed") return hunks ? `${hunks}, some unassigned` : "Partly unassigned";
-  return hunks;
+  if (file.scope === "mixed") {
+    return count > 1
+      ? resolve(
+          msg(
+            "{count, plural, one {{count} hunks, some unassigned} other {{count} hunks, some unassigned}}",
+            { count },
+          ),
+        )
+      : resolve(msg("Partly unassigned"));
+  }
+  return count > 1
+    ? resolve(msg("{count, plural, one {{count} hunks} other {{count} hunks}}", { count }))
+    : null;
 }
 
 function GitButlerFileGroup(props: {
@@ -114,6 +130,8 @@ function GitButlerFileGroup(props: {
   readonly selected: ReadonlySet<string>;
   readonly onChange: (selected: ReadonlySet<string>) => void;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const { files, selected, onChange } = props;
   if (files.length === 0) return null;
   const selectable = files.filter((file) => file.scope !== "locked");
@@ -129,7 +147,7 @@ function GitButlerFileGroup(props: {
         </View>
         {selectable.length > 0 ? (
           <Button
-            label={allSelected ? "Deselect all" : "Select all"}
+            label={allSelected ? gt("Deselect all") : gt("Select all")}
             tone="text"
             onPress={() => onChange(toggleGitButlerCommitFiles(selectable, selected))}
           />
@@ -142,7 +160,7 @@ function GitButlerFileGroup(props: {
           insertions={file.insertions}
           deletions={file.deletions}
           included={isGitButlerCommitFileSelected(file, selected)}
-          note={gitButlerFileNote(file)}
+          note={gitButlerFileNote(file, messages)}
           {...(file.scope === "locked"
             ? {}
             : { onToggle: () => onChange(toggleGitButlerCommitFiles([file], selected)) })}
@@ -278,24 +296,28 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
       {isGitButler ? (
         <View className="gap-5">
           <Text className="text-xs text-foreground-muted">
-            Nothing is included until you choose it. Each file commits the changes it has now.
+            <T>
+              Nothing is included until you choose it. Each file commits the changes it has now.
+            </T>
           </Text>
           {commitChanges.error ? (
             <Text className="text-sm text-danger-foreground">{commitChanges.error}</Text>
           ) : null}
           {gitButlerView === null ? (
             commitChanges.error ? null : (
-              <Text className="py-4 text-sm text-foreground-muted">Loading changes…</Text>
+              <Text className="py-4 text-sm text-foreground-muted">
+                <T>Loading changes…</T>
+              </Text>
             )
           ) : (
             <>
               {gitButlerView.needsReview ? (
                 <View className="gap-1" accessibilityRole="alert">
                   <Text className="text-sm text-warning-foreground">
-                    A change you chose was edited, committed, or locked.
+                    <T>A change you chose was edited, committed, or locked.</T>
                   </Text>
                   <Button
-                    label="Remove it"
+                    label={gt("Remove it")}
                     tone="text"
                     onPress={() =>
                       setGitButlerSelection((selected) =>
@@ -306,29 +328,38 @@ export function GitCommitSheet(props: GitCommitSheetProps) {
                 </View>
               ) : null}
               <GitButlerFileGroup
-                title={`Assigned to ${appliedBranch ?? "this branch"}`}
+                title={
+                  appliedBranch === null
+                    ? gt("Assigned to this branch")
+                    : gt("Assigned to {branch}", { branch: appliedBranch })
+                }
                 files={gitButlerView.assigned}
                 selected={gitButlerSelection}
                 onChange={setGitButlerSelection}
               />
               <GitButlerFileGroup
-                title="Shared, not assigned to a branch"
-                description="These may belong to another agent or person using this checkout."
+                title={gt("Shared, not assigned to a branch")}
+                description={gt("These may belong to another agent or person using this checkout.")}
                 files={gitButlerView.shared}
                 selected={gitButlerSelection}
                 onChange={setGitButlerSelection}
               />
               <GitButlerFileGroup
-                title="Unavailable"
-                description="Commit these from GitButler."
+                title={gt("Unavailable", { $context: "files that can't be committed here" })}
+                description={gt("Commit these from GitButler.")}
                 files={gitButlerView.locked}
                 selected={gitButlerSelection}
                 onChange={setGitButlerSelection}
               />
               <Text className="text-xs text-foreground-muted">
-                {gitButlerView.selectedFileCount} selected · +
-                {formatDiffCount(gitButlerView.insertions)} −
-                {formatDiffCount(gitButlerView.deletions)}
+                {gt(
+                  "{count, plural, one {{count} selected · +{insertions} −{deletions}} other {{count} selected · +{insertions} −{deletions}}}",
+                  {
+                    count: gitButlerView.selectedFileCount,
+                    insertions: formatDiffCount(gitButlerView.insertions),
+                    deletions: formatDiffCount(gitButlerView.deletions),
+                  },
+                )}
               </Text>
             </>
           )}

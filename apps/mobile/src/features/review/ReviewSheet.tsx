@@ -147,7 +147,7 @@ function ReviewHeader(
                     ? [
                         {
                           id: "gitbutler-branches",
-                          title: "GitButler branches",
+                          title: gt("GitButler branches"),
                           inline: true,
                           items: props.sectionMenu.gitButlerBranches.map((section) =>
                             sectionAction(section, section.title),

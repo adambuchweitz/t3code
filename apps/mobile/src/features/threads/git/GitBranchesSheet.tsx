@@ -104,10 +104,13 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
   const disabledExistingBranches = new Set(disabledExistingBranchNames);
   const requestUnapply = (branch: string, stack: readonly string[]) => {
     Dialog.confirm({
-      title: "Unapply this stack?",
-      confirmText: "Unapply stack",
+      title: gt("Unapply this stack?"),
+      confirmText: gt("Unapply stack"),
       destructive: true,
-      message: `Branches: ${stack.join(", ")}\n\nThis removes the whole stack from the working tree for every thread and agent sharing this checkout. You can apply it again later.`,
+      message: gt(
+        "Branches: {branches}\n\nThis removes the whole stack from the working tree for every thread and agent sharing this checkout. You can apply it again later.",
+        { branches: stack.join(", ") },
+      ),
       onConfirm: () => {
         void gitActions.onUnapplyGitButlerBranch(branch);
       },
@@ -124,15 +127,17 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
     >
       {isGitButlerWorkspace && gitStatus.data?.workspace?._tag === "gitbutler" ? (
         <ListSection
-          title="GitButler branches"
+          title={gt("GitButler branches")}
           footer={
             gitButlerSections.appliedStacks.length <= 1
-              ? "Apply adds branches; unapply removes their stack for everyone. Keep at least one stack applied; use GitButler directly to leave the workspace."
-              : "Apply adds branches; unapply removes their stack for everyone."
+              ? gt(
+                  "Apply adds branches; unapply removes their stack for everyone. Keep at least one stack applied; use GitButler directly to leave the workspace.",
+                )
+              : gt("Apply adds branches; unapply removes their stack for everyone.")
           }
         >
           <ListChoiceRow
-            label="Whole GitButler workspace"
+            label={gt("Whole GitButler workspace")}
             selected={(selectedThread?.gitbutlerBranch ?? null) === null}
             disabled={!canAssociateBranch || busy}
             onPress={() => setAssociation(null)}
@@ -142,15 +147,19 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
               <ListChoiceRow
                 key={branch}
                 label={branch}
-                description={stack.length > 1 ? `Applied · stack ${stack.at(-1)}` : "Applied"}
+                description={
+                  stack.length > 1
+                    ? gt("Applied · stack {branch}", { branch: stack.at(-1) })
+                    : gt("Applied", { $context: "GitButler branch applied in the workspace" })
+                }
                 selected={(selectedThread?.gitbutlerBranch ?? null) === branch}
                 separated
                 disabled={!canAssociateBranch || busy}
                 onPress={() => setAssociation(branch)}
                 meta={
                   <Button
-                    label="Unapply"
-                    accessibilityLabel={`Unapply stack containing ${branch}`}
+                    label={gt("Unapply", { $context: "verb, remove a GitButler stack" })}
+                    accessibilityLabel={gt("Unapply stack containing {branch}", { branch })}
                     disabled={
                       !gitActions.canUnapplyGitButlerBranch ||
                       busy ||

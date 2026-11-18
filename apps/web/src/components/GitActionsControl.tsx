@@ -1211,12 +1211,17 @@ function CheckoutGitActionsControl({
         )
       : null,
   );
-  const changesSummary = resolveChangesSummary({
-    status: gitStatus,
-    linkedBranch: linkedGitButlerBranch,
-    branchPreview: branchChangesQuery,
-    combinedPreview: changesPreview.data?.sources.find((source) => source.kind === "branch-range"),
-  });
+  const changesSummary = resolveChangesSummary(
+    {
+      status: gitStatus,
+      linkedBranch: linkedGitButlerBranch,
+      branchPreview: branchChangesQuery,
+      combinedPreview: changesPreview.data?.sources.find(
+        (source) => source.kind === "branch-range",
+      ),
+    },
+    messages,
+  );
   const changesTotals = changesSummary.totals ?? { insertions: 0, deletions: 0 };
   const changesBreakdown = changesSummary.totals?.breakdown ?? null;
   const changesBaseLabel =
@@ -1406,7 +1411,7 @@ function CheckoutGitActionsControl({
       }
 
       const error = squashAtomCommandFailure(result);
-      const confirmation = gitButlerPublishConfirmation(error);
+      const confirmation = gitButlerPublishConfirmation(error, m);
       if (confirmation) {
         setPendingPublish({
           scopeKey: publishScopeKey,
@@ -1492,8 +1497,8 @@ function CheckoutGitActionsControl({
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "Could not update held commits",
-        description: error instanceof Error ? error.message : "An error occurred.",
+        title: gt("Could not update held commits"),
+        description: error instanceof Error ? error.message : gt("An error occurred."),
         ...(threadToastData !== undefined ? { data: threadToastData } : {}),
       }),
     );
@@ -1511,7 +1516,7 @@ function CheckoutGitActionsControl({
     }
     setPendingPublish({
       scopeKey: publishScopeKey,
-      ...gitButlerHoldReview(result.value.holds),
+      ...gitButlerHoldReview(result.value.holds, m),
       publish: null,
     });
   };
@@ -1572,8 +1577,8 @@ function CheckoutGitActionsControl({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Pull failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            title: gt("Pull failed"),
+            description: error instanceof Error ? error.message : gt("An error occurred."),
             timeout: errorToastTiming.timeout,
             ...(threadToastData !== undefined ? { data: threadToastData } : {}),
           }),
@@ -1582,11 +1587,16 @@ function CheckoutGitActionsControl({
       }
 
       const pullResult = result.value;
-      const title = pullResult.status === "pulled" ? "Pulled" : "Already up to date";
+      const title = pullResult.status === "pulled" ? gt("Pulled") : gt("Already up to date");
       const description =
         pullResult.status === "pulled"
-          ? `Updated ${pullResult.refName} from ${pullResult.upstreamRef ?? "upstream"}`
-          : `${pullResult.refName} is already synchronized.`;
+          ? pullResult.upstreamRef
+            ? gt("Updated {ref} from {upstream}", {
+                ref: pullResult.refName,
+                upstream: pullResult.upstreamRef,
+              })
+            : gt("Updated {ref} from upstream", { ref: pullResult.refName })
+          : gt("{ref} is already synchronized.", { ref: pullResult.refName });
       setInlineSuccess({
         title,
         description,
@@ -1775,7 +1785,9 @@ function CheckoutGitActionsControl({
       {isGitButler && (
         <MenuItem disabled={!canWriteSourceControl || isGitActionRunning} onClick={pullLatest}>
           <CloudDownloadIcon />
-          <MenuItemLabel>Pull latest target</MenuItemLabel>
+          <MenuItemLabel>
+            <T>Pull latest target</T>
+          </MenuItemLabel>
         </MenuItem>
       )}
       {canPublishRepository ? (
@@ -2289,7 +2301,7 @@ function CheckoutGitActionsControl({
           </DialogHeader>
           <DialogFooter variant="bare">
             <Button variant="outline" size="sm" onClick={() => setPendingPublish(null)}>
-              Cancel
+              <T>Cancel</T>
             </Button>
             {pendingPublish && pendingPublish.resolutions.length > 0 ? (
               <Button
@@ -2298,7 +2310,7 @@ function CheckoutGitActionsControl({
                 onClick={() => void endPendingHolds()}
                 disabled={!canWriteSourceControl}
               >
-                {GIT_BUTLER_END_HOLD_LABEL}
+                {messages(GIT_BUTLER_END_HOLD_LABEL)}
               </Button>
             ) : null}
             {pendingPublish?.publish ? (

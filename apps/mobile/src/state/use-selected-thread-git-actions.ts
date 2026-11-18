@@ -331,7 +331,7 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
   const onApplyGitButlerBranch = (branch: string, create = false) =>
     runSelectedThreadGitMutation(
       create ? "create_ref" : "switch_ref",
-      create ? "Creating GitButler branch" : "Applying GitButler branch",
+      create ? m(msg("Creating GitButler branch")) : m(msg("Applying GitButler branch")),
       async ({ thread, cwd }) => {
         const result = await (create ? createGitButlerBranch : applyGitButlerBranch)({
           environmentId: thread.environmentId,
@@ -351,7 +351,7 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
   const onUnapplyGitButlerBranch = (branch: string) =>
     runSelectedThreadGitMutation(
       "switch_ref",
-      "Unapplying GitButler stack",
+      m(msg("Unapplying GitButler stack")),
       async ({ thread, cwd }) => {
         const result = await unapplyGitButlerBranch({
           environmentId: thread.environmentId,
@@ -484,10 +484,10 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
     const cwd = selectedThreadCwd;
     const holds = await readGitButlerHolds({ environmentId, input: { cwd } });
     if (AsyncResult.isFailure(holds)) {
-      alertGitButlerHoldFailure("Could not read held commits", Cause.squash(holds.cause));
+      alertGitButlerHoldFailure(m(msg("Could not read held commits")), Cause.squash(holds.cause));
       return;
     }
-    const review = gitButlerHoldReview(holds.value.holds);
+    const review = gitButlerHoldReview(holds.value.holds, m);
     const shown = canWriteSourceControl ? review : { ...review, resolutions: [] };
     if (!(await confirmGitButlerHoldReview(shown))) return;
     const ended = await resolveGitButlerHolds({
@@ -495,7 +495,7 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
       input: { cwd, resolutions: [...review.resolutions] },
     });
     if (AsyncResult.isFailure(ended)) {
-      alertGitButlerHoldFailure("Could not end the hold", Cause.squash(ended.cause));
+      alertGitButlerHoldFailure(m(msg("Could not end the hold")), Cause.squash(ended.cause));
     }
     await refreshSelectedThreadGitStatus({ quiet: true, cwd });
   };
@@ -527,7 +527,7 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
         });
         // The server rechecks each approval, so a remote that moved again asks again.
         while (AsyncResult.isFailure(result)) {
-          const confirmation = gitButlerPublishConfirmation(Cause.squash(result.cause));
+          const confirmation = gitButlerPublishConfirmation(Cause.squash(result.cause), m);
           if (confirmation === null) return result;
           const decision = await confirmGitButlerPublish(confirmation);
           if (decision === "cancel") return AsyncResult.success(null);

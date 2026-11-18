@@ -317,7 +317,7 @@ export function BranchToolbarBranchSelector({
       : [];
   const filteredGitButlerItems = gitButlerItems.filter((item) =>
     (item === GITBUTLER_WORKSPACE_ITEM
-      ? "Whole GitButler workspace"
+      ? gt("Whole GitButler workspace")
       : item.slice(GITBUTLER_BRANCH_PREFIX.length)
     )
       .toLowerCase()
@@ -548,7 +548,10 @@ export function BranchToolbarBranchSelector({
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: `Failed to ${action} GitButler branch`,
+            title: gt(
+              "{action, select, apply {Failed to apply GitButler branch} other {Failed to create GitButler branch}}",
+              { action },
+            ),
             description: toBranchActionErrorMessage(squashAtomCommandFailure(result)),
           }),
         );
@@ -562,16 +565,20 @@ export function BranchToolbarBranchSelector({
     if (gitButlerSections.appliedStacks.length <= 1) {
       toastManager.add({
         type: "info",
-        title: "Keep at least one stack applied",
-        description:
+        title: gt("Keep at least one stack applied"),
+        description: gt(
           "Unapplying the last stack checks out the target branch. Use GitButler directly to leave the workspace.",
+        ),
       });
       return;
     }
     handleOpenChange(false);
     void readLocalApi()
       ?.dialogs.confirm(
-        `Unapply this stack?\n\nBranches: ${stack.join(", ")}\n\nThis removes the whole stack from the working tree for every thread and agent sharing this checkout. You can apply it again later.`,
+        gt(
+          "Unapply this stack?\n\nBranches: {branches}\n\nThis removes the whole stack from the working tree for every thread and agent sharing this checkout. You can apply it again later.",
+          { branches: stack.join(", ") },
+        ),
         { variant: "destructive" },
       )
       .then((confirmed) => {
@@ -585,7 +592,7 @@ export function BranchToolbarBranchSelector({
             toastManager.add(
               stackedThreadToast({
                 type: "error",
-                title: "Failed to unapply GitButler stack",
+                title: gt("Failed to unapply GitButler stack"),
                 description: toBranchActionErrorMessage(squashAtomCommandFailure(result)),
               }),
             );
@@ -936,15 +943,21 @@ export function BranchToolbarBranchSelector({
       return (
         <div key={itemValue}>
           {itemValue === filteredGitButlerItems[0] ? (
-            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">GitButler branches</div>
+            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">
+              <T>GitButler branches</T>
+            </div>
           ) : null}
           {branch !== null &&
           itemValue === filteredGitButlerItems.find((item) => item !== GITBUTLER_WORKSPACE_ITEM) ? (
-            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">Applied</div>
+            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">
+              <T context="heading, GitButler branches applied in the workspace">Applied</T>
+            </div>
           ) : null}
           {stack && stack.length > 1 && branch === firstVisibleInStack ? (
             <div className="truncate px-2 pt-1 pb-1 text-xs text-muted-foreground">
-              Stack: {stack.at(-1)}
+              <T>
+                Stack: <Var>{stack.at(-1)}</Var>
+              </T>
             </div>
           ) : null}
           <div className="flex items-center gap-1">
@@ -954,7 +967,11 @@ export function BranchToolbarBranchSelector({
                 value={itemValue}
                 disabled={!canUpdateThreadBranch || isBranchActionPending}
                 aria-description={
-                  branch === null ? undefined : "Applied branch. Alt+Enter to unapply its stack."
+                  branch === null
+                    ? undefined
+                    : gt("Applied branch. {shortcut} to unapply its stack.", {
+                        shortcut: "Alt+Enter",
+                      })
                 }
                 onClick={() => selectPickerItem(itemValue)}
               >
@@ -962,12 +979,14 @@ export function BranchToolbarBranchSelector({
                 <MiddleTruncate
                   value={
                     itemValue === GITBUTLER_WORKSPACE_ITEM
-                      ? "Whole GitButler workspace"
+                      ? gt("Whole GitButler workspace")
                       : itemValue.slice(GITBUTLER_BRANCH_PREFIX.length)
                   }
                 />
                 {branch !== null ? (
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">applied</span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                    <T context="GitButler branch applied in the workspace">applied</T>
+                  </span>
                 ) : null}
               </ComboboxItem>
             </div>
@@ -977,7 +996,7 @@ export function BranchToolbarBranchSelector({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    aria-label={`Unapply stack containing ${branch}`}
+                    aria-label={gt("Unapply stack containing {branch}", { branch })}
                     aria-keyshortcuts="Alt+Enter"
                     disabled={
                       !canUnapplyGitButlerBranch ||
@@ -992,8 +1011,10 @@ export function BranchToolbarBranchSelector({
                 </TooltipTrigger>
                 <TooltipPopup>
                   {gitButlerSections.appliedStacks.length <= 1
-                    ? "Keep at least one stack applied; use GitButler directly to leave the workspace."
-                    : "Unapply stack (Alt+Enter)"}
+                    ? gt(
+                        "Keep at least one stack applied; use GitButler directly to leave the workspace.",
+                      )
+                    : gt("Unapply stack ({shortcut})", { shortcut: "Alt+Enter" })}
                 </TooltipPopup>
               </Tooltip>
             ) : null}
@@ -1056,7 +1077,9 @@ export function BranchToolbarBranchSelector({
       <div key={itemValue}>
         {isGitButlerPicker &&
         itemValue === filteredBranchPickerItems.find((item) => branchByName.has(item)) ? (
-          <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">Not applied</div>
+          <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">
+            <T context="heading, GitButler branches not applied in the workspace">Not applied</T>
+          </div>
         ) : null}
         <BranchPickerRefItem
           branch={refName}
