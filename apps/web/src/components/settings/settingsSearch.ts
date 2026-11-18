@@ -906,10 +906,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "skip-initial-worktree-checkout",
-    title: "Skip initial worktree checkout",
+    title: msg("Skip initial worktree checkout"),
     to: "/settings/worktrees",
     scope: "project",
-    searchTerms: ["git no-checkout setup populate sparse assets"],
+    searchTerms: [msg("git no-checkout setup populate sparse assets")],
   },
   {
     id: "worktree-submodules",
