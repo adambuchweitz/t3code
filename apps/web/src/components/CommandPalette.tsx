@@ -1541,7 +1541,7 @@ function OpenCommandPaletteDialog(props: {
     kind: "action",
     value: "action:open-tots",
     searchTerms: ["tots", "agents", "always on", "characters"],
-    title: "Open Tots",
+    title: gt("Open Tots"),
     icon: <SmileIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/tots" });
@@ -1558,7 +1558,7 @@ function OpenCommandPaletteDialog(props: {
       kind: "action",
       value: "action:tot-for-thread",
       searchTerms: ["tot", "agent", "character", "name", "face"],
-      title: isTot ? "Edit Tot" : "Make this thread a Tot",
+      title: isTot ? gt("Edit Tot") : gt("Make this thread a Tot"),
       icon: <SmileIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         openTotDialog({ kind: "thread", threadRef });

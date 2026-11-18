@@ -433,6 +433,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   historyControls,
 }: MessagesTimelineProps) {
   const gt = useGT();
+  const messages = useMessages();
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   // Snapshot restore positions on identity changes; ongoing scroll writes must not move them.
   // Find open at the opening is part of the snapshot: opening find later
@@ -781,12 +782,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
   });
   const rows = useStableRows(
     tot
-      ? foldTotWakes(rawRows, {
-          voice: tot.voice,
-          becameTotAt: tot.createdAt,
-          expandedFoldIds: expandedTotWakeFoldIds,
-          expandAll: findActive || revealedMessageId !== null,
-        })
+      ? foldTotWakes(
+          rawRows,
+          {
+            voice: tot.voice,
+            becameTotAt: tot.createdAt,
+            expandedFoldIds: expandedTotWakeFoldIds,
+            expandAll: findActive || revealedMessageId !== null,
+          },
+          messages,
+        )
       : rawRows,
     listIdentityKey,
   );

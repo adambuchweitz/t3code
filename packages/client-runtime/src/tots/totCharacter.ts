@@ -1,3 +1,5 @@
+import { msg } from "gt-i18n";
+
 export type TotPose = "awake" | "working" | "needs" | "asleep";
 
 const INK = "#1b1b22";
@@ -172,12 +174,12 @@ export interface TotCharacterDefinition {
 
 /** Swapping art means changing this table: everything else asks for a character and a pose. */
 export const TOT_CHARACTERS: ReadonlyArray<TotCharacterDefinition> = [
-  { id: "brace", label: "Curly braces", suggestedName: "Brace", draw: brace },
-  { id: "nigiri", label: "Nigiri", suggestedName: "Nigiri", draw: nigiri },
-  { id: "blocks", label: "Stacked blocks", suggestedName: "Stack", draw: blocks },
-  { id: "tuft", label: "Purple tuft", suggestedName: "Tee", draw: tuft },
-  { id: "crt", label: "Old monitor", suggestedName: "Ping", draw: crt },
-  { id: "dino", label: "Hatchling", suggestedName: "Rex", draw: dino },
+  { id: "brace", label: msg("Curly braces"), suggestedName: "Brace", draw: brace },
+  { id: "nigiri", label: msg("Nigiri"), suggestedName: "Nigiri", draw: nigiri },
+  { id: "blocks", label: msg("Stacked blocks"), suggestedName: "Stack", draw: blocks },
+  { id: "tuft", label: msg("Purple tuft"), suggestedName: "Tee", draw: tuft },
+  { id: "crt", label: msg("Old monitor"), suggestedName: "Ping", draw: crt },
+  { id: "dino", label: msg("Hatchling"), suggestedName: "Rex", draw: dino },
 ];
 
 const FALLBACK_CHARACTER = TOT_CHARACTERS[3]!;

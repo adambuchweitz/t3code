@@ -6,11 +6,13 @@ import {
   type TotWaitingItem,
 } from "@t3tools/client-runtime/tots/logic";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { msg, useGT, useMessages } from "gt-react-native";
 import { Pressable, ScrollView, View } from "react-native";
 import Animated, { useAnimatedStyle, type DerivedValue } from "react-native-reanimated";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
+import { m, type MessageResolver } from "../../i18n/messages";
 import { relativeTime } from "../../lib/time";
 import { useTotForThread } from "../../state/tots";
 import { TotCharterAnswer } from "./TotCharterAnswer";
@@ -19,10 +21,18 @@ import { updateTotDock, useTotDock } from "./totDockState";
 import { TotFace } from "./TotFace";
 import { TotRequestAnswers } from "./TotRequestAnswers";
 
-function itemMeta(item: TotWaitingItem): string {
-  if (item.kind === "charter") return `Proposed ${relativeTime(item.proposal.proposedAt)} ago`;
-  const blocks = item.request.blocks === null ? "" : ` · Blocks ${item.request.blocks}`;
-  return `Asked ${relativeTime(item.request.askedAt)} ago${blocks}`;
+function itemMeta(item: TotWaitingItem, resolve: MessageResolver = m): string {
+  if (item.kind === "charter") {
+    return resolve(
+      msg("Proposed {time} ago", {
+        time: relativeTime(item.proposal.proposedAt, undefined, resolve),
+      }),
+    );
+  }
+  const time = relativeTime(item.request.askedAt, undefined, resolve);
+  return item.request.blocks === null
+    ? resolve(msg("Asked {time} ago", { time }))
+    : resolve(msg("Asked {time} ago · Blocks {blocks}", { time, blocks: item.request.blocks }));
 }
 
 export function TotItemBody(props: { readonly entry: TotEntry; readonly item: TotWaitingItem }) {
@@ -49,6 +59,8 @@ function TotDockForEntry(props: {
   readonly heightStyle: ReturnType<typeof useAnimatedStyle>;
 }) {
   const { entry } = props;
+  const gt = useGT();
+  const messages = useMessages();
   const dock = useTotDock(entry.threadRef);
   const items = totWaitingItems(entry.tot);
   const first = items[0];
@@ -60,7 +72,7 @@ function TotDockForEntry(props: {
   ) : null;
   if (first === undefined) return desk;
   const open = items.find((item) => item.id === dock.openItemId) ?? first;
-  const heading = totRequestsHeading(entry.displayName, entry.tot.voice);
+  const heading = totRequestsHeading(entry.displayName, entry.tot.voice, messages);
   return (
     <>
       <Animated.View
@@ -71,7 +83,7 @@ function TotDockForEntry(props: {
         <View className="flex-row items-center gap-2.5 px-3.5 py-2.5">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Open ${entry.displayName}'s desk`}
+            accessibilityLabel={gt("Open {name}''s desk", { name: entry.displayName })}
             hitSlop={8}
             onPress={() => updateTotDock(entry.threadRef, { deskOpen: true })}
           >
@@ -79,15 +91,19 @@ function TotDockForEntry(props: {
           </Pressable>
           <Text numberOfLines={1} className="min-w-0 flex-1 font-t3-bold text-sm text-foreground">
             {dock.minimized
-              ? totWaitingItemTitle(first, entry.displayName, entry.tot.voice)
+              ? totWaitingItemTitle(first, entry.displayName, entry.tot.voice, messages)
               : heading}
           </Text>
           {items.length > 1 ? (
-            <Text className="font-sans text-xs text-foreground-muted">{items.length} waiting</Text>
+            <Text className="font-sans text-xs text-foreground-muted">
+              {gt("{count, plural, one {{count} waiting} other {{count} waiting}}", {
+                count: items.length,
+              })}
+            </Text>
           ) : null}
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={dock.minimized ? "Show what's waiting" : "Minimize"}
+            accessibilityLabel={dock.minimized ? gt("Show what's waiting") : gt("Minimize")}
             accessibilityState={{ expanded: !dock.minimized }}
             hitSlop={10}
             onPress={() => updateTotDock(entry.threadRef, { minimized: !dock.minimized })}
@@ -123,10 +139,10 @@ function TotDockForEntry(props: {
                     />
                     <View className="min-w-0 flex-1">
                       <Text className="font-t3-medium text-sm text-foreground">
-                        {totWaitingItemTitle(item, entry.displayName, entry.tot.voice)}
+                        {totWaitingItemTitle(item, entry.displayName, entry.tot.voice, messages)}
                       </Text>
                       <Text className="font-sans text-xs text-foreground-muted">
-                        {itemMeta(item)}
+                        {itemMeta(item, messages)}
                       </Text>
                     </View>
                   </Pressable>

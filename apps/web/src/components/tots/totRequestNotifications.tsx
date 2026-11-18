@@ -1,9 +1,11 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { AtomRegistry } from "effect/reactivity";
+import { msg } from "gt-react";
 import { MessageCircleQuestionIcon } from "lucide-react";
 
 import { getClientSettings } from "../../hooks/useSettings";
+import { m } from "../../i18n/messages";
 import { totEntriesAtom } from "../../state/tots";
 import {
   hasDesktopNotifications,
@@ -68,7 +70,7 @@ export function startTotRequestNotifications(
           ),
         },
         actionProps: {
-          children: "Open",
+          children: m(msg("Open", { $context: "verb, opens the Tot's thread" })),
           onClick: () => {
             toastManager.close(toastId);
             open(environmentId, threadId);
@@ -111,7 +113,7 @@ export function startTotRequestNotifications(
           announce({
             environmentId: entry.environmentId,
             threadId: entry.threadId,
-            title: totRequestsHeading(entry.displayName, entry.tot.voice),
+            title: totRequestsHeading(entry.displayName, entry.tot.voice, m),
             body: request.question,
             tag: `tot-request:${key}`,
           });

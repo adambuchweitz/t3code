@@ -230,7 +230,8 @@ export function buildThreadActionMenuItems(
       ? [
           {
             id: "tot" as const,
-            label: state.tot === "edit" ? "Edit Tot" : "Make this a Tot",
+            label:
+              state.tot === "edit" ? resolve(msg("Edit Tot")) : resolve(msg("Make this a Tot")),
             icon: "smile",
           },
         ]

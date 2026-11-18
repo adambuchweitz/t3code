@@ -11,6 +11,8 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import { scopeProjectRef, scopeThreadRef } from "../environment/index.ts";
@@ -137,16 +139,33 @@ export function createTotEntryAtoms<E>(input: {
   return { entriesAtom, entryForThreadAtom, identityJsonAtom };
 }
 
-const TOT_CREW_NEEDS_LABEL = {
-  approval: "needs approval",
-  input: "has a question",
-  request: "needs an answer",
-} as const;
-
-type TotCrewNeed = keyof typeof TOT_CREW_NEEDS_LABEL;
+type TotCrewNeed = "approval" | "input" | "request";
 
 const isCrewNeed = (status: TotThreadStatus): status is TotCrewNeed =>
-  status in TOT_CREW_NEEDS_LABEL;
+  status === "approval" || status === "input" || status === "request";
+
+function totCrewNeedLabel(title: string, need: TotCrewNeed, resolve: MFunctionType): string {
+  switch (need) {
+    case "approval":
+      return resolve(msg("{title} needs approval", { title }));
+    case "input":
+      return resolve(msg("{title} has a question", { title }));
+    case "request":
+      return resolve(msg("{title} needs an answer", { title }));
+  }
+}
+
+/** "Project on machine", for a Tot's project and the machine it runs on; either may be missing. */
+export function totLocationLabel(
+  projectName: string | null,
+  machineLabel: string | null,
+  resolve: MFunctionType = mFallback,
+): string {
+  if (projectName && machineLabel) {
+    return resolve(msg("{project} on {machine}", { project: projectName, machine: machineLabel }));
+  }
+  return projectName || machineLabel || "";
+}
 
 /** Where a Tot lives, for a list that mixes Tots from every project and machine. */
 export function totPlaceLabel(entry: TotEntry): string {
@@ -156,11 +175,14 @@ export function totPlaceLabel(entry: TotEntry): string {
 }
 
 /** Everything every connected machine's Tots are waiting on, oldest first, then crew who need an answer. */
-export function totWaitingQueue<T extends EnvironmentThreadShell>(input: {
-  readonly entries: ReadonlyArray<TotEntry>;
-  readonly threads: ReadonlyArray<T>;
-  readonly threadStatus: (thread: T) => TotThreadStatus;
-}) {
+export function totWaitingQueue<T extends EnvironmentThreadShell>(
+  input: {
+    readonly entries: ReadonlyArray<TotEntry>;
+    readonly threads: ReadonlyArray<T>;
+    readonly threadStatus: (thread: T) => TotThreadStatus;
+  },
+  resolve: MFunctionType = mFallback,
+) {
   const items = input.entries
     .flatMap((entry) =>
       totWaitingItems(entry.tot).map((item: TotWaitingItem) => ({
@@ -182,7 +204,7 @@ export function totWaitingQueue<T extends EnvironmentThreadShell>(input: {
     );
     return entry === undefined
       ? []
-      : [{ entry, thread, label: `${thread.title} ${TOT_CREW_NEEDS_LABEL[status]}` }];
+      : [{ entry, thread, label: totCrewNeedLabel(thread.title, status, resolve) }];
   });
   return { items, crewNeeds, total: items.length + crewNeeds.length };
 }

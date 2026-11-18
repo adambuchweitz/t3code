@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { ProviderInstanceId, ServerProvider, TotCrewModel } from "@t3tools/contracts";
+import { T, useGT, Var } from "gt-react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 
 import { useEnvironmentSettings } from "~/hooks/useSettings";
@@ -20,6 +21,7 @@ export function TotCrewPanel(props: {
   readonly onChange: (next: ReadonlyArray<TotCrewModel>) => void;
 }) {
   const { entry, value, onChange } = props;
+  const gt = useGT();
   const settings = useEnvironmentSettings(entry.environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(entry.environmentId)) ?? EMPTY_PROVIDERS;
@@ -31,8 +33,10 @@ export function TotCrewPanel(props: {
   return (
     <div className="grid gap-3">
       <p className="text-sm text-muted-foreground">
-        Tell the Tot which model does what. It picks these when it starts crew threads. The Tot's
-        own model is set from its thread, and its wakes run on that model.
+        <T>
+          Tell the Tot which model does what. It picks these when it starts crew threads. The Tot's
+          own model is set from its thread, and its wakes run on that model.
+        </T>
       </p>
       {value.map((row, index) => {
         const modelOptions = getCustomModelOptionsByInstance(
@@ -50,8 +54,8 @@ export function TotCrewPanel(props: {
           <div key={index} className="flex flex-wrap items-center gap-2">
             <div className="min-w-32 flex-1">
               <Input
-                aria-label="Crew role"
-                placeholder="Reviews"
+                aria-label={gt("Crew role")}
+                placeholder={gt("Reviews", { $context: "example crew role name" })}
                 maxLength={60}
                 value={row.role}
                 onChange={(event) => replace(index, { role: event.currentTarget.value })}
@@ -72,14 +76,18 @@ export function TotCrewPanel(props: {
             <Button
               variant="ghost-muted"
               size="icon-xs"
-              aria-label={`Remove ${row.role || "this role"}`}
+              aria-label={
+                row.role ? gt("Remove {role}", { role: row.role }) : gt("Remove this role")
+              }
               onClick={() => onChange(value.filter((_, i) => i !== index))}
             >
               <Trash2Icon />
             </Button>
             {listed ? null : (
               <p className="w-full text-xs text-warning-foreground">
-                Actually set to {row.model}, which this machine doesn't list.
+                <T>
+                  Actually set to <Var>{row.model}</Var>, which this machine doesn't list.
+                </T>
               </p>
             )}
           </div>
@@ -99,7 +107,7 @@ export function TotCrewPanel(props: {
           }}
         >
           <PlusIcon />
-          Add a role
+          <T>Add a role</T>
         </Button>
       </div>
     </div>

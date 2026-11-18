@@ -1,5 +1,6 @@
 import type { TotVoice } from "@t3tools/contracts";
 
+import { m, type MessageResolver } from "../../i18n/messages";
 import type { MessagesTimelineRow } from "../chat/MessagesTimeline.logic";
 import { totWakeFoldLabel } from "@t3tools/client-runtime/tots/logic";
 
@@ -44,6 +45,7 @@ export function foldTotWakes(
     readonly expandedFoldIds: ReadonlySet<string>;
     readonly expandAll: boolean;
   },
+  resolve: MessageResolver = m,
 ): MessagesTimelineRow[] {
   const turns: Array<Array<MessagesTimelineRow>> = [[]];
   for (const row of rows) {
@@ -65,11 +67,10 @@ export function foldTotWakes(
       kind: "tot-wake-fold",
       id,
       createdAt: opener(pending.at(-1)!).createdAt,
-      label: totWakeFoldLabel({
-        voice: options.voice,
-        checkIns,
-        updates: pending.length - checkIns,
-      }),
+      label: totWakeFoldLabel(
+        { voice: options.voice, checkIns, updates: pending.length - checkIns },
+        resolve,
+      ),
       expanded,
     });
     if (expanded) result.push(...pending.flat());

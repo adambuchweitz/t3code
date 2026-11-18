@@ -4,6 +4,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { TOT_CHARTER_MAX_LENGTH, type TotCharterProposal } from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
 import { useState } from "react";
 
 import { serverEnvironment } from "~/state/server";
@@ -29,6 +30,7 @@ export function TotCharterProposalBody(props: {
   readonly proposal: TotCharterProposal;
 }) {
   const { entry, proposal } = props;
+  const gt = useGT();
   const [answering, setAnswering] = useState(false);
   const [draft, setDraft] = useState(proposal.charter);
   const [comparing, setComparing] = useState(false);
@@ -58,8 +60,8 @@ export function TotCharterProposalBody(props: {
     const error = squashAtomCommandFailure(result);
     toastManager.add({
       type: "error",
-      title: "Couldn't save your answer",
-      description: error instanceof Error ? error.message : "Try again.",
+      title: gt("Couldn't save your answer"),
+      description: error instanceof Error ? error.message : gt("Try again."),
     });
   };
   return (
@@ -78,7 +80,7 @@ export function TotCharterProposalBody(props: {
         ) : (
           <TotCharterEditor
             value={draft}
-            ariaLabel={`Proposed charter for ${entry.displayName}`}
+            ariaLabel={gt("Proposed charter for {name}", { name: entry.displayName })}
             disabled={answering || !canOperate}
             onChange={setDraft}
           />
@@ -86,7 +88,10 @@ export function TotCharterProposalBody(props: {
       </div>
       {tooLong ? (
         <p className="mt-2 text-xs text-destructive-foreground" role="alert">
-          {draft.length - TOT_CHARTER_MAX_LENGTH} characters over the limit.
+          {gt(
+            "{count, plural, one {{count} characters over the limit.} other {{count} characters over the limit.}}",
+            { count: draft.length - TOT_CHARTER_MAX_LENGTH },
+          )}
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
@@ -98,7 +103,7 @@ export function TotCharterProposalBody(props: {
             aria-pressed={comparing}
             onClick={() => setComparing((current) => !current)}
           >
-            {comparing ? "Back to editing" : "Compare with current"}
+            {comparing ? gt("Back to editing") : gt("Compare with current")}
           </Button>
         ) : null}
         <Button
@@ -107,14 +112,14 @@ export function TotCharterProposalBody(props: {
           disabled={answering || !canOperate}
           onClick={() => void respond(false)}
         >
-          Dismiss
+          <T>Dismiss</T>
         </Button>
         <Button
           size="sm"
           disabled={answering || !canOperate || tooLong}
           onClick={() => void respond(true)}
         >
-          {edited ? "Approve with my edits" : "Approve"}
+          {edited ? gt("Approve with my edits") : gt("Approve")}
         </Button>
       </div>
     </div>

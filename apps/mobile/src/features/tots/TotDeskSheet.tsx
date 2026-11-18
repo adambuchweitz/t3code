@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { TotEntry } from "@t3tools/client-runtime/tots/entries";
+import { totLocationLabel, type TotEntry } from "@t3tools/client-runtime/tots/entries";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   totCrew,
@@ -10,6 +10,7 @@ import {
   totWaitingItemTitle,
   type TotCrewTone,
 } from "@t3tools/client-runtime/tots/logic";
+import { T, useGT, useMessages } from "gt-react-native";
 import { useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -75,6 +76,7 @@ function FinishedCrew(props: {
   readonly onOpen: (thread: EnvironmentThreadShell) => void;
 }) {
   const settle = useAtomCommand(threadEnvironment.settle, { reportFailure: false });
+  const gt = useGT();
   const [open, setOpen] = useState(false);
   const [settling, setSettling] = useState(false);
   const settleAll = async () => {
@@ -88,8 +90,11 @@ function FinishedCrew(props: {
     const failed = results.filter((result) => result._tag === "Failure").length;
     if (failed > 0) {
       Dialog.alert(
-        "Couldn't settle every thread",
-        `${failed} of ${results.length} finished threads are still open. Try again.`,
+        gt("Couldn't settle every thread"),
+        gt("{failed} of {total} finished threads are still open. Try again.", {
+          failed,
+          total: results.length,
+        }),
       );
     }
   };
@@ -108,11 +113,13 @@ function FinishedCrew(props: {
             tintColorClassName="accent-foreground-muted"
           />
           <Text className="font-sans text-sm text-foreground-muted">
-            {props.threads.length} finished
+            {gt("{count, plural, one {{count} finished} other {{count} finished}}", {
+              count: props.threads.length,
+            })}
           </Text>
         </Pressable>
         <Button
-          label="Settle all"
+          label={gt("Settle all")}
           tone="text"
           size="compact"
           loading={settling}
@@ -124,7 +131,7 @@ function FinishedCrew(props: {
             <CrewRow
               key={thread.id}
               title={thread.title}
-              label="Done"
+              label={gt("Done", { $context: "finished crew thread" })}
               tone="quiet"
               onPress={() => props.onOpen(thread)}
             />
@@ -139,6 +146,8 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
   const { entry } = props;
   const { tot, state } = entry;
   const insets = useSafeAreaInsets();
+  const gt = useGT();
+  const messages = useMessages();
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
   const crew = totCrew({
@@ -162,14 +171,22 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
     .filter((task) => task.threadId === entry.threadId && task.enabled && task.nextRunAt !== null)
     .map((task) => task.nextRunAt!)
     .sort()[0];
-  const place = [tot.nameEnabled ? entry.projectName : null, entry.machineLabel]
-    .filter(Boolean)
-    .join(" on ");
+  const place = totLocationLabel(
+    tot.nameEnabled ? entry.projectName : null,
+    entry.machineLabel,
+    messages,
+  );
   const wakeDetails = [
     tot.watchedThreadIds.length === 0
       ? null
-      : `Watching ${tot.watchedThreadIds.length} thread${tot.watchedThreadIds.length === 1 ? "" : "s"}`,
-    tot.wakesHeld === 0 ? null : `${tot.wakesHeld} wake${tot.wakesHeld === 1 ? "" : "s"} waiting`,
+      : gt("{count, plural, one {Watching {count} thread} other {Watching {count} threads}}", {
+          count: tot.watchedThreadIds.length,
+        }),
+    tot.wakesHeld === 0
+      ? null
+      : gt("{count, plural, one {{count} wake waiting} other {{count} wakes waiting}}", {
+          count: tot.wakesHeld,
+        }),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -189,7 +206,7 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
           <TotFace character={tot.character} pose={TOT_STATE_POSE[state]} size={64} />
           <View className="min-w-0 flex-1 gap-0.5">
             <Text className="font-sans text-sm text-foreground-secondary">
-              {TOT_JOB_LABEL[tot.job]}
+              {messages(TOT_JOB_LABEL[tot.job])}
             </Text>
             <Text
               className={cn(
@@ -197,7 +214,7 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
                 state === "needs" ? "text-warning-foreground" : "text-foreground",
               )}
             >
-              {totStateLabel(state, tot.voice)}
+              {totStateLabel(state, tot.voice, messages)}
             </Text>
             {place === "" ? null : (
               <Text className="font-sans text-xs text-foreground-muted">{place}</Text>
@@ -206,7 +223,7 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
         </View>
 
         {items.length === 0 ? null : (
-          <DeskSection title="Waiting on you">
+          <DeskSection title={gt("Waiting on you")}>
             {items.map((item) => (
               <Pressable
                 key={item.id}
@@ -221,22 +238,24 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
                 }}
               >
                 <Text className="font-t3-medium text-sm text-warning-foreground">
-                  {totWaitingItemTitle(item, entry.displayName, tot.voice)}
+                  {totWaitingItemTitle(item, entry.displayName, tot.voice, messages)}
                 </Text>
               </Pressable>
             ))}
           </DeskSection>
         )}
 
-        <DeskSection title="Crew">
+        <DeskSection title={gt("Crew", { $context: "threads a Tot started" })}>
           {crew.active.length === 0 ? (
-            <Text className="font-sans text-sm text-foreground-muted">Nobody's out on a job.</Text>
+            <Text className="font-sans text-sm text-foreground-muted">
+              <T>Nobody's out on a job.</T>
+            </Text>
           ) : (
             crew.active.map(({ thread, status }) => (
               <CrewRow
                 key={thread.id}
                 title={thread.title}
-                label={status.label}
+                label={messages(status.label)}
                 tone={status.tone}
                 onPress={() => openThread(thread)}
               />
@@ -247,7 +266,7 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
           )}
         </DeskSection>
 
-        <DeskSection title="Charter">
+        <DeskSection title={gt("Charter", { $context: "the Tot's standing instructions" })}>
           <Text
             numberOfLines={8}
             className={cn(
@@ -255,18 +274,27 @@ export function TotDeskSheet(props: { readonly entry: TotEntry; readonly onClose
               tot.charter.trim() === "" ? "text-foreground-muted" : "text-foreground-secondary",
             )}
           >
-            {tot.charter.trim() === "" ? "No charter yet." : tot.charter.trim()}
+            {tot.charter.trim() === "" ? gt("No charter yet.") : tot.charter.trim()}
           </Text>
         </DeskSection>
 
-        <DeskSection title="Wakes">
+        <DeskSection title={gt("Wakes", { $context: "Tot settings section, when it wakes up" })}>
           <Text className="font-sans text-sm text-foreground-secondary">
             {nextWakeAt === undefined
-              ? "No wake scheduled"
-              : `Next wake in ${relativeTime(new Date(nowMs).toISOString(), Date.parse(nextWakeAt))}`}
+              ? gt("No wake scheduled")
+              : gt("Next wake in {time}", {
+                  time: relativeTime(
+                    new Date(nowMs).toISOString(),
+                    Date.parse(nextWakeAt),
+                    messages,
+                  ),
+                })}
             {tot.wakeSettings.quietHours === null
               ? ""
-              : ` · Quiet ${tot.wakeSettings.quietHours.start} to ${tot.wakeSettings.quietHours.end}`}
+              : ` · ${gt("Quiet {start} to {end}", {
+                  start: tot.wakeSettings.quietHours.start,
+                  end: tot.wakeSettings.quietHours.end,
+                })}`}
           </Text>
           {wakeDetails === "" ? null : (
             <Text className="font-sans text-xs text-foreground-muted">{wakeDetails}</Text>
