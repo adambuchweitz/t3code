@@ -84,10 +84,10 @@ export function WorktreesSettingsPanel() {
             settingKeys={["skipInitialWorktreeCheckout"]}
             mixed={mixedSkipCheckout}
             {...searchableSetting("skip-initial-worktree-checkout")}
-            description="New worktree threads wait for the setup script to fill them."
+            description={gt("New worktree threads wait for the setup script to fill them.")}
             control={
               <Switch
-                aria-label="Skip initial worktree checkout"
+                aria-label={gt("Skip initial worktree checkout")}
                 mixed={mixedSkipCheckout}
                 checked={!mixedSkipCheckout && settings.skipInitialWorktreeCheckout}
                 onCheckedChange={(skipInitialWorktreeCheckout) =>
