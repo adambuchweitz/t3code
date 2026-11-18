@@ -9489,6 +9489,32 @@
   "b66d68c080ce9070": "Installation abbrechen",
   "5970e844f127f37f": "Heruntergeladene Laufzeit entfernen",
   "b539d9ac22f1d10e": "Einrichtungsstatus erneut abrufen",
+  "00d040852d32f62b": "Install",
+  "85033886abdf23c9": "Account",
+  "af4a23cf9655e5c4": "{provider} is not installed on {environment}. Install it from a terminal.",
+  "9006873bc64dcaae": "Sign in to {provider} from a terminal on {environment}.",
+  "54a33a54dacd6025": "Install {provider}",
+  "7bda1645f4263c4e": "Sign in to {provider}",
+  "ac3e80746cc503f9": "Install in terminal",
+  "3579a1fe8999820a": "Sign in with terminal",
+  "905b3a61758f1a07": "Could not open a terminal on this environment.",
+  "db78b4852560c604": "Opening terminal…",
+  "892a3d0781d6f2a8": [
+    "Type",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    },
+    " ",
+    "and press Enter."
+  ],
+  "0fea78ac4421a2ca": "Close",
   "75aa16ade5095511": "Vorerst überspringen",
   "9d7fb2ec72ce9693": "Aus",
   "2763012f6869f8d0": "PRs lesen",

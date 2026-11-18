@@ -11,6 +11,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { T, useGT, Var } from "gt-react";
 import { ExternalLinkIcon, TerminalIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -58,6 +59,7 @@ export function ProviderSetupTerminalRow({
   readonly providerLabel: string;
   readonly action: ProviderSetupTerminalAction;
 }) {
+  const gt = useGT();
   const cwd = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.cwd ?? null,
@@ -75,11 +77,21 @@ export function ProviderSetupTerminalRow({
 
   return (
     <SettingsRow
-      title={install ? "Install" : "Account"}
+      title={
+        install
+          ? gt("Install", { $context: "settings row for installing a provider" })
+          : gt("Account", { $context: "settings row for signing in to a provider" })
+      }
       description={
         install
-          ? `${providerLabel} is not installed on ${environmentLabel}. Install it from a terminal.`
-          : `Sign in to ${providerLabel} from a terminal on ${environmentLabel}.`
+          ? gt("{provider} is not installed on {environment}. Install it from a terminal.", {
+              provider: providerLabel,
+              environment: environmentLabel,
+            })
+          : gt("Sign in to {provider} from a terminal on {environment}.", {
+              provider: providerLabel,
+              environment: environmentLabel,
+            })
       }
       control={
         session === null ? (
@@ -95,13 +107,15 @@ export function ProviderSetupTerminalRow({
                 providerInstanceId: instanceId,
                 cwd,
                 command: action.command,
-                label: `${install ? "Install" : "Sign in to"} ${providerLabel}`,
+                label: install
+                  ? gt("Install {provider}", { provider: providerLabel })
+                  : gt("Sign in to {provider}", { provider: providerLabel }),
                 keybindings,
               });
             }}
           >
             <TerminalIcon />
-            {install ? "Install in terminal" : "Sign in with terminal"}
+            {install ? gt("Install in terminal") : gt("Sign in with terminal")}
           </Button>
         ) : null
       }
@@ -135,6 +149,7 @@ function ProviderSetupTerminalSession({
   readonly onCommandFinished: () => void;
   readonly onClose: () => void;
 }) {
+  const gt = useGT();
   const { command, cwd, environmentId, keybindings, kind, label, providerInstanceId } = session;
   const [advancedTypography] = useLocalStorage(
     TYPOGRAPHY_ADVANCED_STORAGE_KEY,
@@ -249,19 +264,19 @@ function ProviderSetupTerminalSession({
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
         <p role="status" className="min-w-0 text-xs text-muted-foreground">
           {state === "writeFailed" ? (
-            <>
+            <T>
               Type{" "}
               <code className="select-all font-mono text-foreground [overflow-wrap:anywhere]">
-                {command}
+                <Var>{command}</Var>
               </code>{" "}
               and press Enter.
-            </>
+            </T>
           ) : state === "ready" ? (
-            "Review the command, then press Enter to run it."
+            gt("Review the command, then press Enter to run it.")
           ) : state === "openFailed" ? (
-            "Could not open a terminal on this environment."
+            gt("Could not open a terminal on this environment.")
           ) : (
-            "Opening terminal…"
+            gt("Opening terminal…")
           )}
         </p>
         <div className="flex shrink-0 items-center gap-1">
@@ -276,7 +291,7 @@ function ProviderSetupTerminalSession({
               }}
             >
               <ExternalLinkIcon />
-              Open sign-in page
+              <T>Open sign-in page</T>
             </Button>
           ) : null}
           {state === "openFailed" ? (
@@ -288,11 +303,11 @@ function ProviderSetupTerminalSession({
                 setAttempt((value) => value + 1);
               }}
             >
-              Retry
+              <T>Retry</T>
             </Button>
           ) : null}
           <Button size="xs" variant="ghost-muted" onClick={onClose}>
-            Close
+            <T context="verb, close the setup terminal">Close</T>
           </Button>
         </div>
       </div>
