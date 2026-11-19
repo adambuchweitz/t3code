@@ -465,19 +465,22 @@ function cleanup() {
       .filter(Boolean)
       .map((value) => value.release),
   );
+  // Current plus one rollback; current/previous/candidate releases are protected above.
   for (const [directory, keep] of [
-    ["releases", 3],
-    ["artifacts", 2],
-    ["backups", 3],
-    ["smoke", 3],
+    ["releases", 2],
+    ["artifacts", 1],
+    ["backups", 1],
+    ["smoke", 1],
   ]) {
     const parent = path.join(root, directory);
     if (!fs.existsSync(parent)) continue;
+    // Newest first by time: older hand-named directories must not outrank timestamped ones.
     const entries = fs
       .readdirSync(parent)
-      .filter((name) => fs.statSync(path.join(parent, name)).isDirectory())
-      .sort()
-      .reverse();
+      .map((name) => ({ name, stat: fs.statSync(path.join(parent, name)) }))
+      .filter((entry) => entry.stat.isDirectory())
+      .sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs)
+      .map((entry) => entry.name);
     for (const name of entries.slice(keep)) {
       const target = path.join(parent, name);
       if (!protectedReleases.has(target)) fs.rmSync(target, { recursive: true, force: true });
