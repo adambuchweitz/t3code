@@ -243,9 +243,11 @@ trap cleanup EXIT
 if [[ -n "$previous" ]]; then
   ln -sfn "$previous" "$install_dir/previous"
 fi
-# The exit handler retains current/previous and one complete compressed backup.
 echo "Deployed $source_dir; previous release: ${previous:-npm installation}"
 echo "Backup: $backup"
+# Keep current, previous and the newest complete backup; the deploy already succeeded.
+python3 "$workspace_dir/scripts/deploy-mac-storage.py" prune --root "$install_dir" ||
+  echo "Pruning old releases and backups failed; they were kept." >&2
 
 }
 main "$@"
