@@ -391,6 +391,8 @@ const withRaceFixture = <A, E, R>(
             "XDG_STATE_HOME",
           ].map((name) => `${name}=${env[name as keyof typeof env]}`),
           "GIT_CONFIG_NOSYSTEM=1",
+          // A background sync would race the next command for GitButler's database.
+          "NO_BG_TASKS=1",
           ...(mode === "agent" ? ["AI_AGENT=t3-test"] : []),
         ];
         const git = (...args: string[]) => {
@@ -722,6 +724,33 @@ describe("GitButlerWorkspace", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("retries a workspace change while GitButler's database is briefly locked", () => {
+    const locked = {
+      exitCode: ChildProcessSpawner.ExitCode(1),
+      stdout: "",
+      stderr: "Error: database is locked",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    };
+    let branchAttempts = 0;
+    const { layer } = butLayer((args) => {
+      if (args[0] === "branch") {
+        branchAttempts += 1;
+        return Effect.succeed(branchAttempts < 3 ? locked : JSON.stringify(newBranchOutput));
+      }
+      return Effect.succeed(statusOutput("feature/first"));
+    });
+    return Effect.gen(function* () {
+      const but = yield* GitButlerWorkspace.GitButlerWorkspace;
+      const created = yield* but
+        .createBranch({ cwd: "/repo", branch: "feature/stacked" })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("2 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(created), { branch: "feature/stacked" });
+      assert.strictEqual(branchAttempts, 3);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect(
     "blocks final-stack unapply, inactive branches, internal refs, targets, and non-workspace checkouts",

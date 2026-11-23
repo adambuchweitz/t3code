@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 
 import {
   GitButlerForcePushConfirmationError,
@@ -510,6 +511,17 @@ export class GitButlerWorkspace extends Context.Service<
   }
 >()("t3/vcs/GitButlerWorkspace") {}
 
+const BUT_LOCK_RETRY_COMMANDS = new Set([
+  "status",
+  "--format",
+  "diff",
+  "config",
+  "apply",
+  "unapply",
+  "branch",
+  "switch",
+]);
+
 const make = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -530,6 +542,24 @@ const make = Effect.gen(function* () {
     args: readonly string[],
   ) {
     const operation = `GitButlerWorkspace.${args[0]}`;
+    return yield* runButOnce(operation, cwd, args).pipe(
+      // `but` leaves a background sync writing its database, and SQLite then refuses the next
+      // write outright instead of waiting. Only reads and local workspace changes are retried.
+      Effect.retry({
+        times: 4,
+        while: (error) =>
+          BUT_LOCK_RETRY_COMMANDS.has(args[0] ?? "") && /database is locked/i.test(error.detail),
+        schedule: Schedule.exponential("250 millis"),
+      }),
+    );
+  });
+
+  // runBut's span already covers every attempt.
+  const runButOnce = Effect.fnUntraced(function* (
+    operation: string,
+    cwd: string,
+    args: readonly string[],
+  ) {
     const result = yield* process
       .run({
         operation,
