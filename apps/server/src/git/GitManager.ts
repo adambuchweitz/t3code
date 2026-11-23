@@ -4753,6 +4753,40 @@ export const make = Effect.gen(function* () {
     };
   });
 
+  const repositoryRoot = (cwd: string) =>
+    gitCore
+      .execute({
+        operation: "GitManager.repositoryRoot",
+        cwd,
+        args: ["rev-parse", "--show-toplevel"],
+        timeoutMs: 5_000,
+      })
+      .pipe(
+        // Any other whitespace belongs to the path.
+        Effect.map((result) => result.stdout.replace(/\n$/, "")),
+        Effect.orElseSucceed(() => null),
+      );
+
+  // A thread links a branch of its own folder's repository. An action in another repository its
+  // project tracks must neither use that link nor replace it.
+  const threadLinkedInRepository = Effect.fn("GitManager.threadLinkedInRepository")(function* (
+    threadId: ThreadId,
+    cwd: string,
+  ) {
+    const thread = yield* threads.getThreadShell(threadId);
+    if (thread === null) return null;
+    const threadCwd =
+      thread.worktreePath ??
+      Option.getOrNull(yield* projects.get(thread.projectId))?.workspaceRoot ??
+      null;
+    if (threadCwd === null) return null;
+    if (threadCwd === cwd) return thread;
+    const roots = yield* Effect.all([repositoryRoot(cwd), repositoryRoot(threadCwd)], {
+      concurrency: "unbounded",
+    });
+    return roots[0] !== null && roots[0] === roots[1] ? thread : null;
+  });
+
   const runStackedAction: GitManager["Service"]["runStackedAction"] = Effect.fn("runStackedAction")(
     function* (input, options) {
       const progress = yield* createProgressEmitter(input, options);
@@ -4767,9 +4801,9 @@ export const make = Effect.gen(function* () {
         const wantsCommit = isCommitAction(input.action);
         const isGitButler =
           initialStatus.branch !== null && isGitButlerWorkspaceRef(initialStatus.branch);
-        const linkedBranch =
+        const linkedThread =
           isGitButler && input.threadId
-            ? ((yield* threads.getThreadShell(input.threadId).pipe(
+            ? yield* threadLinkedInRepository(input.threadId, input.cwd).pipe(
                 Effect.mapError(
                   (cause) =>
                     new GitManagerError({
@@ -4779,10 +4813,12 @@ export const make = Effect.gen(function* () {
                       cause,
                     }),
                 ),
-              ))?.gitbutlerBranch ?? null)
-            : isGitButler
-              ? (input.gitbutlerBranch ?? null)
-              : null;
+              )
+            : null;
+        const linkedBranch =
+          isGitButler && !input.threadId
+            ? (input.gitbutlerBranch ?? null)
+            : (linkedThread?.gitbutlerBranch ?? null);
         const createFeatureBranch =
           input.featureBranch || (isGitButler && wantsCommit && linkedBranch === null);
         if (isGitButler && !wantsCommit && linkedBranch === null) {
@@ -4974,14 +5010,16 @@ export const make = Effect.gen(function* () {
           isGitButler &&
           branchStep.status === "created" &&
           commit.status === "created" &&
-          input.threadId
+          linkedThread !== null
         ) {
           yield* orchestrator
             .dispatch({
               type: "thread.metadata.update",
               commandId: CommandId.make(`gitbutler-branch:${yield* randomUUIDv4(input.cwd)}`),
-              threadId: input.threadId,
+              threadId: linkedThread.id,
               gitbutlerBranch: currentBranch,
+              // A thread that moved to a worktree meanwhile no longer works in this checkout.
+              expectedWorktreePath: linkedThread.worktreePath,
             })
             .pipe(
               Effect.mapError(
@@ -4989,7 +5027,7 @@ export const make = Effect.gen(function* () {
                   new GitManagerError({
                     operation: "runStackedAction",
                     cwd: input.cwd,
-                    detail: `${commit.selectionMismatch ?? "The commit succeeded."} T3 Code could not link its GitButler branch to the thread. Select it in the branch picker.`,
+                    detail: `${commit.selectionMismatch ?? "The commit succeeded."} T3 Code could not link its GitButler branch "${currentBranch}" to the thread. Select it in the branch picker.`,
                     cause,
                   }),
               ),

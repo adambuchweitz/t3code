@@ -941,6 +941,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           "raced_commit_push",
           "raced_commit_push_pr",
           "raced_new",
+          "moved",
+          "nested",
+          "tracked",
+          "tracked_linked",
         ] as const,
         (scenario) =>
           Effect.gen(function* () {
@@ -948,6 +952,15 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             yield* initRepo(repoDir);
             yield* runGit(repoDir, ["checkout", "-b", "gitbutler/workspace"]);
             NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nchanged\n");
+            // The thread runs in another repository, whose project tracks this one.
+            const tracked = scenario.startsWith("tracked");
+            const threadDir = tracked
+              ? yield* makeTempDir("t3code-git-butler-thread-folder-")
+              : scenario === "nested"
+                ? NodePath.join(repoDir, "packages", "app")
+                : repoDir;
+            if (scenario === "nested") NodeFS.mkdirSync(threadDir, { recursive: true });
+            if (tracked) yield* initRepo(threadDir);
             const calls: Array<readonly string[]> = [];
             const commands: string[] = [];
             const linked: string[] = [];
@@ -1072,12 +1085,20 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             const { manager } = yield* makeManager({
               gitCommands: commands,
               gitButler: Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace),
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  if (command.type === "thread.metadata.update" && command.gitbutlerBranch)
-                    linked.push(command.gitbutlerBranch);
-                  return { sequence: 1, storedEvents: [] };
-                }),
+              dispatch: Effect.fnUntraced(function* (command) {
+                if (scenario === "moved") {
+                  return yield* new Orchestrator.OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "worktree changed",
+                  });
+                }
+                if (command.type === "thread.metadata.update" && command.gitbutlerBranch) {
+                  linked.push(command.gitbutlerBranch);
+                  expect(command.expectedWorktreePath).toBe(threadDir);
+                }
+                return { sequence: 1, storedEvents: [] };
+              }),
               seed: Effect.gen(function* () {
                 yield* (yield* ProjectionStore.ProjectionStoreV2).apply({
                   id: EventId.make("gitbutler-thread"),
@@ -1097,8 +1118,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                     interactionMode: "default",
                     branch: "gitbutler/workspace",
                     gitbutlerBranch:
-                      scenario === "new" || scenario === "raced_new" ? null : "feature/api",
-                    worktreePath: repoDir,
+                      scenario === "new" ||
+                      scenario === "moved" ||
+                      scenario === "raced_new" ||
+                      scenario === "tracked"
+                        ? null
+                        : "feature/api",
+                    worktreePath: threadDir,
                     activeProviderThreadId: null,
                     lineage: {
                       parentThreadId: null,
@@ -1152,6 +1178,21 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
               expect(realWrites()).toEqual(["commit", "push"]);
               return;
             }
+            if (scenario === "moved") {
+              const refused = yield* manager
+                .runStackedAction({
+                  cwd: repoDir,
+                  actionId: "moved",
+                  action: "commit_push",
+                  threadId,
+                  commitMessage: "Selected change",
+                  gitbutlerChangeIds: yield* offeredChangeIds,
+                })
+                .pipe(Effect.flip);
+              expect(refused.message).toContain("feature/selected-change");
+              expect(realWrites()).toEqual(["commit"]);
+              return;
+            }
             if (
               scenario === "raced_commit" ||
               scenario === "raced_commit_push" ||
@@ -1200,7 +1241,12 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
               return;
             }
             const action =
-              scenario === "new" || scenario === "feature" || scenario === "draft"
+              scenario === "new" ||
+              scenario === "feature" ||
+              scenario === "draft" ||
+              scenario === "nested" ||
+              scenario === "tracked" ||
+              scenario === "tracked_linked"
                 ? "commit"
                 : scenario;
             if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
@@ -1251,12 +1297,31 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe(
               "gitbutler/workspace",
             );
-            if (scenario === "new" || scenario === "feature") {
+            if (tracked) {
+              // Neither used as the target here, nor replaced by this repository's branch.
+              expect(result.branch.status).toBe("created");
+              expect(result.branch.name).not.toBe("feature/api");
+              expect(calls.find((args) => args[0] === "commit")?.[2]).toBe(result.branch.name);
+              expect(linked).toEqual([]);
+              const refused = yield* manager
+                .runStackedAction({
+                  cwd: repoDir,
+                  actionId: `${scenario}-push`,
+                  action: "push",
+                  threadId,
+                })
+                .pipe(Effect.flip);
+              expect(refused.message).toContain("Select an applied GitButler branch");
+              expect(realWrites()).toEqual(["commit"]);
+            } else if (scenario === "new" || scenario === "feature") {
               expect(result.branch.status).toBe("created");
               expect(linked).toEqual([result.branch.name]);
               expect(calls.find((args) => args[0] === "commit")?.[2]).toBe(result.branch.name);
             } else {
               expect(linked).toEqual([]);
+            }
+            if (scenario === "nested") {
+              expect(calls.find((args) => args[0] === "commit")?.[2]).toBe("feature/api");
             }
             if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
               expect(calls.find((args) => args[0] === "commit")?.at(-1)).toBe("readme:1");
