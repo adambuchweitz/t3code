@@ -103,30 +103,6 @@ export function filterBranchPickerRefs<T extends Pick<VcsRef, "name">>(
   return refs.filter((ref) => !ref.name.startsWith("gitbutler/") && !appliedBranches.has(ref.name));
 }
 
-/**
- * Names a checked-out ref for people. GitButler's synthetic workspace ref says
- * nothing about the work, so it shows the thread's linked branch, else the only
- * applied branch, else the workspace. Without a known applied branch, it claims
- * only GitButler: status may still be loading.
- */
-export function resolveVcsRefDisplayName(
-  refName: string | null,
-  workspace?: VcsWorkspaceStatus | null,
-  gitbutlerBranch?: string | null,
-): string | null {
-  if (gitbutlerBranch) {
-    return workspace?._tag === "gitbutler" &&
-      !gitButlerAppliedBranches(workspace).includes(gitbutlerBranch)
-      ? `${gitbutlerBranch} (not applied)`
-      : gitbutlerBranch;
-  }
-  if (refName === null || !isGitButlerWorkspaceRef(refName)) return refName;
-  const branches = gitButlerAppliedBranches(workspace);
-  if (branches.length === 0) return "GitButler";
-  if (branches.length === 1) return branches[0] ?? "GitButler";
-  return "GitButler workspace";
-}
-
 export function sanitizeBranchFragment(raw: string): string {
   const normalized = foldLatinDiacritics(raw)
     .trim()

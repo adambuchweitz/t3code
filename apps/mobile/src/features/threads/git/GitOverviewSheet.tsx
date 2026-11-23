@@ -11,7 +11,7 @@ import type { ThreadRepositorySection } from "@t3tools/client-runtime/state/thre
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { changeRequestTermKind } from "../../../lib/changeRequestTerm";
-import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/gitCopy";
 import {
   CommonActions,
   StackActions,

@@ -6,8 +6,8 @@ import {
   gitButlerAppliedBranches,
   gitButlerPickerSections,
   isGitButlerWorkspaceRef,
-  resolveVcsRefDisplayName,
 } from "@t3tools/shared/git";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/gitCopy";
 import { useRightPanelStore } from "../rightPanelStore";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {

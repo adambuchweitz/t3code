@@ -12,7 +12,7 @@ import {
   pickedQuery,
   rankMessageMatches,
 } from "@t3tools/shared/paletteSearch";
-import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/gitCopy";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";

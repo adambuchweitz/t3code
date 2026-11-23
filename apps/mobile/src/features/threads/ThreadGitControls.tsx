@@ -1,5 +1,5 @@
 import { msg, useGT, useMessages } from "gt-react-native";
-import { resolveVcsRefDisplayName } from "@t3tools/shared/git";
+import { resolveVcsRefDisplayName } from "@t3tools/shared/gitCopy";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";

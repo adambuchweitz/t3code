@@ -1203,6 +1203,8 @@
   "d6f6b0c536401f97": "이미지 템플릿",
   "1def3827b7403ac6": "이메일 템플릿",
   "9ed38458996c973a": "Slack 템플릿",
+  "8fdec6527218b337": "{branch} (not applied)",
+  "1b5992a2f424252e": "GitButler workspace",
   "0eb8cb19daf61b59": "{ms}ms",
   "ba392a6319fd43e0": "{seconds}초",
   "40bc7efea699741f": "{minutes}분 {seconds}초",

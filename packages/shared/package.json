@@ -655,6 +655,10 @@
       "types": "./src/threadLinksCopy.ts",
       "import": "./src/threadLinksCopy.ts"
     },
+    "./gitCopy": {
+      "types": "./src/gitCopy.ts",
+      "import": "./src/gitCopy.ts"
+    },
     "./terminalLabelsCopy": {
       "types": "./src/terminalLabelsCopy.ts",
       "import": "./src/terminalLabelsCopy.ts"
