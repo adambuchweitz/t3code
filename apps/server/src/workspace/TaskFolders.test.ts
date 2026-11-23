@@ -3,6 +3,7 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  GitCommandError,
   type ManagedPolicyDocument,
   type ProjectTrackedFolder,
   TaskFolderError,
@@ -105,6 +106,88 @@ const withState = <A, E>(
   const state: TaskFoldersTestState = { workspaceRoot: "/unset", trackedFolders: [], thread: null };
   return test(state).pipe(Effect.provide(layerFor(state, policy)), Effect.scoped);
 };
+
+it.live("starts every repository's branch above an applied GitButler stack", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { path, tmp, run, repository } = yield* fixture;
+      const shop = yield* repository("shop");
+      const api = yield* repository("shop/api");
+      const late = yield* repository("shop/late");
+      const tips = new Map<string, string>();
+      for (const folder of [shop, api, late]) {
+        yield* run(folder, "switch", "-c", "stack/one");
+        yield* run(folder, "commit", "--allow-empty", "-m", "applied work");
+        tips.set(folder, yield* run(folder, "rev-parse", "HEAD"));
+        yield* run(folder, "switch", "-c", "gitbutler/workspace", "main");
+        yield* run(folder, "merge", "--no-ff", "-m", "Workspace", "stack/one");
+        yield* run(folder, "config", "gitbutler.project.targetref", "refs/heads/main");
+      }
+      // `late` starts from its default branch, which here is itself on an applied stack.
+      const origin = path.join(tmp, "late.git");
+      yield* run(tmp, "init", "--bare", "-b", "main", origin);
+      yield* run(late, "remote", "add", "origin", origin);
+      yield* run(late, "push", "origin", "main");
+      yield* run(late, "remote", "set-head", "origin", "main");
+      yield* run(late, "config", "gitbutler.project.targetref", "refs/remotes/origin/main");
+      yield* run(late, "branch", "-f", "main", "stack/one");
+      state.workspaceRoot = shop;
+      state.trackedFolders = tracked(api, late);
+
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const plan = yield* taskFolders.plan({ projectId, repositories: [{ path: api }] });
+      const { taskFolder, branch } = yield* taskFolders.create({
+        plan: plan!,
+        branch: "feature",
+        projectStart: { refName: "stack/one", baseRefName: "stack/one" },
+        baseBranch: "stack/one",
+        startFromOrigin: false,
+        projectCommands: "permitted",
+      });
+      state.thread = { worktreePath: taskFolder.projectPath, branch };
+      yield* taskFolders.addRepository({ threadId, repositoryPath: late, startFromOrigin: false });
+
+      for (const folder of [shop, api, late]) {
+        const name = path.relative(tmp, folder);
+        assert.notEqual(yield* run(folder, "rev-parse", branch), tips.get(folder), name);
+        assert.equal(yield* run(folder, "rev-parse", `${branch}^`), tips.get(folder), name);
+      }
+    }),
+  ),
+);
+
+it.live("keeps a branch made elsewhere while a failed creation resolved its start", () =>
+  withState((state) =>
+    Effect.gen(function* () {
+      const { run, repository } = yield* fixture;
+      const shop = yield* repository("shop");
+      const api = yield* repository("shop/api");
+      state.workspaceRoot = shop;
+      state.trackedFolders = tracked(api);
+
+      for (const [branch, failing] of [
+        ["in-project", shop],
+        ["in-tracked", api],
+      ] as const) {
+        state.beforePin = (cwd) =>
+          cwd !== failing
+            ? Effect.void
+            : run(cwd, "branch", branch).pipe(
+                Effect.andThen(
+                  new GitCommandError({
+                    operation: "GitVcsDriver.createStartCommit",
+                    command: "git commit",
+                    cwd,
+                    detail: "signing failed",
+                  }),
+                ),
+              );
+        yield* create(branch).pipe(Effect.flip);
+        assert.equal(yield* run(failing, "branch", "--list", branch), branch, branch);
+      }
+    }),
+  ),
+);
 
 it.live("lays a plain wrapper out as links around its repositories' worktrees", () =>
   withState((state) =>

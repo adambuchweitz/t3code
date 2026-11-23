@@ -723,6 +723,15 @@ const make = Effect.gen(function* () {
       : { refName: remoteBase.commitSha, baseRefName: `refs/remotes/${remoteBase.remoteRefName}` };
   });
 
+  // Resolved apart from the checkout, whose failure means this service may have made the branch.
+  const startAboveAppliedStack = Effect.fnUntraced(function* (
+    cwd: string,
+    start: { readonly refName: string; readonly baseRefName: string },
+  ) {
+    const pin = yield* git.pinAppliedStackWorktreeBase({ cwd, ...start });
+    return pin === null ? start : { ...start, refName: pin.commitSha };
+  });
+
   /**
    * Stands in for a folder that is not a repository: every entry links to the original, so
    * nothing is copied, except the folders that lead to a tracked repository, which are real so a
@@ -1073,12 +1082,13 @@ const make = Effect.gen(function* () {
       return null;
     yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
     const start = yield* repositoryStart(repository.path, startFromOrigin, baseBranch);
+    const { refName, baseRefName } = yield* startAboveAppliedStack(repository.path, start);
     yield* git
       .createWorktree({
         cwd: repository.path,
-        refName: start.refName,
+        refName,
         newRefName: branch,
-        baseRefName: start.baseRefName,
+        baseRefName,
         path: worktreePath,
       })
       .pipe(Effect.onExit(recordBranch));
@@ -1243,13 +1253,17 @@ const make = Effect.gen(function* () {
         }
         if (taskPlan.projectIsRepository) {
           yield* fileSystem.makeDirectory(path.dirname(empty.projectPath), { recursive: true });
+          const { refName, baseRefName } = yield* startAboveAppliedStack(
+            taskPlan.projectRoot,
+            input.projectStart,
+          );
           yield* git
             .createWorktree(
               {
                 cwd: taskPlan.projectRoot,
-                refName: input.projectStart.refName,
+                refName,
                 newRefName: branch,
-                baseRefName: input.projectStart.baseRefName,
+                baseRefName,
                 path: empty.projectPath,
               },
               input.projectProgress === undefined ? {} : { progress: input.projectProgress },
@@ -1488,7 +1502,10 @@ const make = Effect.gen(function* () {
               path: worktreePath,
             });
           } else {
-            const start = yield* repositoryStart(repositoryPath, startFromOrigin);
+            const start = yield* startAboveAppliedStack(
+              repositoryPath,
+              yield* repositoryStart(repositoryPath, startFromOrigin),
+            );
             yield* git.createWorktree({
               cwd: repositoryPath,
               refName: start.refName,

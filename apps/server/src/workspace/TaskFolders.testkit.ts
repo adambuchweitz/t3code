@@ -1,4 +1,5 @@
 import {
+  type GitCommandError,
   type ManagedPolicyDocument,
   type OrchestrationV2ThreadShell,
   ProjectId,
@@ -38,6 +39,8 @@ export interface TaskFoldersTestState {
   onLayoutCommand?: Effect.Effect<void>;
   /** Runs in place of forgetting a task folder's record. */
   onForget?: Effect.Effect<void, TaskFolderError>;
+  /** Runs before a repository's GitButler start is resolved. */
+  beforePin?: (cwd: string) => Effect.Effect<void, GitCommandError>;
 }
 
 /**
@@ -57,6 +60,10 @@ export const layerTaskFoldersWithGit = (
           .pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : null)));
       return Layer.mock(GitWorkflowService.GitWorkflowService)({
         createWorktree: git.createWorktree,
+        pinAppliedStackWorktreeBase: (input) =>
+          (state.beforePin?.(input.cwd) ?? Effect.void).pipe(
+            Effect.andThen(git.pinAppliedStackWorktreeBase(input)),
+          ),
         removeWorktree: git.removeWorktree,
         deleteLocalBranch: git.deleteLocalBranch,
         listLocalBranchNames: (cwd) =>
