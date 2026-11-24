@@ -945,6 +945,8 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           "nested",
           "tracked",
           "tracked_linked",
+          "relinked_force",
+          "relinked_held",
         ] as const,
         (scenario) =>
           Effect.gen(function* () {
@@ -965,6 +967,9 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             const commands: string[] = [];
             const linked: string[] = [];
             const holdRefs = new Map<string, string>();
+            if (scenario === "relinked_held") {
+              holdRefs.set("refs/t3/gitbutler-holds/unverified/id/-/feature/api", "abcdef123456");
+            }
             const butProcess = VcsProcess.VcsProcess.of({
               run: (request) =>
                 Effect.sync(() => {
@@ -1013,7 +1018,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                       request.args.includes("--dry-run")
                         ? {
                             branches:
-                              scenario === "force"
+                              scenario === "force" || scenario === "relinked_force"
                                 ? [
                                     {
                                       branchName: "feature/api",
@@ -1036,7 +1041,20 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                                   ],
                               mergeBase: { commitId: "base-commit" },
                               stacks: [
-                                { branches: [{ name: "feature/api" }], assignedChanges: [] },
+                                {
+                                  branches: [
+                                    {
+                                      name: "feature/api",
+                                      ...(scenario === "relinked_held"
+                                        ? { commits: [{ commitId: "abcdef123456" }] }
+                                        : {}),
+                                    },
+                                  ],
+                                  assignedChanges: [],
+                                },
+                                ...(scenario.startsWith("relinked_")
+                                  ? [{ branches: [{ name: "feature/web" }], assignedChanges: [] }]
+                                  : []),
                               ],
                             }
                           : request.args[0] === "diff"
@@ -1082,6 +1100,41 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             );
             const threadId = ThreadId.make("gitbutler-action");
             const createdAt = DateTime.makeUnsafe("2026-10-28T00:00:00Z");
+            const thread = {
+              createdBy: "user",
+              creationSource: "web",
+              id: threadId,
+              projectId: ProjectId.make("project"),
+              title: "GitButler",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: "gitbutler/workspace",
+              gitbutlerBranch:
+                scenario === "new" ||
+                scenario === "moved" ||
+                scenario === "raced_new" ||
+                scenario === "tracked"
+                  ? null
+                  : "feature/api",
+              worktreePath: threadDir,
+              activeProviderThreadId: null,
+              lineage: {
+                parentThreadId: null,
+                relationshipToParent: null,
+                rootThreadId: threadId,
+              },
+              forkedFrom: null,
+              createdAt,
+              updatedAt: createdAt,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            } as const;
+            let projection!: ProjectionStore.ProjectionStoreV2["Service"];
             const { manager } = yield* makeManager({
               gitCommands: commands,
               gitButler: Context.get(butContext, GitButlerWorkspace.GitButlerWorkspace),
@@ -1100,46 +1153,14 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                 return { sequence: 1, storedEvents: [] };
               }),
               seed: Effect.gen(function* () {
-                yield* (yield* ProjectionStore.ProjectionStoreV2).apply({
+                projection = yield* ProjectionStore.ProjectionStoreV2;
+                yield* projection.apply({
                   id: EventId.make("gitbutler-thread"),
                   type: "thread.created",
                   threadId,
                   providerInstanceId: ProviderInstanceId.make("codex"),
                   occurredAt: createdAt,
-                  payload: {
-                    createdBy: "user",
-                    creationSource: "web",
-                    id: threadId,
-                    projectId: ProjectId.make("project"),
-                    title: "GitButler",
-                    providerInstanceId: ProviderInstanceId.make("codex"),
-                    modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
-                    runtimeMode: "full-access",
-                    interactionMode: "default",
-                    branch: "gitbutler/workspace",
-                    gitbutlerBranch:
-                      scenario === "new" ||
-                      scenario === "moved" ||
-                      scenario === "raced_new" ||
-                      scenario === "tracked"
-                        ? null
-                        : "feature/api",
-                    worktreePath: threadDir,
-                    activeProviderThreadId: null,
-                    lineage: {
-                      parentThreadId: null,
-                      relationshipToParent: null,
-                      rootThreadId: threadId,
-                    },
-                    forkedFrom: null,
-                    createdAt,
-                    updatedAt: createdAt,
-                    archivedAt: null,
-                    settledOverride: null,
-                    settledAt: null,
-                    lastVisitedAt: null,
-                    deletedAt: null,
-                  },
+                  payload: thread,
                 });
               }),
             });
@@ -1176,6 +1197,57 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                 gitbutlerForcePushApproval: refused.approval,
               });
               expect(realWrites()).toEqual(["commit", "push"]);
+              return;
+            }
+            if (scenario === "relinked_force" || scenario === "relinked_held") {
+              const relink = (gitbutlerBranch: string) =>
+                projection.apply({
+                  id: EventId.make(`relink-${gitbutlerBranch}`),
+                  type: "thread.metadata-updated",
+                  threadId,
+                  occurredAt: createdAt,
+                  payload: { ...thread, gitbutlerBranch },
+                });
+              const published = () =>
+                calls
+                  .filter(
+                    (args) => ["push", "pr"].includes(args[0]!) && !args.includes("--dry-run"),
+                  )
+                  .map((args) => args.join(" "));
+              for (const action of ["create_pr", "push"] as const) {
+                yield* relink("feature/api");
+                const asked = yield* manager
+                  .runStackedAction({ cwd: repoDir, actionId: `${action}-asked`, action, threadId })
+                  .pipe(Effect.flip);
+                if (
+                  asked._tag !== "GitButlerForcePushConfirmationError" &&
+                  asked._tag !== "GitButlerPublicationHoldError"
+                ) {
+                  return yield* asked;
+                }
+                expect(asked.branch).toBe("feature/api");
+                const confirmed = {
+                  cwd: repoDir,
+                  action,
+                  threadId,
+                  gitbutlerBranch: asked.branch,
+                  ...(asked._tag === "GitButlerForcePushConfirmationError"
+                    ? { gitbutlerForcePushApproval: asked.approval }
+                    : { gitbutlerHoldApproval: asked.approval }),
+                };
+                yield* relink("feature/web");
+                const refused = yield* Effect.result(
+                  manager.runStackedAction({ ...confirmed, actionId: `${action}-relinked` }),
+                );
+                expect(published()).toEqual([]);
+                expect(Result.isFailure(refused) && refused.failure.message).toMatch(
+                  /"feature\/api".*"feature\/web"/,
+                );
+                if (action === "create_pr") continue;
+                yield* relink("feature/api");
+                yield* manager.runStackedAction({ ...confirmed, actionId: `${action}-confirmed` });
+                expect(published()).toEqual(["push feature/api --json"]);
+              }
               return;
             }
             if (scenario === "moved") {
@@ -6677,13 +6749,30 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         ),
       ).toBe("");
 
-      const result = yield* manager.runStackedAction({
+      const reviewed = {
         cwd: repoDir,
-        actionId: "push-reviewed",
-        action: "push",
+        action: "push" as const,
+        gitbutlerBranch: held.branch,
         gitbutlerHoldApproval: held.approval,
-      });
-      expect(result.push.status).toBe("pushed");
+      };
+      // Another branch at the same commit, so the approval still matches what's held.
+      yield* runGit(repoDir, ["checkout", "-b", "feature/other"]);
+      const refused = yield* Effect.result(
+        manager.runStackedAction({ ...reviewed, actionId: "push-other" }),
+      );
+      expect((yield* runGit(remoteDir, ["--git-dir=.", "for-each-ref"])).stdout.trim()).toBe("");
+      expect(Result.isFailure(refused) && refused.failure.message).toMatch(
+        /"feature\/held".*"feature\/other"/,
+      );
+      yield* runGit(repoDir, ["checkout", "--detach"]);
+      const detached = yield* manager
+        .runStackedAction({ ...reviewed, actionId: "push-detached" })
+        .pipe(Effect.flip);
+      expect(detached.message).toContain("Cannot push from detached HEAD.");
+      yield* runGit(repoDir, ["checkout", "feature/held"]);
+
+      const result = yield* manager.runStackedAction({ ...reviewed, actionId: "push-reviewed" });
+      expect(result.push).toMatchObject({ status: "pushed", branch: "feature/held" });
     }),
   );
 

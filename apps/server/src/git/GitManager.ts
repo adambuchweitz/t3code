@@ -4829,6 +4829,24 @@ export const make = Effect.gen(function* () {
               "Select an applied GitButler branch for this thread before pushing or creating a PR.",
           });
         }
+        // An approval only covers the branch it was shown for, and may not stop another one.
+        const confirmedBranch =
+          input.gitbutlerForcePushApproval || input.gitbutlerHoldApproval
+            ? input.gitbutlerBranch
+            : undefined;
+        const publishBranch = isGitButler ? linkedBranch : initialStatus.branch;
+        // Null without a new branch is a detached HEAD, which is refused below.
+        if (
+          confirmedBranch !== undefined &&
+          (createFeatureBranch || (publishBranch !== null && publishBranch !== confirmedBranch))
+        ) {
+          const target = createFeatureBranch ? "a new branch" : `"${publishBranch}"`;
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail: `You confirmed publishing "${confirmedBranch}", but this would now publish ${target}, so nothing was pushed. Start the action again to publish ${target}, or select "${confirmedBranch}" in the branch picker first.`,
+          });
+        }
         // The checkout left GitButler after the choice was made; a plain commit would stage everything.
         if (!isGitButler && input.gitbutlerChangeIds) {
           return yield* new GitManagerError({

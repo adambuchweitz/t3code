@@ -2,7 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  GitButlerForcePushConfirmationError,
+  GitButlerPublicationHoldError,
   GitCommandError,
+  GitManagerServiceError,
   GitPreparePullRequestThreadResult,
   GitRunStackedActionInput,
   VcsCreateWorktreeInput,
@@ -18,6 +21,8 @@ const encodeCreateWorktreeInput = Schema.encodeUnknownSync(VcsCreateWorktreeInpu
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
 const decodeWorktreeHandoffInput = Schema.decodeUnknownSync(WorktreeMcpHandoffInput);
 const decodeGitCommandError = Schema.decodeUnknownSync(Schema.toCodecJson(GitCommandError));
+const encodeGitManagerError = Schema.encodeUnknownSync(GitManagerServiceError);
+const decodeGitManagerError = Schema.decodeUnknownSync(GitManagerServiceError);
 const decodePreparePullRequestThreadResult = Schema.decodeUnknownSync(
   GitPreparePullRequestThreadResult,
 );
@@ -129,6 +134,14 @@ describe("Git ref names", () => {
 
       const handoff = { branch: name, baseRef: name, startFromOrigin: true };
       expect(decodeWorktreeHandoffInput(handoff)).toEqual(handoff);
+
+      const ask = { cwd: "/repo", branch: name, approval: "approval", staleApproval: false };
+      for (const error of [
+        new GitButlerForcePushConfirmationError({ ...ask, targets: [] }),
+        new GitButlerPublicationHoldError({ ...ask, holds: [] }),
+      ]) {
+        expect(decodeGitManagerError(encodeGitManagerError(error))).toMatchObject({ branch: name });
+      }
     },
   );
 

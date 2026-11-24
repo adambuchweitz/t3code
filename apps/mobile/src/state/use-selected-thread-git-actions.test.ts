@@ -34,6 +34,7 @@ const state = vi.hoisted(() => ({
   forcePushRefusals: 0,
   sentActions: [] as {
     action: string;
+    gitbutlerBranch?: string;
     gitbutlerForcePushApproval?: string;
     gitbutlerHoldApproval?: string;
   }[],
@@ -141,12 +142,14 @@ vi.mock("./vcs", () => ({
       async (input: {
         action: string;
         featureBranch?: boolean;
+        gitbutlerBranch?: string;
         gitbutlerForcePushApproval?: string;
         gitbutlerHoldApproval?: string;
       }) => {
         state.actionCwds.push(target.cwd);
         state.sentActions.push({
           action: input.action,
+          ...(input.gitbutlerBranch ? { gitbutlerBranch: input.gitbutlerBranch } : {}),
           ...(input.gitbutlerForcePushApproval
             ? { gitbutlerForcePushApproval: input.gitbutlerForcePushApproval }
             : {}),
@@ -260,8 +263,8 @@ describe("thread Git mutation permissions", () => {
     expect(state.confirmForcePush).toHaveBeenCalledTimes(2);
     expect(state.sentActions).toEqual([
       { action: "commit_push" },
-      { action: "push", gitbutlerForcePushApproval: "approval-2" },
-      { action: "push", gitbutlerForcePushApproval: "approval-1" },
+      { action: "push", gitbutlerBranch: "api", gitbutlerForcePushApproval: "approval-2" },
+      { action: "push", gitbutlerBranch: "api", gitbutlerForcePushApproval: "approval-1" },
     ]);
     expect(state.results.map((result) => result.type)).toEqual(["success"]);
   });
@@ -274,7 +277,7 @@ describe("thread Git mutation permissions", () => {
     ).not.toBeNull();
     expect(state.sentActions).toEqual([
       { action: "push" },
-      { action: "push", gitbutlerHoldApproval: "reviewed" },
+      { action: "push", gitbutlerBranch: "api", gitbutlerHoldApproval: "reviewed" },
     ]);
   });
 

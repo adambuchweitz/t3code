@@ -557,6 +557,7 @@ export function useSelectedThreadGitActions(repository?: GitRepositoryTarget) {
             actionId: uuidv4(),
             action: gitButlerForcePushRetryAction(input.action),
             threadId: thread.id,
+            gitbutlerBranch: confirmation.branch,
             ...confirmation.approval,
           });
         }

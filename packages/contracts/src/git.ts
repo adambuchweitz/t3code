@@ -146,7 +146,10 @@ export const GitRunStackedActionInput = Schema.Struct({
     Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
   ),
   threadId: Schema.optional(ThreadId),
-  /** Draft threads have no threadId; persisted thread metadata takes precedence. */
+  /**
+   * Draft threads have no threadId; persisted thread metadata takes precedence. Sent with an
+   * approval, it's the branch a person confirmed, and publishing any other branch is refused.
+   */
   gitbutlerBranch: Schema.optional(GitRefName),
   /** The `approval` of a GitButlerForcePushConfirmationError, sent once a person has confirmed it. */
   gitbutlerForcePushApproval: Schema.optional(
@@ -565,7 +568,7 @@ export class GitButlerForcePushConfirmationError extends Schema.TaggedError<GitB
   "GitButlerForcePushConfirmationError",
   {
     cwd: Schema.String,
-    branch: TrimmedNonEmptyStringSchema,
+    branch: GitRefName,
     targets: Schema.Array(GitButlerForcePushTarget),
     approval: TrimmedNonEmptyStringSchema,
     staleApproval: Schema.Boolean,
@@ -623,7 +626,7 @@ export class GitButlerPublicationHoldError extends Schema.TaggedError<GitButlerP
   "GitButlerPublicationHoldError",
   {
     cwd: Schema.String,
-    branch: TrimmedNonEmptyStringSchema,
+    branch: GitRefName,
     holds: Schema.Array(GitButlerPublicationHold),
     approval: TrimmedNonEmptyStringSchema,
     staleApproval: Schema.Boolean,
